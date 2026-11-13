@@ -83,11 +83,12 @@ impl SourceConfig {
         Self::configured(root(full_text), root(claude_fallback))
     }
     pub fn configured(full_text: Option<PathBuf>, claude_fallback: Option<PathBuf>) -> Self {
-        let roots = [
+        let mut roots: Vec<_> = [
             (KIND_CLAUDE, crate::ailog::claude_root()),
             (KIND_CLAUDE_CODEX, crate::ailog::claude_codex_root()),
-            (KIND_CODEX, crate::ailog::codex_root()),
         ].into_iter().filter_map(|(kind, root)| root.map(|root| (kind.to_string(), root))).collect();
+        roots.extend(crate::agent_home_roots::all(crate::cli_accounts::CliProvider::Codex)
+            .into_iter().map(|root| (KIND_CODEX.to_string(), root.path)));
         Self { roots, archive: crate::ailog::archive_root(), full_text, claude_fallback }
     }
 }
@@ -130,7 +131,7 @@ fn ordered_candidates<'a>(kind: &str, paths: &[PathBuf], child: bool, config: &'
             for (_, root) in config.roots.iter().filter(|(source_kind, _)| source_kind == kind) {
                 if let Ok(relative) = path.strip_prefix(root) {
                     if relative.components().any(|part| matches!(part, std::path::Component::ParentDir)) { continue; }
-                    out.push((gzip_path(&tier.join(kind).join(relative)), Some(tier.as_path())));
+                    out.push((gzip_path(&crate::agent_home_roots::mirror_root(kind, root, tier).join(relative)), Some(tier.as_path())));
                 }
             }
         }
@@ -141,7 +142,7 @@ fn ordered_candidates<'a>(kind: &str, paths: &[PathBuf], child: bool, config: &'
 }
 
 fn candidate_allowed(path: &Path, root: Option<&Path>) -> bool {
-    root.map_or(true, |root| contained_file(root, path))
+    crate::agent_home_roots::record_path_allowed(path) && root.map_or(true, |root| contained_file(root, path))
 }
 
 pub fn candidates(kind: &str, paths: &[PathBuf], child: bool, config: &SourceConfig) -> Vec<PathBuf> {
@@ -204,7 +205,30 @@ pub fn load(conn: &Connection, kind: &str, session_id: &str, config: &SourceConf
 
 pub fn load_paths(kind: &str, session_id: &str, child: bool, paths: &[PathBuf], config: &SourceConfig) -> Result<TranscriptReport, TranscriptError> {
     let deadline = Instant::now() + READ_TIMEOUT;
-    let candidates = ordered_candidates(kind, paths, child, config);
+    let mut paths = paths.to_vec();
+    if kind == KIND_CODEX {
+        let roots: Vec<_> = config.roots.iter().filter(|(kind,_)| kind == KIND_CODEX).map(|(_,path)| crate::agent_home_roots::RecordRoot {
+            origin: crate::agent_home_roots::origin_for_root(KIND_CODEX, path), path: path.clone(),
+        }).collect();
+        match crate::agent_home_roots::find_unique(&roots, crate::cli_accounts::CliProvider::Codex, session_id) {
+            Err(_) => return Err(ambiguous_error()),
+            Ok(Some((_,path))) if !paths.contains(&path) => paths.push(path),
+            _ => {}
+        }
+        // Persisted sources retain provenance even when only a mirror remains.
+        let origins = paths.iter().filter(|path| {
+            ordered_candidates(kind, &[(*path).clone()], child, config).iter().any(|(candidate,root)| candidate_allowed(candidate,*root) && candidate.is_file())
+        }).filter_map(|path| {
+            config.roots.iter().find(|(kind,root)| kind == KIND_CODEX && (path.starts_with(root)
+                || [&config.archive,&config.full_text].into_iter().flatten().any(|tier| path.starts_with(crate::agent_home_roots::mirror_root(kind,root,tier)))))
+                .map(|(_,root)| crate::agent_home_roots::origin_for_root(KIND_CODEX, root))
+        }).fold(Vec::new(), |mut origins, origin| {
+            if !origins.contains(&origin) { origins.push(origin); }
+            origins
+        });
+        if origins.len() > 1 { return Err(ambiguous_error()); }
+    }
+    let candidates = ordered_candidates(kind, &paths, child, config);
     let mut io_error = None;
     let mut wrong_identity = false;
     let mut denied = false;
@@ -247,6 +271,11 @@ pub fn load_paths(kind: &str, session_id: &str, child: bool, paths: &[PathBuf], 
     Err(TranscriptError { code: if wrong_identity { "identity_mismatch" } else { "not_found" }, retryable: false,
         message: if wrong_identity { "控えは見つかりましたが、選んだ会話の記録と確認できませんでした。" } else { "この会話の元の記録と控えが見つかりません。使用量の集計は残っています。" },
         technical: format!("Checked {} known locations; identity mismatch: {wrong_identity}", candidates.len()) })
+}
+
+fn ambiguous_error() -> TranscriptError {
+    TranscriptError { code: "ambiguousSource", retryable: false,
+        message: "同じ会話の記録が複数の保存場所にあるため、会話を特定できません。", technical: "Multiple record roots match the conversation".into() }
 }
 
 fn permission_error(error: &str) -> bool {

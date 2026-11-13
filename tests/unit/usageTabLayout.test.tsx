@@ -11,7 +11,11 @@ vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn(async () => "C:\\Users\\test") }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined), emit: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (command: string) => (command === "list_cli_accounts" ? structuredClone(ipc.snapshot) : null)),
+  invoke: vi.fn(async (command: string) => {
+    if (command === "list_cli_accounts") return structuredClone(ipc.snapshot);
+    if (command === "get_cli_launch_tokens" || command === "list_cli_account_homes") return [];
+    return null;
+  }),
   Channel: class {},
 }));
 

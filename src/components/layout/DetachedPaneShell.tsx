@@ -1,4 +1,6 @@
+import { applyTabAccountToLaunchEnv } from "../terminal/terminalLaunchParams";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { TabAccountBadge } from "./TabAccountBadge";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -92,7 +94,9 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     if (codexLaunch) return { agent: codexLaunch.agent!, savedSession: codexLaunch.savedAgentSession,
       args: codexLaunch.launchArgs, launchEnv: codexLaunch.launchEnv };
     const launchThroughLauncher = !tab.commandArgv?.length
-      && requiresLauncherDispatch(tab.launchEnv ?? pane.launchEnv);
+      && (requiresLauncherDispatch(tab.launchEnv ?? pane.launchEnv)
+        || (tab.agentAccountId !== undefined && ["claude", "codex", "grok"].includes((tab.launchEnv ?? pane.launchEnv)?.MYCMUX_LAUNCH_TARGET
+          ?? tab.agentKind ?? (tab.claudeSessionId || tab.agentId === "claude-code" ? "claude" : tab.agentId))));
     const agent = launchThroughLauncher ? getDefaultAgent() : getAgent(tab.agentId) ?? getDefaultAgent();
     const savedSession = tab.agentKind && tab.agentSessionId
       ? { kind: tab.agentKind, sessionId: tab.agentSessionId }
@@ -113,6 +117,8 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
     } else if (tab.agentId === "claude-code") {
       launchEnv.MYCMUX_AGENT_KIND = "claude";
     }
+    applyTabAccountToLaunchEnv(launchEnv, launchEnv.MYCMUX_LAUNCH_TARGET ?? savedSession?.kind ?? tab.agentKind
+      ?? (tab.agentId === "claude-code" ? "claude" : tab.agentId), tab.agentAccountId);
     return { agent, savedSession, args, launchEnv };
   }, [pane.cwd, pane.launchEnv, tab, codexLaunch]);
 
@@ -325,6 +331,7 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         }}>
           {title}
         </span>
+        <TabAccountBadge accountId={tab.agentAccountId} sessionId={tab.sessionId} />
         {!dashboardOpen ? <button type="button" title={dashboardStrings.buttonTitle} aria-label={dashboardStrings.buttonTitle} aria-pressed={dashboardOpen}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => toggleDetachedDashboard({ tabId: tab.id, sessionId: tab.sessionId })}

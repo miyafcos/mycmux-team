@@ -90,6 +90,15 @@ pub fn save(base: &Path, id: &str, snapshot: &StoredSnapshot) -> Result<PathBuf,
     Ok(path)
 }
 
+/// Read only the captured oauthAccount metadata; never consult credential fields.
+pub(super) fn claude_organization_uuid(base: &Path, id: &str) -> Option<String> {
+    let text = fs::read_to_string(snapshot_path(base, id).ok()?).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let account: Value = serde_json::from_str(value.get("oauth_account_text")?.as_str()?).ok()?;
+    account.get("organizationUuid")?.as_str()
+        .filter(|org| !org.trim().is_empty()).map(str::to_owned)
+}
+
 pub fn load(base: &Path, id: &str) -> Result<StoredSnapshot, String> {
     let path = snapshot_path(base, id)?;
     serde_json::from_str(

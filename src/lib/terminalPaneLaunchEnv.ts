@@ -1,4 +1,5 @@
 import type { AgentSessionKind, Pane, PaneTab } from "../types";
+import { applyTabAccountToLaunchEnv } from "../components/terminal/terminalLaunchParams";
 
 export function buildTerminalPaneLaunchEnv(
   pane: Pick<Pane, "launchEnv">,
@@ -22,5 +23,8 @@ export function buildTerminalPaneLaunchEnv(
   } else if (activeTab.agentId === "claude-code") {
     env.MYCMUX_AGENT_KIND = "claude";
   }
+  const kind = env.MYCMUX_LAUNCH_TARGET ?? savedAgentSession?.kind ?? activeTab.agentKind
+    ?? (activeTab.agentId === "claude-code" ? "claude" : activeTab.agentId);
+  applyTabAccountToLaunchEnv(env, kind, activeTab.agentAccountId);
   return env;
 }

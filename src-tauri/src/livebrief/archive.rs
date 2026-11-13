@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use super::archive_projection::{bounded_value, check_identity, project, turn_key, Draft, PairContext};
-use super::adapter::is_injected_user_text;
+use super::adapter::{CodexInjectionProbe, is_injected_user_text};
 use super::archive_scan::{Budget, Direction, Next, Scan, Scanner, Span, BLOCK, STRUCTURED_BYTES, io_error, read_span};
 use super::sha256_hex;
 
@@ -94,6 +94,7 @@ enum Token {
 struct Discovery { root: PathBuf, stack: Vec<ReadDir>, candidate: Option<PathBuf> }
 impl Discovery {
     fn new(root: PathBuf) -> Result<Self, String> {
+        if !crate::agent_home_roots::record_path_allowed(&root) { return Err("identityMismatch".into()); }
         let root = root.canonicalize().map_err(io_error)?;
         let entries = std::fs::read_dir(&root).map_err(io_error)?;
         Ok(Self { root, stack: vec![entries], candidate: None })
@@ -106,7 +107,7 @@ impl Discovery {
             let entry = entry.map_err(io_error)?; entries += 1;
             let ty = entry.file_type().map_err(io_error)?;
             // Never follow directory/file symlinks, including within the root.
-            if ty.is_symlink() { continue; }
+            if ty.is_symlink() || !crate::agent_home_roots::record_path_allowed(&entry.path()) { continue; }
             if ty.is_dir() {
                 if self.stack.len() >= 64 { return Err("ambiguousSource".into()); }
                 self.stack.push(std::fs::read_dir(entry.path()).map_err(io_error)?);
@@ -211,6 +212,7 @@ impl ArchiveState {
         let kind = &descriptor.expected_agent_kind; let id = &descriptor.expected_agent_session_id;
         if !matches!(kind.as_str(), "claude" | "claude-codex" | "codex") { return Err("unsupportedAgent".into()); }
         if !safe_id(kind, id) { return Err("identityMismatch".into()); }
+        if !crate::agent_home_roots::record_path_allowed(&root) { return Err("identityMismatch".into()); }
         let root = root.canonicalize().map_err(io_error)?;
         let key = format!("{}:{kind}:{id}", root.display());
         let cached = {
@@ -222,7 +224,7 @@ impl ArchiveState {
         let mut reader = Reader { id: Uuid::new_v4().to_string(), owner: owner.into(), descriptor, secret: Uuid::new_v4().to_string(), cache_key: key, root: root.clone(), used: Instant::now(), closed: Arc::new(AtomicBool::new(false)), discovery: None, opened: None, fence_search: None, tail_search: None, job: None, last: None, body_check: None, verified_body: None };
         if let Some(path) = cached {
             let canonical_root = root.canonicalize().map_err(io_error)?;
-            if std::fs::symlink_metadata(&path).map_err(io_error)?.file_type().is_symlink() || !path.canonicalize().map_err(io_error)?.starts_with(canonical_root) { return Err("identityMismatch".into()); }
+            if !crate::agent_home_roots::record_path_allowed(&path) || std::fs::symlink_metadata(&path).map_err(io_error)?.file_type().is_symlink() || !path.canonicalize().map_err(io_error)?.starts_with(canonical_root) { return Err("identityMismatch".into()); }
             reader.attach(self, path)?;
         } else { reader.discovery = Some(Discovery::new(root)?); }
         let reader_id = reader.id.clone();
@@ -455,8 +457,9 @@ impl Reader {
                     let raw = job.raw.take().unwrap(); let hash = hex::encode(raw.hash.finalize());
                     validate_span(&self.opened.as_ref().unwrap().source, raw.span, &hash)?;
                     if !raw.probe.sidechain {
-                        let excluded = self.descriptor.expected_agent_kind != "codex" && raw.probe.outer.as_deref() == Some("user")
-                            && (raw.probe.meta || is_injected_user_text(&raw.probe.user_prefix.text));
+                        let excluded = if self.descriptor.expected_agent_kind == "codex" { raw.probe.codex_injected() }
+                            else { raw.probe.outer.as_deref() == Some("user")
+                                && (raw.probe.meta || is_injected_user_text(&raw.probe.user_prefix.text)) };
                         if excluded {
                             let mut parts = raw.probe.parts;
                             if job.direction == Direction::Older { parts.reverse(); }
@@ -694,11 +697,10 @@ pub(super) fn file_identity(file: &File) -> Result<String, String> {
 }
 
 #[derive(Default,Clone)]
-struct JsonPrefix { text:String, escape:bool, unicode:Option<(u32,u8)>, utf8:Vec<u8> }
+struct JsonPrefix { text:String, escape:bool, unicode:Option<(u32,u8)>, utf8:Vec<u8>, injection:CodexInjectionProbe }
 impl JsonPrefix {
-    fn character(&mut self,c:char){if self.text.is_empty() && c.is_whitespace(){return;}if self.text.len()<256{self.text.push(c);}}
+    fn character(&mut self,c:char){self.injection.push(c);if self.text.is_empty() && c.is_whitespace(){return;}if self.text.len()<256{self.text.push(c);}}
     fn feed(&mut self,b:u8){
-        if self.text.len()>=256{return;}
         if let Some((mut n,count))=self.unicode.take(){
             let Some(d)=(b as char).to_digit(16) else {self.character('�');return;};n=n*16+d;
             if count==3{self.character(char::from_u32(n).unwrap_or('�'));}else{self.unicode=Some((n,count+1));}return;
@@ -720,6 +722,7 @@ struct IdentityProbe {
     content_index: u32, parts: Vec<(Span,Draft)>, parts_bytes: usize, more_parts: bool,
     direction: Option<Direction>, after_slot: Option<u32>,
     session: Option<String>, codex_id: Option<String>, outer: Option<String>, sidechain: bool, invalid_identity: bool,
+    codex_type: Option<String>, codex_role: Option<String>, codex_text_seen: bool, codex_operator_text: bool,
 }
 impl IdentityProbe {
     fn projection(direction: Direction, after_slot: Option<u32>) -> Self { Self { direction:Some(direction), after_slot, ..Self::default() } }
@@ -760,6 +763,9 @@ impl IdentityProbe {
             if let Some(token) = self.pending.take() {
                 if b == b':' {
                     let key = serde_json::from_slice::<String>(&token).unwrap_or_default();
+                    if self.depth==2 && self.keys.first().is_some_and(|k| k=="payload") && matches!(key.as_str(),"content"|"message") {
+                        self.codex_text_seen=false; self.codex_operator_text=false;
+                    }
                     if self.depth==1 && key=="message" || key=="content" && (
                         self.depth==1 && !self.message_seen || self.depth==2 && self.keys.first().is_some_and(|k|k=="message")) {
                         // An explicit message overrides earlier root content;
@@ -802,12 +808,28 @@ impl IdentityProbe {
                 "isMeta" => self.meta = raw == b"true",
                 _ => {}
             }
-        } else if self.depth == 2 && self.keys.first().is_some_and(|k| k == "payload") && key == "id" { self.codex_id = text.clone(); }
+        } else if self.depth == 2 && self.keys.first().is_some_and(|k| k == "payload") {
+            match key { "id" => self.codex_id=text.clone(), "type" => self.codex_type=text.clone(),
+                "role" => self.codex_role=text.clone(), _ => {} }
+        }
+        let codex_text = self.keys.first().is_some_and(|k| k=="payload")
+            && (self.depth==2 && matches!(key,"message"|"content")
+                || matches!(self.depth,3|4) && self.keys.get(1).is_some_and(|k| k=="content") && key=="text");
+        if codex_text && raw.first()==Some(&b'"') && !self.string_prefix.text.trim().is_empty() {
+            self.codex_text_seen=true;
+            self.codex_operator_text |= !self.string_prefix.injection.is_injected();
+        }
         if self.content_array_depth==self.depth.checked_sub(1) && self.block_start.is_some() {
             if key=="type" {self.block_kind=text;}
             else if key=="text" && raw.first()==Some(&b'"') {self.block_prefix=self.string_prefix.clone();}
         } else if raw.first()==Some(&b'"') && self.content_parent_depth().is_some_and(|depth|
             self.depth==depth && key=="content" || self.depth==depth+1 && key=="text") {self.user_prefix=self.string_prefix.clone();}
+    }
+    fn codex_injected(&self) -> bool {
+        let user = self.outer.as_deref()==Some("event_msg") && self.codex_type.as_deref()==Some("user_message")
+            || self.outer.as_deref()==Some("response_item") && self.codex_type.as_deref()==Some("message")
+                && self.codex_role.as_deref()==Some("user");
+        user && self.codex_text_seen && !self.codex_operator_text
     }
     fn finish(&mut self) { if let Some(token) = self.pending.take() { self.value(&token); } }
     fn check(&self, d: &Descriptor) -> Result<(), String> {
@@ -826,6 +848,41 @@ fn opposite_position(p: &Position, direction: Direction) -> Position {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    fn fix2b1_descriptor() -> Descriptor {
+        Descriptor {pty_session_id:"fixture-pty".into(),tab_id:"fixture-tab".into(),expected_agent_kind:"codex".into(),expected_agent_session_id:crate::agent_home_roots::link_tests::ID.into()}
+    }
+    #[cfg(unix)]
+    #[test]
+    fn fix2b1_archive_global_discovery_keeps_the_legacy_root_and_nested_link_policy() {
+        use crate::agent_home_roots::link_tests::{Fixture,LinkMode,MODES,PROMPT};
+        for mode in MODES {
+            let f=Fixture::new(mode);let archive=ArchiveState::default();
+            let result=archive.open("fixture",fix2b1_descriptor(),f.root.path);
+            if mode==LinkMode::Nested {assert_eq!(result.unwrap_err(),"recordMissing");}
+            else {let page=drain(&archive,"fixture",result.unwrap());assert!(page.items.iter().any(|item|item.text.contains(PROMPT)),"{mode:?}");}
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn fix2b1_archive_global_cache_accepts_linked_ancestors_as_before() {
+        use crate::agent_home_roots::link_tests::{Fixture,LinkMode,PROMPT,ID};
+        for mode in [LinkMode::Root,LinkMode::Ancestor] {
+            let f=Fixture::new(mode);let root=f.root.path.canonicalize().unwrap();let archive=ArchiveState::default();
+            archive.registry.lock().unwrap().paths.push_back((format!("{}:codex:{ID}",root.display()),f.source,Instant::now()));
+            let page=drain(&archive,"fixture",archive.open("fixture",fix2b1_descriptor(),root).unwrap());
+            assert!(page.items.iter().any(|item|item.text.contains(PROMPT)),"{mode:?}");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn fix2b1_archive_global_cache_still_refuses_a_symlink_file_itself() {
+        use crate::agent_home_roots::link_tests::{Fixture,LinkMode,ID};
+        let f=Fixture::new(LinkMode::Ancestor);let root=f.root.path.canonicalize().unwrap();
+        let leaf=root.join(format!("rollout-cache-{ID}.jsonl"));std::os::unix::fs::symlink(&f.source,&leaf).unwrap();
+        let archive=ArchiveState::default();archive.registry.lock().unwrap().paths.push_back((format!("{}:codex:{ID}",root.display()),leaf,Instant::now()));
+        assert_eq!(archive.open("fixture",fix2b1_descriptor(),root).unwrap_err(),"identityMismatch");
+    }
     use std::io::Write;
     use serde_json::{Value, json};
     const ID: &str = "00000000-0000-4000-8000-000000000001";
@@ -938,6 +995,79 @@ mod tests {
         let (dir,_) = fixture("claude",&[json!({"type":"user","sessionId":"foreign","message":{"content":"secret"}})]);
         assert_eq!(archive.open("foreign",descriptor("claude"),dir.path().into()).unwrap_err(),"identityMismatch");
     }
+    #[test]
+    fn fix1_b03_pathless_agents_header_is_filtered_from_oversized_raw_records() {
+        let text = format!("# AGENTS.md instructions\n\n<INSTRUCTIONS>\n{}\n</INSTRUCTIONS>",
+            "x".repeat(STRUCTURED_BYTES + 64));
+        for value in [
+            json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+        ] {
+            let (dir, _) = fixture("codex", &[value]);
+            let archive = ArchiveState::default();
+            let page = drain(&archive, "synthetic", archive.open("synthetic", descriptor("codex"), dir.path().into()).unwrap());
+            assert!(page.items.is_empty(), "pathless AGENTS context must not expose a raw body link");
+        }
+    }
+
+    #[test]
+    fn c1b_codex_raw_probe_and_structured_projection_agree_across_single_byte_chunks() {
+        for text in [
+            "<environment_context>synthetic \u{1f600} \"quoted\"</environment_context>",
+            "# AGENTS.md instructions for C:\\synthetic\n<INSTRUCTIONS>context</INSTRUCTIONS>\n<environment_context>context</environment_context>",
+            "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nsynthetic\n</INSTRUCTIONS>",
+            "# Codex CLI\n<user_instructions>context</user_instructions>",
+            "# Codex CLI\nExplain this heading", "<plan_mode> explain this tag",
+            "<environment_context>context</environment_context> keep this operator suffix",
+        ] {
+            for value in [
+                json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":text}]}}),
+            ] {
+                let bytes=serde_json::to_vec(&value).unwrap();
+                let mut probe=IdentityProbe::default();
+                for chunk in bytes.chunks(1) { probe.feed(chunk); }
+                probe.finish();
+                assert_eq!(probe.codex_injected(), project("codex",&value).is_empty(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn c1b_codex_giant_raw_fallback_filters_injected_user_records() {
+        for form in 0..4 {
+            let text = format!("<environment_context>{}</environment_context>", "x".repeat(STRUCTURED_BYTES + 64));
+            let value = match form {
+                0 => json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+                1 => json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+                2 => json!({"type":"response_item","payload":{"type":"message","role":"user","content":text}}),
+                _ => json!({"type":"response_item","payload":{"type":"message","role":"user","content":{"text":text}}}),
+            };
+            let (dir, _) = fixture("codex", &[value]);
+            let archive = ArchiveState::default();
+            let page = drain(&archive, "synthetic", archive.open("synthetic", descriptor("codex"), dir.path().into()).unwrap());
+            assert!(page.items.is_empty(), "injected raw fallback form {form} must have no body link");
+        }
+    }
+
+    #[test]
+    fn c1b_codex_giant_raw_fallback_keeps_operator_assistant_and_mixed_records() {
+        let padding = "x".repeat(STRUCTURED_BYTES + 64);
+        for value in [
+            json!({"type":"event_msg","payload":{"type":"user_message","message":format!("<plan_mode> explain {padding}")}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":format!("<environment_context>{padding}</environment_context>")}]}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                {"text":format!("<environment_context>{padding}</environment_context>")},{"text":"synthetic operator request"}]}}),
+        ] {
+            let (dir, _) = fixture("codex", &[value]);
+            let archive = ArchiveState::default();
+            let page = drain(&archive, "synthetic", archive.open("synthetic", descriptor("codex"), dir.path().into()).unwrap());
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].kind, "source");
+            assert!(page.items[0].body_ref.is_some());
+        }
+    }
+
     #[test]
     fn giant_fallback_checks_identity_before_exposing_any_body() {
         let archive = ArchiveState::default();

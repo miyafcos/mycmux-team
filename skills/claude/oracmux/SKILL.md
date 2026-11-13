@@ -40,7 +40,7 @@ Chrome も CDP も使わない。利用者は裏ペインを押せばその会�
 
 ## テストは何を守っていないか (2026-09-09・ここを読まずに「テスト緑=動く」と言わない)
 
-pytest 131 件は **`pane.web_*` を差し替えて回す**。守っているのは待ち受け判定・NDA ガード・整形・分岐だけで、
+pytest (2026-11-10 に 158 件) は **`pane.web_*` を差し替えて回す**。守っているのは待ち受け判定・送る前のガード (語・フォルダ・字数)・整形・分岐だけで、
 **ソケットから先 (mycmux CLI → Rust → 注入 JS → サービスの DOM) は 1 行も通らない**。
 だから **サービス側の画面変更はテストでは絶対に検知できない**。実際 2026-09-09 に、全緑のまま
 ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変わり、ChatGPT の picker セレクタが消えていた
@@ -94,7 +94,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 
 ## 鉄則
 
-- **NDA・社外提供不可の素材は投げない**。`guard.json` のマーカー・deny_roots で機械ブロック (exit 5)。`--allow-markers` は人が中身を確認した後だけ
+- **送る前のガード (`guard.json`) は、語では止めない** (2026-11-10 利用者「そのガード不要です」)。「社外秘」「NDA」などの印がある素材も、そのまま送ってよい (止める語の一覧 `markers_*` は空)。今も止まるのは、引き継ぎ書が 20 万字を超えたときと、止めるフォルダ (`deny_roots`・今は空) の下のファイルを渡したとき (exit 5・`--allow-markers` では越えられない)。秘密の値 (鍵・トークン・認証) と個人情報は、今までどおり入れない。`guard.json` の `markers_*` のキーは、消さずに空のまま置く (キーを消すとコードの既定の 10 語に戻り、`guard.json` を消すと全部の送り出しが止まる)
 - **1 consult = Web 1 ターン消費** (ChatGPT Pro は週次枠・Grok は Chat/Build 共有プール)。大量バッチに使わない。PING 以外の再試行は原因を直してから
 - **裏ペインは残す** (利用者が見るため)。閉じるのは `--close-tab` を付けたときだけ。フォーカスは奪わない (`web.open background`)
 - **`--tab <tabId>` は Web ペインの ID** (`mycmux_agent_cli.py web-list` の `tabId`・ask の meta.json `tab_id`)。mycmux-bridge の PTY `session_id` や pane / workspace の ID を渡さない
@@ -126,7 +126,7 @@ ChatGPT が送信を飲み、**Gemini は Flash・Grok は ファスト** に変
 | 2 | 途中まで (partial) / 時間切れ (timeout) | 再送しない。`collect --engine X --tab <tabId>` (pane) か `--url <会話 URL>` で回収 |
 | 3 | 要人手 (ペインのサインアウト・captcha・枠切れ) | ペインは残してある。利用者に 1 行報告 (ペインでログイン → `--tab` で再実行) |
 | 4 | UI が応えない (composer 不在・セレクタ不一致) | `doctor` でペイン状態。cdp 経路は `<engine>/fail.png` と `engines.json` |
-| 5 | NDA ガード | 素材を外すか、人が確認して `--allow-markers` |
+| 5 | 送る前のガード (字数の上限・止めるフォルダ。語では 2026-11-10 から止まらない) | 引き継ぎ書を短くする・添付を絞る。`guard.json` に語を足していて語で止まったときは `--allow-markers` |
 | 6 | oracle 走行中 (oracle / cdp 経路のみ) | 待つ (`oracle status`) |
 | 7 | 前提不足 (mycmux 不通・引数/設定不正・経路に無い flag) | mycmux 内で実行 / 引数を直す / `--via cdp` |
 

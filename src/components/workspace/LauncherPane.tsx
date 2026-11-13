@@ -58,6 +58,7 @@ import {
   type SpecRow,
 } from "./launcherModel";
 import { launcherStrings as S } from "./launcherStrings";
+import { isLaunchAccountTarget, LaunchAccountRow, useLaunchAccounts } from "./LaunchAccountRow";
 
 interface LauncherPaneProps {
   workspaceId: string;
@@ -315,6 +316,8 @@ export default function LauncherPane({
   const [specRow, setSpecRow] = useState<SpecRow>("model");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [account, setAccount] = useState("");
+  const launchAccounts = useLaunchAccounts(specTarget);
   const [cursor, setCursor] = useState(0);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -336,6 +339,7 @@ export default function LauncherPane({
   const specModels = useLaunchModels(specEntry);
   const specEfforts = getLaunchEfforts(specEntry, model);
   const chooseModel = (next: string) => {
+    setSpecRow("model");
     setModel(next);
     // A supported effort can survive a model change; an unsupported one
     // returns to the CLI default rather than failing when the pane starts.
@@ -510,11 +514,11 @@ export default function LauncherPane({
   }, [workspaceId, paneId, tabId]);
 
   const launchAgent = useCallback(
-    (target: string, spec?: { model?: string; effort?: string }) => {
+    (target: string, spec?: { model?: string; effort?: string; account?: string }) => {
       if (!serviceVisible(target)) return;
       // L1: never assemble the env by hand — sanitizeLaunchSpecValue lives in
       // here and is what stops `--model -x` reaching the CLI.
-      const launchEnv = buildLaunchSpecEnv({ target, model: spec?.model, effort: spec?.effort });
+      const launchEnv = buildLaunchSpecEnv({ target, account: spec?.account, model: spec?.model, effort: spec?.effort });
       if (!launchEnv) return;
       const entry = getCatalogEntry(target);
       addTabToPaneWithOptions(workspaceId, paneId, {
@@ -600,9 +604,10 @@ export default function LauncherPane({
     const entry = getCatalogEntry(target);
     if (!entry || entry.kind !== "agent" || !serviceVisible(target)) return;
     setSpecTarget(target);
-    setSpecRow(specRowsFor(entry)[0]);
+    setSpecRow(specRowsFor(entry, isLaunchAccountTarget(target))[0]);
     setModel("");
     setEffort("");
+    setAccount("");
   }, [serviceVisible]);
 
   const closeSpec = () => {
@@ -611,7 +616,8 @@ export default function LauncherPane({
   };
 
   const launchSpec = () => {
-    if (specTarget) launchAgent(specTarget, { model, effort });
+    if (account && !launchAccounts.choices.some(choice => choice.id === account && choice.available)) return;
+    if (specTarget) launchAgent(specTarget, { model, effort, account });
   };
 
   const onModelKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -624,7 +630,7 @@ export default function LauncherPane({
     else if (event.key === "Escape") closeSpec();
     else {
       const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
-      const next = moveSpecRow(specRowsFor(specEntry), "model", step);
+      const next = moveSpecRow(specRowsFor(specEntry, isLaunchAccountTarget(specTarget)), "model", step);
       setSpecRow(next);
       if (next !== "model") inputRef.current?.focus();
     }
@@ -642,11 +648,13 @@ export default function LauncherPane({
       if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Tab") {
         event.preventDefault();
         const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
-        setSpecRow((current) => moveSpecRow(specRowsFor(specEntry), current, step));
+        setSpecRow((current) => moveSpecRow(specRowsFor(specEntry, isLaunchAccountTarget(specTarget)), current, step));
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
-        if (specRow === "model" && specModels.length > 0) {
+        if (specRow === "account") {
+          setAccount(current => cycleChoice(current, launchAccounts.choices.filter(choice => choice.available).map(choice => choice.id), step));
+        } else if (specRow === "model" && specModels.length > 0) {
           chooseModel(cycleChoice(model, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
           setEffort((current) => cycleChoice(current, specEfforts, step));
@@ -1037,6 +1045,7 @@ export default function LauncherPane({
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
             {specEntry.label}
           </div>
+          <LaunchAccountRow accounts={launchAccounts} value={account} onChange={id => { setAccount(id); setSpecRow("account"); }} highlighted={isActive && specRow === "account"} onMouseDown={keepFocus} />
           <div style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
           {specModels.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1062,7 +1071,7 @@ export default function LauncherPane({
               ))}
             </div>
           ) : (
-            // grok publishes no id list, so the value is typed.
+            // Agents without a published model list (such as Hermes) use typed values.
             // sanitizeLaunchSpecValue still guards what reaches the CLI.
             <input
               ref={modelInputRef}
@@ -1083,7 +1092,7 @@ export default function LauncherPane({
                 <button
                   type="button"
                   onMouseDown={keepFocus}
-                  onClick={() => setEffort("")}
+                  onClick={() => { setEffort(""); setSpecRow("effort"); }}
                   style={{ ...specChip, ...(effort === "" ? specChipOn : null) }}
                 >
                   {S.specDefault}
@@ -1093,7 +1102,7 @@ export default function LauncherPane({
                     key={value}
                     type="button"
                     onMouseDown={keepFocus}
-                    onClick={() => setEffort(value)}
+                    onClick={() => { setEffort(value); setSpecRow("effort"); }}
                     style={{ ...specChip, ...(effort === value ? specChipOn : null) }}
                   >
                     {value}

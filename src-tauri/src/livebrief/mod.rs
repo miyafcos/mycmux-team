@@ -400,8 +400,10 @@ impl LiveBriefService {
         let kind = mapping.agent_kind.as_deref().unwrap_or_default();
         let same_session: Vec<&str> = all_mappings
             .iter()
-            .filter(|(_, candidate)| {
+            .filter(|(id, candidate)| {
                 candidate.agent_kind.as_deref() == Some(kind) && candidate.session_id == mapping.session_id
+                    && crate::agent_home_roots::provider(kind).is_none_or(|provider| !crate::agent_home_roots::is_registered()
+                        || crate::agent_home_roots::for_session(provider,id).ok() == crate::agent_home_roots::for_session(provider,pty_session_id).ok())
             })
             .map(|(id, _)| id.as_str())
             .collect();
@@ -422,6 +424,13 @@ impl LiveBriefService {
             .filter(|metadata| metadata.session_epoch == pty_generation)
             .map(|metadata| (Some(metadata.cwd.clone()), metadata.git_branch.clone()))
             .unwrap_or((None, None));
+        let scoped_roots = (crate::agent_home_roots::is_registered() && !crate::test_profile::is_active()).then(|| crate::agent_home_roots::provider(kind)).flatten().map(|provider| crate::agent_home_roots::for_session(provider, pty_session_id));
+        if let Some(Err(error)) = &scoped_roots {
+            let mut snapshot = unavailable_snapshot(binding, "unavailable", &self.service_epoch);
+            snapshot.brief.telemetry_detail = Some(error.clone()); return Some(snapshot);
+        }
+        let prior = prior.filter(|snapshot| scoped_roots.as_ref().is_none_or(|roots| roots.as_ref().is_ok_and(|roots|
+            snapshot.cursor.path.as_os_str().is_empty() || (roots.iter().any(|root| snapshot.cursor.path.starts_with(&root.path)) && crate::agent_home_roots::record_path_allowed(&snapshot.cursor.path)))));
         let next = refresh_bound_transcript(
             prior,
             &binding,
@@ -430,7 +439,7 @@ impl LiveBriefService {
             &self.service_epoch,
             history_cwd.as_deref(),
             history_branch.as_deref(),
-            locate_transcript_cached,
+            |kind,id| locate_transcript_for_session(kind, id, pty_session_id).ok().flatten(),
         );
         let now = unix_ms();
         let identity = self.manager.trusted_agent_identity(pty_session_id)
@@ -905,19 +914,13 @@ fn clamp_event_limit(limit: Option<usize>) -> usize {
 /// How long an agent session with no transcript on disk stays "not found".
 const MISSING_TRANSCRIPT_TTL: Duration = Duration::from_secs(30);
 
-/// Agent sessions whose transcript discovery came up empty, and when.
-///
-/// Discovery walks the whole session tree — `~/.claude/projects/**` and its
-/// equivalents — and a session that has no transcript yet misses every single
-/// time. Those are ordinary: a Claude pane that has been opened but not
-/// spoken to, or an agent that has exited. Meanwhile the dashboard refreshes
-/// once a second and every status change asks again, so the same fruitless
-/// walk ran over and over. Remembering the miss for half a minute turns that
-/// into one walk per session per 30 seconds; a session that appears is picked
-/// up on the next walk after that.
+/// Recent misses retain the directory stamps observed before discovery. A new
+/// record invalidates the miss on the next existing read, including nested
+/// projects and newly created directories; no extra polling loop is needed.
 #[derive(Default)]
 struct MissingTranscripts {
     seen: HashMap<(String, String), Instant>,
+    directories: HashMap<(String, String), Vec<(PathBuf, Option<SystemTime>)>>,
     paths: HashMap<(String, String), (PathBuf, Instant)>,
 }
 
@@ -932,12 +935,12 @@ impl MissingTranscripts {
         let key = (kind.to_string(), session_id.to_string());
         if found {
             self.seen.remove(&key);
+            self.directories.remove(&key);
             return;
         }
-        // Panes come and go, so drop what has aged out rather than keeping a
-        // row per session id the app has ever seen.
         self.seen
             .retain(|_, at| now.saturating_duration_since(*at) < MISSING_TRANSCRIPT_TTL);
+        self.directories.retain(|key, _| self.seen.contains_key(key));
         self.seen.insert(key, now);
     }
 }
@@ -947,9 +950,75 @@ fn missing_transcripts() -> &'static Mutex<MissingTranscripts> {
     MISSING.get_or_init(Mutex::default)
 }
 
+const MAX_TRANSCRIPT_STAMP_DIRECTORIES: usize = 4096;
+// Claude and claude-codex: <root>/<project>/<id>.jsonl.
+const CLAUDE_TRANSCRIPT_STAMP_DEPTH: usize = 1;
+// Codex: <root>/YYYY/MM/DD/rollout-*.jsonl.
+const CODEX_TRANSCRIPT_STAMP_DEPTH: usize = 3;
+// Grok: <root>/<group>/<id>/updates.jsonl.
+const GROK_TRANSCRIPT_STAMP_DEPTH: usize = 2;
+
+/// Watch only directories that can directly contain this provider's records.
+/// An unusable snapshot retains the original thirty-second miss suppression.
+fn transcript_directory_stamps(kind: &str, roots: &[PathBuf], max_directories: usize) -> Option<Vec<(PathBuf, Option<SystemTime>)>> {
+    let max_depth = match kind {
+        "claude" | "claude-codex" => CLAUDE_TRANSCRIPT_STAMP_DEPTH,
+        "codex" => CODEX_TRANSCRIPT_STAMP_DEPTH,
+        "grok" => GROK_TRANSCRIPT_STAMP_DEPTH,
+        _ => 0,
+    };
+    let mut pending: Vec<_> = roots.iter().cloned().map(|path| (path, 0)).collect();
+    let mut visited = HashSet::new();
+    let mut stamps = Vec::new();
+    while let Some((path, depth)) = pending.pop() {
+        if stamps.len() >= max_directories { return None; }
+        if !crate::agent_home_roots::record_path_allowed(&path) { continue; }
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // The missing root itself changes from None when it appears.
+                stamps.push((path, None)); continue;
+            }
+            Err(_) => return None,
+        };
+        if !metadata.is_dir() { return None; }
+        if !visited.insert(path.canonicalize().ok()?) { continue; }
+        let modified = metadata.modified().ok()?;
+        // A new child can share a recent directory's coarse Windows mtime
+        // tick. As with the mapping index, only old stamps are reusable.
+        if !SystemTime::now().duration_since(modified).is_ok_and(|age| age >= Duration::from_secs(2)) { return None; }
+        stamps.push((path.clone(), Some(modified)));
+        if depth >= max_depth { continue; }
+        for entry in std::fs::read_dir(&path).ok()? {
+            let entry = entry.ok()?;
+            let child = entry.path();
+            if crate::agent_home_roots::record_path_allowed(&child) && child.is_dir() {
+                if pending.len() + stamps.len() >= max_directories { return None; }
+                pending.push((child, depth + 1));
+            }
+        }
+    }
+    Some(stamps)
+}
+
+fn transcript_discovery_roots(kind: &str) -> Vec<PathBuf> {
+    if crate::test_profile::is_active() {
+        return crate::test_profile::agent_projects_dir(kind).into_iter().collect();
+    }
+    if let Some(provider) = crate::agent_home_roots::provider(kind) {
+        return crate::agent_home_roots::all(provider).into_iter().map(|root| root.path).collect();
+    }
+    match kind {
+        "claude" => crate::ailog::claude_root(),
+        "claude-codex" => crate::ailog::claude_codex_root(),
+        _ => None,
+    }.into_iter().collect()
+}
+
 /// Remember found paths by (kind, id), as well as recent misses. A removed
 /// path is rediscovered; a reused PTY binding can reuse a still-existing path.
 pub(crate) fn locate_transcript_cached(kind: &str, session_id: &str) -> Option<PathBuf> {
+    if crate::agent_home_roots::is_registered() && crate::agent_home_roots::provider(kind).is_some() { return locate_transcript(kind, session_id); }
     locate_with_miss_cache(kind, session_id, Instant::now(), locate_transcript)
 }
 
@@ -959,16 +1028,40 @@ fn locate_with_miss_cache(
     now: Instant,
     locate: impl FnOnce(&str, &str) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
+    locate_with_miss_cache_in_roots(kind, session_id, &transcript_discovery_roots(kind), now, locate)
+}
+
+fn locate_with_miss_cache_in_roots(
+    kind: &str,
+    session_id: &str,
+    roots: &[PathBuf],
+    now: Instant,
+    locate: impl FnOnce(&str, &str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    locate_with_miss_cache_in_roots_limited(kind, session_id, roots, now, MAX_TRANSCRIPT_STAMP_DIRECTORIES, locate)
+}
+
+fn locate_with_miss_cache_in_roots_limited(
+    kind: &str,
+    session_id: &str,
+    roots: &[PathBuf],
+    now: Instant,
+    max_directories: usize,
+    locate: impl FnOnce(&str, &str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
     // Filesystem operations stay outside the cache lock.
     let key = (kind.to_string(), session_id.to_string());
-    let cached = {
+    let (suppressed, directories, cached) = {
         let mut cache = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if cache.suppressed(kind, session_id, now) { return None; }
-        cache.paths.get_mut(&key).map(|(path, used_at)| { *used_at = now; path.clone() })
+        (cache.suppressed(kind, session_id, now), cache.directories.get(&key).cloned(),
+            cache.paths.get_mut(&key).map(|(path, used_at)| { *used_at = now; path.clone() }))
     };
+    if suppressed && directories.as_ref().is_none_or(|stamps|
+        stamps.iter().all(|(path, stamp)| file_mtime(path) == *stamp)) { return None; }
     if let Some(path) = cached {
         if path.is_file() { return Some(path); }
     }
+    let directories = transcript_directory_stamps(kind, roots, max_directories);
     let found = locate(kind, session_id);
     let mut cache = missing_transcripts().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.record(kind, session_id, found.is_some(), now);
@@ -981,18 +1074,59 @@ fn locate_with_miss_cache(
         cache.paths.insert(key, (path.clone(), now));
     } else {
         cache.paths.remove(&key);
+        cache.directories.remove(&key);
+        if let Some(directories) = directories { cache.directories.insert(key, directories); }
     }
     found
 }
 
+pub(crate) fn locate_transcript_for_session(kind: &str, session_id: &str, pty: &str) -> Result<Option<PathBuf>, String> {
+    if let Some(provider) = crate::agent_home_roots::provider(kind) {
+        if crate::agent_home_roots::is_registered() && !crate::test_profile::is_active() {
+            let roots = crate::agent_home_roots::for_session(provider, pty)?;
+            let key = format!("{session_id}\0{:?}", roots.iter().map(|root| &root.path).collect::<Vec<_>>());
+            let mut error = None;
+            let paths = roots.iter().map(|root| root.path.clone()).collect::<Vec<_>>();
+            let found = locate_with_miss_cache_in_roots(kind, &key, &paths, Instant::now(), |_,_| {
+                match locate_record_in_roots(&roots, provider, session_id) {
+                    Ok(found) => found, Err(reason) => { error = Some(reason); None }
+                }
+            });
+            if let Some(error) = error {
+                missing_transcripts().lock().unwrap_or_else(|p|p.into_inner()).record(kind, &key, true, Instant::now());
+                return Err(error);
+            }
+            return Ok(found.filter(|path| roots.iter().any(|root|path.starts_with(&root.path)) && crate::agent_home_roots::record_path_allowed(path)));
+        }
+    }
+    Ok(locate_transcript_cached(kind, session_id))
+}
+
+pub(crate) fn locate_record(kind: &str, session_id: &str) -> Result<Option<PathBuf>, String> {
+    if let Some(provider) = crate::agent_home_roots::provider(kind) {
+        let roots = if crate::test_profile::is_active() {
+            crate::test_profile::agent_projects_dir(kind).map(|path| vec![crate::agent_home_roots::RecordRoot { origin: crate::agent_home_roots::Origin::Global, path }]).unwrap_or_default()
+        } else { crate::agent_home_roots::all(provider) };
+        return locate_record_in_roots(&roots, provider, session_id);
+    }
+    Ok(locate_transcript(kind, session_id))
+}
+
+fn locate_record_in_roots(roots: &[crate::agent_home_roots::RecordRoot], provider: crate::cli_accounts::CliProvider, session_id: &str) -> Result<Option<PathBuf>, String> {
+    crate::agent_home_roots::find_unique_with_global(roots, provider, session_id, |root| {
+        let pattern = if provider == crate::cli_accounts::CliProvider::Codex { format!("{}/**/*{}.jsonl", root.display(), session_id) }
+            else { format!("{}/**/{}/updates.jsonl", root.display(), session_id) };
+        glob::glob(&pattern).map(|paths| paths.filter_map(Result::ok).filter(|path| path.is_file()).collect()).unwrap_or_default()
+    }, |candidate, previous| file_mtime(candidate) >= file_mtime(previous)).map(|found| found.map(|(_,path)|path))
+}
+
 fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
+    if crate::agent_home_roots::provider(kind).is_some() { return locate_record(kind, session_id).ok().flatten(); }
     let root = if crate::test_profile::is_active() {
         crate::test_profile::agent_projects_dir(kind)?
     } else { match kind {
         "claude" => crate::ailog::claude_root()?,
         "claude-codex" => crate::ailog::claude_codex_root()?,
-        "codex" => crate::ailog::codex_root()?,
-        "grok" => grok_root()?,
         _ => return None,
     }};
     let pattern = match kind {
@@ -1037,10 +1171,6 @@ fn newest_pane_by_mapping_mtime(map_dir: &Path, pane_ids: &[&str]) -> Option<Str
         }
     }
     if tied { None } else { best.map(|(_, id)| id.to_string()) }
-}
-
-fn grok_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".grok").join("sessions"))
 }
 
 fn bootstrap_transcript(
@@ -1220,7 +1350,7 @@ fn pane_transcript_user_prompts(pty_session_id: &str, max: usize) -> Vec<Transcr
     let Some(kind) = mapping.agent_kind.as_deref() else {
         return Vec::new();
     };
-    let Some(path) = locate_transcript(kind, &mapping.session_id) else {
+    let Ok(Some(path)) = locate_transcript_for_session(kind, &mapping.session_id, pty_session_id) else {
         return Vec::new();
     };
     transcript_user_prompts(&path, kind, max).unwrap_or_default()
@@ -1319,7 +1449,10 @@ fn advance_transcript_with_history(
     let mut file = File::open(&snapshot.cursor.path).map_err(|error| format!("open transcript tail: {error}"))?;
     file.seek(SeekFrom::Start(snapshot.cursor.read_offset)).map_err(|error| format!("seek transcript tail: {error}"))?;
     let mut appended = Vec::new();
-    file.read_to_end(&mut appended).map_err(|error| format!("read transcript tail: {error}"))?;
+    file.take(MAX_BOOTSTRAP_BYTES + 1).read_to_end(&mut appended).map_err(|error| format!("read transcript tail: {error}"))?;
+    if appended.len() as u64 > MAX_BOOTSTRAP_BYTES {
+        return Err("transcript tail exceeds bootstrap window".to_string());
+    }
     crate::perf_timeline::mark_value("livebrief.tail.bytes", Some(&binding.pty_session_id), Some(appended.len() as u64));
     // Absolute end of what was actually read, as in the bootstrap. The stat'd
     // length can already be behind it when the transcript grew between the
@@ -2016,6 +2149,259 @@ mod tests {
     }
 
     /// A-4: duplicated (kind, session id) mappings keep the newest pane live.
+    fn fix1_set_directory_mtime(path: &Path, modified: SystemTime) {
+        let mut options = std::fs::OpenOptions::new(); options.read(true);
+        #[cfg(windows)] {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x02000000).access_mode(0x0100);
+        }
+        options.open(path).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    }
+
+    fn fix1_age_transcript_tree(root: &Path) {
+        let mut pending = vec![root.to_path_buf()];
+        let mut directories = Vec::new();
+        while let Some(path) = pending.pop() {
+            for entry in std::fs::read_dir(&path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { pending.push(path); }
+            }
+            directories.push(path);
+        }
+        let modified = SystemTime::now() - Duration::from_secs(5);
+        for path in directories { fix1_set_directory_mtime(&path, modified); }
+    }
+
+    #[test]
+    fn fix1_b01_deep_claude_auxiliary_directories_keep_miss_caching_and_fast_creation() {
+        for kind in ["claude", "claude-codex"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("projects");
+            let project = root.join("synthetic-project");
+            for index in 0..8 {
+                std::fs::create_dir_all(project.join(format!("session-{index}")).join("tool-results").join("details")).unwrap();
+            }
+            fix1_age_transcript_tree(&root);
+            let roots = [root.clone()];
+            let limit = 3;
+            let stamps = transcript_directory_stamps(kind, &roots, limit)
+                .expect("auxiliary directories below project depth must not consume the limit");
+            assert_eq!(stamps.len(), 2);
+            assert!(stamps.iter().all(|(path, _)| path == &root || path == &project));
+            let id = Uuid::new_v4().to_string();
+            let path = project.join(format!("{id}.jsonl"));
+            let walks = Cell::new(0);
+            let locate = |_: &str, _: &str| {
+                walks.set(walks.get() + 1);
+                path.is_file().then(|| path.clone())
+            };
+            let now = Instant::now();
+            assert_eq!(locate_with_miss_cache_in_roots_limited(kind, &id, &roots, now, limit, &locate), None);
+            assert_eq!(locate_with_miss_cache_in_roots_limited(kind, &id, &roots, now, limit, &locate), None);
+            assert_eq!(walks.get(), 1);
+            std::fs::write(&path, b"{}\n").unwrap();
+            assert_eq!(locate_with_miss_cache_in_roots_limited(kind, &id, &roots,
+                now + Duration::from_secs(1), limit, &locate), Some(path));
+            assert_eq!(walks.get(), 2, "creation in a watched project invalidates the miss before the TTL");
+        }
+    }
+
+    #[test]
+    fn fix1_b01_provider_stamp_depths_apply_to_global_and_account_roots() {
+        for (kind, components) in [
+            ("claude", vec!["project"]),
+            ("claude-codex", vec!["project"]),
+            ("codex", vec!["2026", "11", "12"]),
+            ("grok", vec!["group", "session"]),
+        ] {
+            for account in [false, true] {
+                if account && !matches!(kind, "codex" | "grok") { continue; }
+                let dir = tempfile::tempdir().unwrap();
+                let root = if account {
+                    dir.path().join("cli_account_homes").join(kind).join("synthetic-profile").join("sessions")
+                } else { dir.path().join("global").join(kind) };
+                let mut deepest = root.clone();
+                for component in &components { deepest.push(component); }
+                std::fs::create_dir_all(deepest.join("auxiliary").join("ignored")).unwrap();
+                fix1_age_transcript_tree(&root);
+                let stamps = transcript_directory_stamps(kind, &[root.clone()], components.len() + 1)
+                    .expect("only record-layout directories count toward the limit");
+                assert_eq!(stamps.len(), components.len() + 1);
+                assert!(stamps.iter().any(|(path, _)| path == &deepest));
+                assert!(stamps.iter().all(|(path, _)| path.strip_prefix(&root).unwrap().components().count() <= components.len()));
+            }
+        }
+    }
+
+    #[test]
+    fn fix1_b01_unavailable_stamps_keep_the_thirty_second_miss_suppression() {
+        for case in ["over-limit", "recent", "not-a-directory"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("projects");
+            let limit = 2;
+            match case {
+                "over-limit" => {
+                    std::fs::create_dir_all(root.join("project-a")).unwrap();
+                    std::fs::create_dir_all(root.join("project-b")).unwrap();
+                    fix1_age_transcript_tree(&root);
+                }
+                "recent" => {
+                    std::fs::create_dir_all(&root).unwrap();
+                    fix1_set_directory_mtime(&root, SystemTime::now());
+                }
+                _ => std::fs::write(&root, b"synthetic non-directory").unwrap(),
+            }
+            let roots = [root];
+            assert!(transcript_directory_stamps("claude", &roots, limit).is_none(), "{case}");
+            let id = Uuid::new_v4().to_string();
+            let walks = Cell::new(0);
+            let locate = |_: &str, _: &str| -> Option<PathBuf> {
+                walks.set(walks.get() + 1);
+                None
+            };
+            let now = Instant::now();
+            assert_eq!(locate_with_miss_cache_in_roots_limited("claude", &id, &roots, now, limit, &locate), None);
+            assert_eq!(locate_with_miss_cache_in_roots_limited("claude", &id, &roots,
+                now + Duration::from_secs(1), limit, &locate), None);
+            assert_eq!(walks.get(), 1, "{case}: unavailable stamps must fall back to the TTL");
+            assert_eq!(locate_with_miss_cache_in_roots_limited("claude", &id, &roots,
+                now + Duration::from_secs(29), limit, &locate), None);
+            assert_eq!(walks.get(), 1, "{case}");
+            assert_eq!(locate_with_miss_cache_in_roots_limited("claude", &id, &roots,
+                now + MISSING_TRANSCRIPT_TTL, limit, &locate), None);
+            assert_eq!(walks.get(), 2, "{case}: discovery resumes when the TTL expires");
+        }
+    }
+
+    #[test]
+    fn c1b_miss_stamps_keep_stable_walk_suppression_and_avoid_recent_mtime_collisions() {
+        for stable in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("records");
+            std::fs::create_dir(&root).unwrap();
+            let modified = SystemTime::now() - Duration::from_secs(if stable { 5 } else { 0 });
+            let stamp = |time| {
+                let mut options = std::fs::OpenOptions::new(); options.read(true);
+                #[cfg(windows)] {
+                    use std::os::windows::fs::OpenOptionsExt;
+                    options.custom_flags(0x02000000).access_mode(0x0100); // BACKUP_SEMANTICS + WRITE_ATTRIBUTES
+                }
+                options.open(&root).unwrap().set_times(std::fs::FileTimes::new().set_modified(time)).unwrap();
+            };
+            stamp(modified);
+            assert_eq!(transcript_directory_stamps("claude", &[root.clone()], MAX_TRANSCRIPT_STAMP_DIRECTORIES).is_some(), stable);
+            let id = Uuid::new_v4().to_string();
+            let path = root.join(format!("{id}.jsonl"));
+            let walks = Cell::new(0);
+            let locate = |_: &str, _: &str| {
+                walks.set(walks.get() + 1);
+                path.is_file().then(|| path.clone())
+            };
+            let now = Instant::now();
+            assert_eq!(locate_with_miss_cache_in_roots("claude", &id, &[root.clone()], now, &locate), None);
+            assert_eq!(locate_with_miss_cache_in_roots("claude", &id, &[root.clone()], now, &locate), None);
+            assert_eq!(walks.get(), 1);
+            std::fs::write(&path, b"{}\n").unwrap();
+            if !stable { stamp(modified); } // Simulate a coarse filesystem mtime tick.
+            assert_eq!(locate_with_miss_cache_in_roots("claude", &id, &[root.clone()], now, &locate),
+                if stable { Some(path.clone()) } else { None });
+            assert_eq!(walks.get(), if stable { 2 } else { 1 });
+            if !stable {
+                assert_eq!(locate_with_miss_cache_in_roots("claude", &id, &[root],
+                    now + MISSING_TRANSCRIPT_TTL, &locate), Some(path));
+                assert_eq!(walks.get(), 2, "a recent mtime uses the original TTL fallback");
+            }
+        }
+    }
+
+    #[test]
+    fn c1b_first_transcript_creation_invalidates_shared_reader_misses_before_the_ttl() {
+        for kind in ["claude", "claude-codex", "codex", "grok"] {
+            let dir = tempfile::tempdir().unwrap();
+            let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+            let root = match kind {
+                "claude" => crate::ailog::claude_root().unwrap(),
+                "claude-codex" => crate::ailog::claude_codex_root().unwrap(),
+                "codex" => crate::ailog::codex_root().unwrap(),
+                _ => crate::ailog::grok_root().unwrap(),
+            };
+            let id = Uuid::new_v4().to_string();
+            let parent = root.join("nested");
+            std::fs::create_dir_all(&parent).unwrap();
+            fix1_age_transcript_tree(&root);
+            assert_eq!(locate_transcript_cached(kind, &id), None);
+            // Creation in an existing nested directory does not touch the root.
+            let path = if kind == "grok" {
+                std::fs::create_dir_all(parent.join(&id)).unwrap();
+                parent.join(&id).join("updates.jsonl")
+            } else { parent.join(format!("{id}.jsonl")) };
+            std::fs::write(&path, b"{}\n").unwrap();
+            assert_eq!(locate_transcript_for_session(kind, &id, "synthetic-pty").unwrap(),
+                Some(path.clone()), "{kind} must recover without waiting thirty seconds");
+            assert_eq!(locate_transcript_cached(kind, &id), Some(path));
+        }
+    }
+
+    #[test]
+    fn c1b_shared_dashboard_control_api_and_livebrief_readers_keep_the_recovered_picture() {
+        let dir = tempfile::tempdir().unwrap();
+        let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+        let id = Uuid::new_v4().to_string();
+        let root = crate::ailog::claude_root().unwrap().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        fix1_age_transcript_tree(root.parent().unwrap());
+        let mut binding = test_binding();
+        binding.agent_kind = "claude".into(); binding.agent_session_id = id.clone();
+        let locate = |kind: &str, id: &str| locate_transcript_for_session(kind, id, "synthetic-pty").unwrap();
+        let missing = refresh_bound_transcript(None, &binding, "claude", &id, "epoch", None, None, &locate).unwrap();
+        assert_eq!(missing.brief.telemetry_detail.as_deref(), Some("recordNotFound"));
+        let path = root.join(format!("{id}.jsonl"));
+        std::fs::write(&path, format!("{}\n", serde_json::json!({"type":"user","sessionId":id,
+            "message":{"content":"synthetic operator request"}}))).unwrap();
+        let recovered = refresh_bound_transcript(Some(&missing), &binding, "claude", &id, "epoch", None, None, &locate).unwrap();
+        assert_eq!(recovered.brief.telemetry_health, "live");
+        assert_eq!(recovered.brief.binding.agent_session_id, id);
+        assert_eq!(user_message_texts(&recovered), ["synthetic operator request"]);
+        assert_eq!(recovered.brief.latest_instruction.as_deref(), Some("synthetic operator request"));
+        let service = LiveBriefService::new(Arc::new(SessionManager::new()), crate::pty::monitor::new_metadata_store());
+        {
+            let mut state = service.state.lock().unwrap();
+            state.sessions.insert(binding.pty_session_id.clone(), recovered.clone());
+            state.last_refresh_finished_at = Some(Instant::now());
+        }
+        service.subscribe("synthetic-view");
+        let events = service.events(&[binding.pty_session_id.clone()], 50);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].events.len(), 1);
+        assert_eq!(events[0].telemetry_health, "live");
+        let excerpt = excerpt::build_context_excerpt(&recovered.brief, &events[0].events, 4096).unwrap();
+        assert!(excerpt.text.contains("synthetic operator request"));
+        assert_eq!(transcript_user_prompts(&path, "claude", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn c1b_oversized_append_stops_incremental_reading_and_uses_the_existing_tail_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let _unit_home = crate::unit_test_dirs::fixture_home(&dir);
+        let path = dir.path().join("rollout.jsonl");
+        std::fs::write(&path, codex_user_line("old")).unwrap();
+        let binding = test_binding();
+        let snapshot = bootstrap_transcript(&path, "codex", &binding, "epoch").unwrap();
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(snapshot.cursor.read_offset + MAX_BOOTSTRAP_BYTES + 4096).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(codex_user_line("latest").as_bytes()).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert!(advance_transcript_with_history(snapshot.clone(), &metadata, &binding, "epoch", None, None).is_err(),
+            "an incremental read must not allocate the complete oversized append");
+        let recovered = refresh_bound_transcript(Some(&snapshot), &binding, "codex", "agent-1",
+            "epoch", None, None, |_, _| Some(path.clone())).unwrap();
+        assert_eq!(user_message_texts(&recovered), ["latest"]);
+        assert!(recovered.brief.naming_plan.as_ref().unwrap().coverage.source_unknown);
+        assert_eq!(recovered.cursor.read_offset, metadata.len());
+    }
+
     #[test]
     fn a_missing_transcript_is_not_searched_for_again_for_thirty_seconds() {
         // One walk of ~/.claude/projects/** per miss, for a dashboard that
@@ -2731,3 +3117,74 @@ mod tests {
 
 #[cfg(test)]
 mod epoch_race_tests;
+
+#[cfg(all(test, unix))]
+mod fix2b1_link_tests {
+    use super::*;
+    use crate::agent_home_roots::link_tests::{Fixture,LinkMode,MODES,ID};
+    #[test]
+    fn fix2b1_livebrief_global_material_matches_the_pre_2b_glob_for_all_link_locations() {
+        for mode in MODES {
+            let f=Fixture::new(mode);
+            // Exact cf0fe5edf locator after injecting this fixture's global root.
+            let pattern=format!("{}/**/*{}.jsonl",f.root.path.display(),ID);
+            let previous=newest_path_by_mtime(glob::glob(&pattern).unwrap().filter_map(Result::ok));
+            if mode!=LinkMode::Nested {assert!(previous.is_some());}
+            let actual=locate_record_in_roots(&[f.root],crate::cli_accounts::CliProvider::Codex,ID).unwrap();
+            assert_eq!(actual,previous,"{mode:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fixr_r05_material_tests {
+    use super::*;
+    use crate::{agent_home_roots::{Origin, RecordRoot}, cli_accounts::CliProvider};
+    const ID: &str = "11111111-1111-4111-8111-111111111111";
+    fn put(path: &Path, seconds: u64) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fixture\n").unwrap();
+        std::fs::File::options().write(true).open(path).unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)).unwrap();
+    }
+    #[test]
+    fn fixr_r05_global_livebrief_keeps_base_newest_mtime_and_last_on_tie() {
+        for scenario in ["sessions-and-archive", "two-sessions", "mirrored-then-archived", "mtime-tie"] {
+            let dir = tempfile::tempdir().unwrap();
+            let roots: Vec<_> = ["sessions", "archived_sessions"].iter().map(|name| RecordRoot {
+                origin: Origin::Global, path: dir.path().join(".codex").join(name),
+            }).collect();
+            let old = roots[0].path.join(format!("2026/11/12/rollout-z-{ID}.jsonl"));
+            let fresh = roots[0].path.join(format!("2026/11/12/rollout-a-{ID}.jsonl"));
+            put(&old, 10); put(&fresh, 20);
+            let expected = match scenario {
+                "sessions-and-archive" => {
+                    put(&roots[1].path.join(format!("rollout-archive-{ID}.jsonl")), 5); fresh.clone()
+                }
+                "mirrored-then-archived" => {
+                    let archived = roots[1].path.join(format!("2026/11/12/rollout-a-{ID}.jsonl"));
+                    std::fs::create_dir_all(archived.parent().unwrap()).unwrap();
+                    put(&dir.path().join(format!("mirror/codex/rollout-a-{ID}.jsonl")), 99);
+                    std::fs::rename(&fresh, &archived).unwrap(); archived
+                }
+                "mtime-tie" => {
+                    put(&old, 20);
+                    let pattern = format!("{}/**/*{ID}.jsonl", roots[0].path.display());
+                    // Unchanged 3217341bd selector, over the same legacy glob.
+                    newest_path_by_mtime(glob::glob(&pattern).unwrap().filter_map(Result::ok)).unwrap()
+                }
+                _ => fresh.clone(),
+            };
+            assert_eq!(locate_record_in_roots(&roots, CliProvider::Codex, ID).unwrap(), Some(expected), "{scenario}");
+        }
+    }
+    #[test]
+    fn fixr_r05_grok_livebrief_duplicate_updates_choose_newest_in_one_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = RecordRoot { origin: Origin::Global, path: dir.path().join("sessions") };
+        let old = root.path.join(format!("z-cwd/{ID}/updates.jsonl"));
+        let fresh = root.path.join(format!("a-cwd/{ID}/updates.jsonl"));
+        put(&old, 10); put(&fresh, 20);
+        assert_eq!(locate_record_in_roots(&[root], CliProvider::Grok, ID).unwrap(), Some(fresh));
+    }
+}

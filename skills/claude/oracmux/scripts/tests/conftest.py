@@ -12,6 +12,16 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 
+@pytest.fixture(autouse=True)
+def default_marker_guard(tmp_path_factory, monkeypatch):
+    """Run every test against a guard file that carries only the code defaults
+    (markers included), not the operator's shipped guard.json. The shipped file
+    lists no markers since 2026-11-10; the marker mechanism itself stays tested."""
+    target = tmp_path_factory.mktemp("guard") / "guard.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ORACMUX_GUARD", str(target))
+
+
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     """Redirect every filesystem side effect into tmp_path."""

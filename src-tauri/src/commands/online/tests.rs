@@ -1112,3 +1112,19 @@
         assert!(!online_dir.join("other").exists());
         assert!(online_dir.join("future").is_dir());
     }
+
+    #[test]
+    fn account_home_online_joins_are_rejected_but_listing_remains_read_only() {
+        use crate::{agent_home_roots::{Origin,RecordRoot,HOME_SESSION_UNSUPPORTED},cli_accounts::CliProvider};
+        let dir=tempdir().unwrap();let online=dir.path().join("online");let bundle=online.join("codex-home");copy_fixture_bundle(&bundle);
+        let id="11111111-1111-4111-8111-111111111111";
+        let mut manifest:serde_json::Value=read_json(&bundle.join("manifest.json")).unwrap();manifest.as_object_mut().unwrap().remove("claude_session_id");manifest["agent_kind"]=serde_json::json!("codex");manifest["agent_session_id"]=serde_json::json!(id);
+        fs::write(bundle.join("manifest.json"),serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let config=dir.path().join("savepoint.json");fs::write(&config,serde_json::json!({"local_dir":online}).to_string()).unwrap();
+        let root=RecordRoot {origin:Origin::AccountHome {provider:CliProvider::Codex,profile_id:"codex-A".into()},path:dir.path().join("base/cli_account_homes/codex/codex-A/sessions")};
+        fs::create_dir_all(&root.path).unwrap();fs::write(root.path.join(format!("rollout-{id}.jsonl")),"{}\n").unwrap();let roots=vec![root];
+        let home=dir.path().join("destination");
+        assert_eq!(join_savepoint_summary_in_roots(&bundle,&config,&home,&roots).unwrap_err(),HOME_SESSION_UNSUPPORTED);
+        assert_eq!(join_savepoint_full_in_roots(&bundle,&config,&home,&home.join(".claude/projects"),&roots).unwrap_err(),HOME_SESSION_UNSUPPORTED);
+        assert!(!home.exists());assert_eq!(list_online_savepoints_from_config(&config,&home).unwrap().len(),1);
+    }

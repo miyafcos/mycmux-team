@@ -102,7 +102,6 @@
   --cmux-dashboard-reading-line-height: 1.85;
   --cmux-dashboard-card-min-height: calc(var(--cmux-space-7) * 5);
   --cmux-dashboard-tile-min-height: calc(var(--cmux-space-7) * 4);
-  --cmux-dashboard-composer-min-height: calc(var(--cmux-space-7) * 4);
   --cmux-font-size-xs: 11px;
   --cmux-font-size-sm: 12px;
   --cmux-font-size-md: 13px;
@@ -149,9 +148,7 @@
   --cmux-chat-radius-inline: 4px;
   --cmux-chat-radius-button: 6px;
   --cmux-chat-radius-block: 8px;
-  --cmux-chat-radius-input: 10px;
   --cmux-chat-radius-user: 12px;
-  --cmux-chat-radius-send: 7px;
   --cmux-chat-header-height: 40px;
   --cmux-chat-button-size: 28px;
   --cmux-chat-nav-size: 26px;

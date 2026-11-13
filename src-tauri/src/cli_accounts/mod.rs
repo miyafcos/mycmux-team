@@ -6,6 +6,9 @@ pub(crate) mod grok;
 pub(crate) mod json_splice;
 pub(crate) mod live_sync;
 pub(crate) mod login_watch;
+pub(crate) mod launch_tokens;
+pub(crate) mod tab_evidence;
+pub(crate) mod account_homes;
 mod registry;
 mod snapshot;
 pub(crate) mod staging;
@@ -22,6 +25,13 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
+
+pub const ERR_LAUNCH_TOKEN_INVALID: &str = "cli_account.error.launch_token_invalid";
+pub const ERR_LAUNCH_ACCOUNT_NOT_FOUND: &str = "cli_account.error.launch_account_not_found";
+pub const ERR_LAUNCH_TOKEN_OWNER_MISMATCH: &str = "cli_account.error.launch_token_owner_mismatch";
+pub const ERR_LAUNCH_TOKEN_RECORD_MISMATCH: &str = "cli_account.error.launch_token_record_mismatch";
+pub const ERR_LAUNCH_TOKEN_MISSING: &str = "cli_account.error.launch_token_missing";
+pub const ERR_LAUNCH_TOKEN_EXPIRED: &str = "cli_account.error.launch_token_expired";
 
 pub const ERR_ACCOUNTS_UNAVAILABLE: &str = "cli_account.error.accounts_unavailable";
 pub const ERR_LIVE_LOGIN_UNAVAILABLE: &str = "cli_account.error.live_login_unavailable";
@@ -804,12 +814,26 @@ pub fn switch_resolved(
     switch_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, profile_id, &token_owner::cached_owner)
 }
 
+pub fn registered_profile_provider(base: &Path, profile_id: &str) -> Result<CliProvider, String> {
+    registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?.profiles.into_iter()
+        .find(|p| p.id == profile_id).map(|p| p.provider).ok_or_else(|| ERR_PROFILE_NOT_FOUND.into())
+}
+
 pub fn remove_resolved(base: &Path, profile_id: &str) -> Result<(), String> {
+    remove_resolved_with_launch_store(base, profile_id, &launch_tokens::OsLaunchTokenStore::new(base))
+}
+
+fn remove_resolved_with_launch_store(base: &Path, profile_id: &str, secrets: &dyn launch_tokens::LaunchTokenStore) -> Result<(), String> {
     let _guard = mutation_guard()?;
     snapshot::validate_snapshot_id(profile_id).map_err(|_| ERR_REMOVE_FAILED.to_string())?;
     let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
-    if !registry::remove_profile(&mut file, profile_id) {
-        return Err(ERR_PROFILE_NOT_FOUND.to_string());
+    let provider = file.profiles.iter().find(|profile| profile.id == profile_id)
+        .map(|profile| profile.provider).ok_or_else(|| ERR_PROFILE_NOT_FOUND.to_string())?;
+    registry::remove_profile(&mut file, profile_id);
+    if provider == CliProvider::Claude {
+        let recorded = launch_tokens::status_all(base).map_err(|_| ERR_REMOVE_FAILED.to_string())?.iter().any(|record| record.profile_id == profile_id);
+        let removal = launch_tokens::remove_locked(base, secrets, profile_id);
+        if recorded { removal.map_err(|_| ERR_REMOVE_FAILED.to_string())?; }
     }
     registry::save(base, &file).map_err(|_| ERR_REMOVE_FAILED.to_string())?;
     snapshot::remove(base, profile_id).map_err(|_| ERR_REMOVE_FAILED.to_string())?;

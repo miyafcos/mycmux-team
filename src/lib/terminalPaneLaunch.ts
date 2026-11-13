@@ -32,6 +32,8 @@ export function buildTerminalPaneLaunch(
     activeTab
     && !activeTab.commandArgv?.length
     && (requiresLauncherDispatch(activeTab.launchEnv ?? pane.launchEnv)
+      || (activeTab.agentAccountId !== undefined && ["claude", "codex", "grok"].includes((activeTab.launchEnv ?? pane.launchEnv)?.MYCMUX_LAUNCH_TARGET
+        ?? savedAgentSession?.kind ?? activeTab.agentKind ?? (resolvedAgentId === "claude-code" ? "claude" : resolvedAgentId) ?? ""))
       || (resolvedAgentId === "shell" && (savedAgentSession?.kind === "codex" || activeTab.codexRestoreReason))),
   );
   const agent = resolvedAgentId

@@ -187,8 +187,27 @@ fn optional_delegation_timestamp<'de, D: serde::Deserializer<'de>>(deserializer:
     Ok(value.as_i64().filter(|at| (0..=9_007_199_254_740_991).contains(at)))
 }
 
+fn scrub_launch_secrets(env: Option<HashMap<String, String>>) -> Option<HashMap<String, String>> {
+    env.map(|mut env| {
+        env.retain(|key, _| !["CLAUDE_CODE_OAUTH_TOKEN", "MYCMUX_LAUNCH_ACCOUNT",
+            "CODEX_HOME", "GROK_HOME", "CODEX_SQLITE_HOME", "GROK_AUTH_PATH", "GROK_LEADER_SOCKET",
+            "MYCMUX_ACCOUNT_HOME_KIND", "MYCMUX_CLI_LOGIN_ID"].iter().any(|name| key.eq_ignore_ascii_case(name)));
+        env
+    })
+}
+
+fn serialize_launch_env<S: serde::Serializer>(env: &Option<HashMap<String, String>>, serializer: S) -> Result<S::Ok, S::Error> {
+    scrub_launch_secrets(env.clone()).serialize(serializer)
+}
+
+fn deserialize_launch_env<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<HashMap<String, String>>, D::Error> {
+    Option::<HashMap<String, String>>::deserialize(deserializer).map(scrub_launch_secrets)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_account_id: Option<String>,
     #[serde(default)]
     pub tab_id: Option<String>,
     #[serde(default)]
@@ -227,7 +246,7 @@ pub struct PaneTabConfig {
     pub agent_session_id: Option<String>,
     #[serde(default)]
     pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_launch_env", deserialize_with = "deserialize_launch_env")]
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub terminal_snapshot: Option<Vec<String>>,
@@ -266,7 +285,7 @@ pub struct PaneConfig {
     pub agent_session_id: Option<String>,
     #[serde(default)]
     pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>,
-    #[serde(default)]
+    #[serde(default, serialize_with = "serialize_launch_env", deserialize_with = "deserialize_launch_env")]
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub active_tab_id: Option<String>,
@@ -1782,6 +1801,45 @@ mod tests {
     }
 
     #[test]
+    fn tab_agent_account_id_roundtrips_and_is_omitted_when_absent() {
+        let tab: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"claude-code","agent_account_id":"claude-1a2b3c4d"}"#).unwrap();
+        assert_eq!(tab.agent_account_id.as_deref(), Some("claude-1a2b3c4d"));
+        let json = serde_json::to_string(&tab).unwrap();
+        let restored: PaneTabConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.agent_account_id, tab.agent_account_id);
+        let legacy: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"claude-code"}"#).unwrap();
+        assert_eq!(legacy.agent_account_id, None);
+        assert!(serde_json::to_value(legacy).unwrap().get("agent_account_id").is_none());
+    }
+
+    #[test]
+    fn tab_and_pane_launch_secrets_are_scrubbed_on_both_read_and_write() {
+        let fake = format!("sk-ant-oat01-{}", "a".repeat(32));
+        let source = serde_json::json!({"agent_id":"claude-code", "launch_env": {
+            "CLAUDE_CODE_OAUTH_TOKEN": fake, "claude_code_oauth_token": fake,
+            "Claude_Code_Oauth_Token": fake, "KEEP": "kept"
+        }});
+        let mut tab: PaneTabConfig = serde_json::from_value(source.clone()).unwrap();
+        let mut pane: PaneConfig = serde_json::from_value(source).unwrap();
+        for env in [&tab.launch_env, &pane.launch_env] {
+            assert_eq!(env.as_ref().unwrap(), &HashMap::from([("KEEP".into(), "kept".into())]));
+        }
+        // Populate structs directly too: deserialization alone is not the write guard.
+        for env in [&mut tab.launch_env, &mut pane.launch_env] {
+            for key in ["CLAUDE_CODE_OAUTH_TOKEN", "claude_code_oauth_token", "Claude_Code_Oauth_Token"] {
+                env.as_mut().unwrap().insert(key.into(), fake.clone());
+            }
+        }
+        pane.tabs = Some(vec![tab.clone()]);
+        for json in [serde_json::to_string(&tab).unwrap(), serde_json::to_string(&pane).unwrap()] {
+            assert!(!json.to_ascii_uppercase().contains("CLAUDE_CODE_OAUTH_TOKEN"));
+            assert!(!json.contains("sk-ant-"));
+            assert!(json.contains("KEEP"));
+        }
+        assert!(tab.launch_env.as_ref().unwrap().contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
     fn pane_launch_env_round_trips() {
         let pane: PaneConfig = serde_json::from_str(
             r#"{"agent_id":"shell-starter","label":null,"cwd":null,"launch_env":{"MYCMUX_RESUME":"codex"}}"#,
@@ -2111,5 +2169,30 @@ mod maximized_window_compatibility_tests {
         let mut expected = new;
         expected.maximized = None;
         assert_eq!(downgraded, expected);
+    }
+}
+
+
+#[cfg(test)]
+mod account_homes_storage_tests {
+    use super::*;
+    #[test]
+    fn account_homes_storage_scrubs_every_home_alias_on_read_and_write_but_keeps_only_the_account_id() {
+        let mut forged=HashMap::from([("KEEP".to_string(),"kept".to_string())]);
+        let keys=crate::cli_accounts::account_homes::HOME_ENV_KEYS.iter().copied().chain(["CLAUDE_CODE_OAUTH_TOKEN","MYCMUX_LAUNCH_ACCOUNT"]);
+        for key in keys { forged.insert(key.to_string(),"fixture-sensitive".into()); forged.insert(key.to_ascii_lowercase(),"fixture-sensitive".into()); }
+        let source=serde_json::json!({"agent_id":"codex","agent_account_id":"codex-fixture","launch_env":forged});
+        let mut tab:PaneTabConfig=serde_json::from_value(source.clone()).unwrap();
+        let mut pane:PaneConfig=serde_json::from_value(source).unwrap();
+        let expected=Some(HashMap::from([("KEEP".into(),"kept".into())]));
+        assert_eq!(tab.launch_env,expected); assert_eq!(pane.launch_env,expected);
+        assert_eq!(tab.agent_account_id.as_deref(),Some("codex-fixture"));
+        tab.launch_env=Some(forged.clone()); pane.launch_env=Some(forged); pane.tabs=Some(vec![tab.clone()]);
+        for serialized in [serde_json::to_string(&tab).unwrap(),serde_json::to_string(&pane).unwrap()] {
+            assert!(!serialized.contains("fixture-sensitive")); assert!(serialized.contains("codex-fixture"));
+            let restored:PaneTabConfig=serde_json::from_str(&serde_json::to_string(&tab).unwrap()).unwrap();
+            assert_eq!(restored.launch_env,expected); assert_eq!(restored.agent_account_id,tab.agent_account_id);
+        }
+        let legacy:PaneTabConfig=serde_json::from_str(r#"{"agent_id":"codex"}"#).unwrap(); assert_eq!(legacy.agent_account_id,None);
     }
 }

@@ -20,6 +20,13 @@ export const launcherStrings = {
   // model / effort は delegation のティア運用が依存しているので必ず残す (§6.3)。
   specTooltip: (label: string) => `${label} のモデル・effort を選ぶ (Tab / Shift+Enter)`,
   specKeyHint: "←→ 選ぶ　↑↓ Tab 行　Enter 起動　Esc 戻る",
+  accountLabel: "アカウント",
+  accountLoading: "アカウントの一覧を読み込んでいます…",
+  accountReadFailed: "アカウントの一覧を読めませんでした",
+  accountEmpty: "設定のアカウントで、タブ用のトークン (Claude) かタブ用のログイン (Codex・Grok) を済ませると選べます",
+  accountTokenMissing: "タブ用のトークン未登録",
+  accountLoginMissing: "タブ用のログインが必要",
+  accountClaudeLimitations: "このタブでは Remote Control・Claude in Chrome・ファイルの添付など、claude.ai へのサインインが要る機能は使えません",
   modelLabel: "モデル",
   modelDefault: "モデル (既定)",
   effortLabel: "effort",

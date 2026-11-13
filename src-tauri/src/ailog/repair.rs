@@ -140,11 +140,18 @@ fn merge_source_families(groups: BTreeMap<(String,String),Vec<Source>>)
 /// Only an exact relative path below the configured original root is eligible.
 /// This function never opens a writable handle in either source tree.
 pub fn resolve_source(path: &Path, kind: &str, options: &RepairOptions) -> Option<PathBuf> {
-    let original_root = match kind {
-        KIND_CLAUDE => options.claude_root.as_ref(),
-        KIND_CLAUDE_CODEX => options.claude_codex_root.as_ref(),
-        _ => options.codex_root.as_ref(),
+    let mut roots: Vec<PathBuf> = match kind {
+        KIND_CLAUDE => options.claude_root.iter().cloned().collect(),
+        KIND_CLAUDE_CODEX => options.claude_codex_root.iter().cloned().collect(),
+        _ => options.codex_root.iter().cloned().collect(),
     };
+    if kind == KIND_CODEX {
+        if let Some(home) = options.codex_root.as_ref().and_then(|root| root.parent()) {
+            roots.push(home.join("archived_sessions"));
+        }
+        roots.extend(crate::agent_home_roots::accounts(crate::cli_accounts::CliProvider::Codex).into_iter().map(|root| root.path));
+    }
+    let original_root = roots.iter().find(|root| path.strip_prefix(root).is_ok()).or_else(|| roots.first());
     // Reject a drive/UNC/component escape before probing the filesystem. This
     // also avoids network I/O for an untrusted UNC path in a stale source row.
     let lexical = |root: &Path| path.strip_prefix(root).ok().is_some_and(|r|
@@ -160,13 +167,7 @@ pub fn resolve_source(path: &Path, kind: &str, options: &RepairOptions) -> Optio
     if gzip.is_file() {
         return direct_root.map_or(true,|root|contained_file(root,&gzip)).then_some(gzip);
     }
-    let original = if kind == KIND_CLAUDE {
-        options.claude_root.clone()
-    } else if kind == KIND_CLAUDE_CODEX {
-        options.claude_codex_root.clone()
-    } else {
-        options.codex_root.clone()
-    };
+    let original = original_root.cloned();
     let relative = path.strip_prefix(original.as_ref()?).ok()?;
     if relative
         .components()
@@ -187,7 +188,7 @@ pub fn resolve_source(path: &Path, kind: &str, options: &RepairOptions) -> Optio
         }
     }
     let archive = options.archive_root.as_ref()?;
-    let candidate = archive.join(kind).join(relative);
+    let candidate = crate::agent_home_roots::mirror_root(kind, original.as_ref()?, archive).join(relative);
     if contained_file(archive, &candidate) {
         return Some(candidate);
     }
@@ -196,7 +197,7 @@ pub fn resolve_source(path: &Path, kind: &str, options: &RepairOptions) -> Optio
 }
 
 pub(super) fn contained_file(root: &Path, candidate: &Path) -> bool {
-    candidate.is_file() && root.canonicalize().ok().zip(candidate.canonicalize().ok())
+    crate::agent_home_roots::record_path_allowed(candidate) && candidate.is_file() && root.canonicalize().ok().zip(candidate.canonicalize().ok())
         .is_some_and(|(root, target)| target.starts_with(root))
 }
 

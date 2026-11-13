@@ -32,7 +32,7 @@ fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
     let (kind, session_id) = trimmed.split_once(':')?;
     let kind = kind.trim();
     let session_id = session_id.trim();
-    if !is_agent_session_kind(kind) || session_id.is_empty() {
+    if !is_agent_session_kind(kind) || !is_safe_mapping_id(session_id) {
         return None;
     }
     Some(AgentSessionMapping {
@@ -563,6 +563,16 @@ mod tests {
         write_session_mapping_file_to_dir(dir.path(), "pane-a", "claude", "s2").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "claude:s2\n");
         assert_eq!(std::fs::read_to_string(&witness).unwrap(), "claude:s1\n");
+    }
+
+    #[test]
+    fn c1b_mapping_reads_reject_glob_patterns_and_unsafe_conversation_ids() {
+        for kind in ["claude", "claude-codex", "codex", "grok"] {
+            for id in ["*", "a?", "a[bc]", "../other", "a/b", "a\\b", "a b", ".", "..", "CON", "a\nb"] {
+                assert!(parse_agent_session_mapping(&format!("{kind}:{id}")).is_none(), "{kind}:{id:?}");
+            }
+            assert!(parse_agent_session_mapping(&format!("{kind}:{}", "a".repeat(241))).is_none());
+        }
     }
 
     #[test]

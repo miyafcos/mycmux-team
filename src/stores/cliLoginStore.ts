@@ -10,15 +10,18 @@ import {
   type CliLoginFailedPayload,
   type CliLoginIdentityMismatchPayload,
   type CliLoginMode,
+  type CliLoginPurpose,
   type CliLoginSession,
   type CliProvider,
 } from "../lib/ipc";
 import {
   PROVIDER_ORDER,
   cliAccountMessage,
+  cliAccountHomeLoginMessage,
   loginIdentityMismatchMessage,
   loginTabLabel,
   runningAgentCounts,
+  pinnedAgentCounts,
   runningAgentPaneDetails,
   switchWarningText,
 } from "../lib/cliAccounts";
@@ -38,6 +41,7 @@ export interface CliLoginEntry {
   stage: CliLoginStage;
   loginId: string | null;
   mode: CliLoginMode;
+  purpose?: CliLoginPurpose;
   /** Date.now() when the wait started; drives the countdown display. */
   startedAt: number | null;
   sessionId: string | null;
@@ -46,7 +50,8 @@ export interface CliLoginEntry {
 
 export interface CliLoginState {
   byProvider: Record<CliProvider, CliLoginEntry | null>;
-  start(provider: CliProvider, mode: CliLoginMode, expectedProfileId?: string): Promise<void>;
+  start(provider: CliProvider, mode: CliLoginMode, expectedProfileId?: string, purpose?: CliLoginPurpose): Promise<void>;
+  startAccountHome(provider: "codex" | "grok", profileId: string): Promise<void>;
   cancel(provider: CliProvider): Promise<void>;
   handleCompleted(payload: CliLoginCompletedPayload): Promise<void>;
   handleFailed(payload: CliLoginFailedPayload): void;
@@ -128,8 +133,7 @@ async function openLoginTab(
     agentId: "shell",
     label: loginTabLabel(session.provider, mode),
     cwd: home,
-    launchEnv: { ...session.env },
-    commandArgv: [session.command, ...session.args],
+    launchEnv: { MYCMUX_CLI_LOGIN_ID: session.login_id },
     ephemeral: true,
     activate: true,
   });
@@ -167,12 +171,14 @@ function offerSwitch(provider: CliProvider, profile: CliAccountProfile): void {
           // The shared dialog handles foregrounding without waiting on IPC.
           // Read the live pane state for this user click.
           const paneMetadataState = usePaneMetadataStore.getState();
+          const workspaces = useWorkspaceListStore.getState().workspaces;
           const accepted = await confirm(
             switchWarningText(
-              runningAgentCounts(paneMetadataState.metadata)[provider],
+              runningAgentCounts(paneMetadataState.metadata, workspaces)[provider],
               provider,
               profile.label,
-              runningAgentPaneDetails(paneMetadataState.metadata, provider, paneMetadataState.volatileMetadata),
+              runningAgentPaneDetails(paneMetadataState.metadata, provider, paneMetadataState.volatileMetadata, workspaces),
+              pinnedAgentCounts(paneMetadataState.metadata, workspaces)[provider],
             ),
             {
               title: "このアカウントに今すぐ切り替えますか？",
@@ -214,7 +220,9 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
   return {
     byProvider: { ...EMPTY_BY_PROVIDER },
 
-    start: async (provider, mode, expectedProfileId) => {
+    startAccountHome: async (provider, profileId) => get().start(provider, "reauth", profileId, { kind: "account_home", profile_id: profileId }),
+
+    start: async (provider, mode, expectedProfileId, purpose) => {
       const accounts = useCliAccountStore.getState();
       if (accounts.busyByProvider[provider] !== null) return;
       // Claimed before the first await so a double click cannot start two
@@ -224,6 +232,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         stage: "spawning",
         loginId: null,
         mode,
+        ...(purpose ? { purpose } : {}),
         startedAt: Date.now(),
         sessionId: null,
         tabId: null,
@@ -231,7 +240,9 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
 
       let session: CliLoginSession;
       try {
-        session = await beginCliLogin(provider, mode, expectedProfileId);
+        session = purpose
+          ? await beginCliLogin(provider, mode, expectedProfileId, purpose)
+          : await beginCliLogin(provider, mode, expectedProfileId);
       } catch (error) {
         useToastStore.getState().pushToast(cliAccountMessage(error), "error");
         finalize(provider, { closeTab: false });
@@ -255,6 +266,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         stage: "waiting",
         loginId: session.login_id,
         mode,
+        ...(purpose ? { purpose } : {}),
         startedAt: Date.now(),
         sessionId: opened.sessionId,
         tabId: opened.tabId,
@@ -277,6 +289,11 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
       const entry = get().byProvider[provider];
       if (entry) setEntry(provider, { ...entry, stage: "capturing" });
 
+      if (payload.purpose?.kind === "account_home" || entry?.purpose?.kind === "account_home") {
+        useToastStore.getState().pushToast("タブ用のログインが完了しました。", "info");
+        finalize(provider, { closeTab: true });
+        return;
+      }
       const label = payload.profile.label;
       useToastStore
         .getState()
@@ -299,7 +316,8 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
     handleFailed: (payload) => {
       const provider = providerForLogin(payload.login_id);
       if (!provider) return;
-      useToastStore.getState().pushToast(cliAccountMessage(payload.code), "error");
+      const privateHome = get().byProvider[provider]?.purpose?.kind === "account_home";
+      useToastStore.getState().pushToast(privateHome ? cliAccountHomeLoginMessage(payload.code) : cliAccountMessage(payload.code), "error");
       finalize(provider, { closeTab: true });
     },
 

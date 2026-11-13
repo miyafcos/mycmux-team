@@ -5,7 +5,7 @@ Package layout (one concern per module, all deterministic and unit-tested):
 - paths     : every filesystem / executable location in one place (env-overridable)
 - engines   : engines.json loader + contract validation
 - brief     : build the handoff brief (prompt + inlined files) with size accounting
-- guard     : NDA / confidentiality guard over the brief and attached paths
+- guard     : pre-send guard over the brief and attached paths (markers / deny roots / size)
 - ledger    : append-only JSONL ledger under ~/.mycmux/handoff/oracmux/
 - run       : run-directory layout, slugs, progress files
 - chrome    : OracleChrome (CDP 9222) lifecycle + oracle session busy check

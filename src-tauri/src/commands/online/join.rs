@@ -13,18 +13,18 @@ fn resolve_join_cwd(cwd: &str, dropbox_root: Option<&str>, home: &Path) -> (Path
     }
 }
 
-fn join_savepoint_summary_from_config(
-    bundle_dir: &Path,
-    config_path: &Path,
-    home: &Path,
-) -> Result<JoinSavepointSummary, String> {
+fn join_savepoint_summary_from_config(bundle_dir: &Path, config_path: &Path, home: &Path) -> Result<JoinSavepointSummary, String> {
+    join_savepoint_summary_in_roots(bundle_dir,config_path,home,&crate::agent_home_roots::accounts(crate::cli_accounts::CliProvider::Codex))
+}
+fn join_savepoint_summary_in_roots(bundle_dir: &Path, config_path: &Path, home: &Path, roots: &[crate::agent_home_roots::RecordRoot]) -> Result<JoinSavepointSummary, String> {
     let config = load_config(config_path)?;
     let bundle_dir = absolute_path(bundle_dir.to_path_buf())?;
     let mut manifest: SavepointManifest = read_json(&bundle_dir.join("manifest.json"))?;
     if manifest.schema != SAVEPOINT_SCHEMA {
         return Err(format!("Unsupported savepoint schema: {}", manifest.schema));
     }
-    manifest.identity()?;
+    let identity = manifest.identity()?;
+    reject_account_home_savepoint_in_roots(identity.kind, Some(&identity.session_id), None, roots)?;
     manifest.lifecycle = manifest.lifecycle.normalized();
     let handoff_path = bundle_dir.join("handoff.md");
     let handoff_metadata = fs::metadata(&handoff_path).map_err(|error| {
@@ -80,12 +80,10 @@ pub(crate) fn sanitize_project_dir(cwd: &str) -> String {
         .collect()
 }
 
-fn join_savepoint_full_from_config(
-    bundle_dir: &Path,
-    config_path: &Path,
-    home: &Path,
-    projects_dir: &Path,
-) -> Result<JoinSavepointFull, String> {
+fn join_savepoint_full_from_config(bundle_dir: &Path, config_path: &Path, home: &Path, projects_dir: &Path) -> Result<JoinSavepointFull, String> {
+    join_savepoint_full_in_roots(bundle_dir,config_path,home,projects_dir,&crate::agent_home_roots::accounts(crate::cli_accounts::CliProvider::Codex))
+}
+fn join_savepoint_full_in_roots(bundle_dir: &Path, config_path: &Path, home: &Path, projects_dir: &Path, roots: &[crate::agent_home_roots::RecordRoot]) -> Result<JoinSavepointFull, String> {
     let config = load_config(config_path)?;
     let bundle_dir = absolute_path(bundle_dir.to_path_buf())?;
     let mut manifest: SavepointManifest = read_json(&bundle_dir.join("manifest.json"))?;
@@ -93,6 +91,7 @@ fn join_savepoint_full_from_config(
         return Err(format!("Unsupported savepoint schema: {}", manifest.schema));
     }
     let identity = manifest.identity()?;
+    reject_account_home_savepoint_in_roots(identity.kind, Some(&identity.session_id), None, roots)?;
     manifest.lifecycle = manifest.lifecycle.normalized();
     let (resolved_cwd, cwd_missing) =
         resolve_join_cwd(&manifest.cwd, config.dropbox_root.as_deref(), home);

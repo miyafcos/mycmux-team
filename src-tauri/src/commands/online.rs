@@ -18,6 +18,21 @@ const STORAGE_MARKER_KIND: &str = "mycmux-savepoint-storage";
 const STALE_TMP_SECONDS: u64 = 24 * 60 * 60;
 const RESTORED_EXPIRE_HOURS: i64 = 48;
 
+/// A savepoint resumes/forks into a different process without an account capability.
+pub(crate) fn reject_account_home_savepoint(kind: SavepointAgentKind, id: Option<&str>, source_root: Option<&Path>) -> Result<(), String> {
+    reject_account_home_savepoint_in_roots(kind,id,source_root,&crate::agent_home_roots::accounts(crate::cli_accounts::CliProvider::Codex))
+}
+fn reject_account_home_savepoint_in_roots(kind: SavepointAgentKind, id: Option<&str>, source_root: Option<&Path>, roots: &[crate::agent_home_roots::RecordRoot]) -> Result<(), String> {
+    if kind != SavepointAgentKind::Codex { return Ok(()); }
+    if source_root.is_some_and(|root| matches!(crate::agent_home_roots::origin_for_root("codex", root), crate::agent_home_roots::Origin::AccountHome {..})) {
+        return Err(crate::agent_home_roots::HOME_SESSION_UNSUPPORTED.into());
+    }
+    if let Some(id) = id {
+        crate::agent_home_roots::reject_home_session(roots, crate::cli_accounts::CliProvider::Codex, id)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SavepointAgentKind {

@@ -51,6 +51,24 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 別ワークスペースで走らせるときは `python scripts/mycmux_agent_cli.py workspace-new --name <name>` で新設します。
 応答の `workspaceId` を使い、`python scripts/mycmux_agent_cli.py spawn --split --workspace <id> --target codex --no-activate` で起動します。
 
+#### mycmux の外からエージェントのタブを開く (Grok Bot など・2026-11-05 追加)
+
+`MYCMUX_PANE_SESSION_ID` を持たない呼び出し元 (Grok Bot のボットが PC で走らせる命令など) からも、次の 3 手でワークスペースを作り、Claude Code・Codex のタブを開ける。v0.90.3 で、mycmux の外の Git Bash (`MYCMUX_*` なし) から 3 手とも exit 0 を実測した。
+
+```
+python scripts/mycmux_agent_cli.py workspace-new --name <名前> --cwd <作業フォルダ> --grid 1x1
+python scripts/mycmux_agent_cli.py spawn-tab --anchor-session <応答の panes[0].sessionId> --cwd <作業フォルダ> --label <題名> --no-activate --target claude --prompt-file <指示書>
+python scripts/mycmux_agent_cli.py spawn-tab --anchor-session <同じ sessionId> --cwd <作業フォルダ> --label <題名> --no-activate --target codex --prompt-file <指示書>
+```
+
+- `--split` の無い `spawn` は呼び出し元のタブを要るので、外からはエラーで止まる。外からは上の `spawn-tab --anchor-session` か、`spawn --split --workspace <id>` を使う
+- `--no-activate` を付ける。`--activate` は mycmux 内の選択の要求で、`--operator` と併用すると利用者の前面を切り替えるため、自動操作ではどちらも付けない
+- エージェントへの指示は `--prompt-file` で起動時に渡す。指示は起動引数で渡るので、送り込み (`send --enter`) は使わない。この経路の Claude のタブは `--permission-mode auto` で立つので、外のエージェントが書く指示書の冒頭には、誰からの依頼か、利用者の答えや承認ではないことを書く
+- 新しい版の Codex が出ていると、Codex のタブは起動直後に更新の確認画面で止まる。既定の選択は「Update now」(`npm install -g @openai/codex` を走らせる) なので、外から Enter を送らない。どれを選ぶかは利用者が画面で決める
+- 閉じてよいのは自分で立てたワークスペースだけ (`workspace-close --workspace <id>`)。ほかのワークスペースやタブは閉じない
+
+Grok Bot (Windows) が「Can't find Bash」で止まるとき: Grok Bot の手元の命令の受け口 (local-exec daemon) は、Windows では PATH を先頭から探し、`/git.*bash/i` に合う bash だけを使う。WSL の `C:\Windows\System32\bash.exe` は使わない。Git for Windows が入っていても、Grok Bot の PATH に `C:\Program Files\Git\bin` が無ければこのエラーになる (`Git\cmd` だけでは見つからない)。直し方は Git の入れ直しではなく、ユーザーの PATH に `C:\Program Files\Git\bin` を足し、新しい PATH を受け継ぐ経路で Grok Bot を立ち上げ直すこと (WMI の `Win32_Process Create` から立ち上げ直して受け継ぐことを 2026-11-05 に確かめた)。古い PATH を持つ端末から起動し直しても直らない。
+
 #### After a mycmux restart
 
 Restored terminal tabs have no PTY until they are shown. If a tab still holds

@@ -70,7 +70,7 @@ pub async fn save_agent_dormancy_record(app: AppHandle, state: State<'_, AppStat
         if statuses.current_view(&pty_session_id).is_some_and(|view| {
             !matches!(view.attention.kind, crate::session_state::AttentionKind::None | crate::session_state::AttentionKind::Done)
         }) { return Err("Conversation needs attention".into()); }
-        let source = crate::livebrief::locate_transcript_cached(&agent_kind, &agent_session_id).ok_or("Conversation record was not found")?;
+        let source = crate::livebrief::locate_transcript_for_session(&agent_kind, &agent_session_id, &pty_session_id)?.ok_or("Conversation record was not found")?;
         let receipt = save_record(&source, &target, &agent_kind, &agent_session_id, &pty_session_id, generation)?;
         if manager.session_observation(&pty_session_id).map(|value| value.0) != Some(generation)
             || manager.trusted_agent_identity(&pty_session_id).is_none_or(|value| value.kind != agent_kind || value.session_id != agent_session_id) {

@@ -21,6 +21,7 @@ export interface TerminalLaunchParams {
   command: string;
   args: string[];
   cwd?: string;
+  agentAccountId?: string;
   launchEnv?: Record<string, string>;
   restoreReason?: "saved-codex-pane";
 }
@@ -48,6 +49,19 @@ export function buildLaunchRequest(params: TerminalLaunchParams): TerminalLaunch
     env: params.launchEnv || undefined,
     ...(params.restoreReason ? { restoreReason: params.restoreReason } : {}),
   };
+}
+
+/** Rebuild only this tab's selector; pane/parent secrets are never a source. */
+export function applyTabAccountToLaunchEnv(env: Record<string, string>, kind: string | undefined, accountId: string | undefined): void {
+  for (const key of Object.keys(env)) {
+    if (["CLAUDE_CODE_OAUTH_TOKEN", "MYCMUX_LAUNCH_ACCOUNT", "CODEX_HOME", "GROK_HOME", "CODEX_SQLITE_HOME", "GROK_AUTH_PATH", "GROK_LEADER_SOCKET", "MYCMUX_ACCOUNT_HOME_KIND"].includes(key.toUpperCase())) delete env[key];
+  }
+  // Saved IDs are validated by the backend: a corrupt ID must fail, not fall back.
+  if (kind && ["claude", "codex", "grok"].includes(kind) && accountId !== undefined) {
+    env.MYCMUX_LAUNCH_ACCOUNT = accountId;
+    // With no conversation ID the backend scrubs AGENT_KIND; keep the target explicit.
+    if (!env.MYCMUX_LAUNCH_TARGET && !env.MYCMUX_SESSION_ID) env.MYCMUX_LAUNCH_TARGET = kind;
+  }
 }
 
 // Match the supported executable/shim and node/bun entry points used by the
@@ -95,6 +109,7 @@ function nextCodexPositional(args: string[], start = 0, pastTerminator = false):
 
 export function buildAgentRecoveryLaunch(params: TerminalLaunchParams, kind: string, sessionId: string, fresh: boolean): TerminalLaunchParams {
   const env: Record<string, string> = { ...params.launchEnv, MYCMUX_AGENT_KIND: kind, MYCMUX_SESSION_ID: sessionId, MYCMUX_RESUME: kind };
+  applyTabAccountToLaunchEnv(env, kind, params.agentAccountId ?? params.launchEnv?.MYCMUX_LAUNCH_ACCOUNT);
   const prefix = recoveryAgentPrefix(params.command, params.args);
   let args = [...params.args];
   if (prefix !== null) {

@@ -26,6 +26,7 @@ function projectStringRecord(source: Record<string, string> | undefined): Record
   if (source === undefined) return undefined;
   const result = Object.create(null) as Record<string, string>;
   for (const key of Object.keys(source).sort()) {
+    if (["CLAUDE_CODE_OAUTH_TOKEN", "MYCMUX_LAUNCH_ACCOUNT", "CODEX_HOME", "GROK_HOME", "CODEX_SQLITE_HOME", "GROK_AUTH_PATH", "GROK_LEADER_SOCKET", "MYCMUX_ACCOUNT_HOME_KIND", "MYCMUX_CLI_LOGIN_ID"].includes(key.toUpperCase())) continue;
     const value = source[key];
     if (typeof value !== "string") {
       throw new TypeError(`Persistent string record contains a non-string value at ${key}`);
@@ -59,6 +60,7 @@ export function persistentTabProjection(tab: PaneTab) {
     claudeSessionId: tab.claudeSessionId,
     agentKind: tab.agentKind,
     agentSessionId: tab.agentSessionId,
+    agentAccountId: tab.agentAccountId,
     suppressedAgentSessions: projectSuppressedSessions(tab.suppressedAgentSessions),
     launchEnv: projectStringRecord(tab.launchEnv),
     initialPrompt: tab.initialPrompt,

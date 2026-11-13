@@ -199,12 +199,16 @@ __mycmux_with_hook_cap() {
 __mycmux_codex_with_pane() {
   local executable="$1"
   shift
+  local home_args=()
+  if [ "${MYCMUX_ACCOUNT_HOME_KIND:-}" = "codex" ]; then
+    home_args=(--no-daemon -c 'cli_auth_credentials_store="file"')
+  fi
   if [ -n "${MYCMUX_PANE_SESSION_ID:-}" ]; then
     local pane_value="${MYCMUX_PANE_SESSION_ID//\\/\\\\}"
     pane_value="${pane_value//\"/\\\"}"
-    __mycmux_with_hook_cap codex "$executable" -c "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=\"$pane_value\"" "$@"
+    __mycmux_with_hook_cap codex "$executable" "${home_args[@]}" -c "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=\"$pane_value\"" "$@"
   else
-    __mycmux_with_hook_cap codex "$executable" "$@"
+    __mycmux_with_hook_cap codex "$executable" "${home_args[@]}" "$@"
   fi
 }
 
@@ -260,12 +264,19 @@ else
     __mycmux_codex_with_pane "$executable" "$@"
   }
 fi
+__mycmux_grok_with_home() {
+  local executable="$1"
+  shift
+  local home_args=()
+  if [ "${MYCMUX_ACCOUNT_HOME_KIND:-}" = "grok" ]; then home_args=(--no-leader); fi
+  __mycmux_with_hook_cap grok "$executable" "${home_args[@]}" "$@"
+}
 grok() {
   local executable
   executable="$(type -P grok 2>/dev/null)" || return 127
-  __mycmux_with_hook_cap grok "$executable" "$@"
+  __mycmux_grok_with_home "$executable" "$@"
 }
-export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap __mycmux_codex_with_pane __mycmux_claude_codex_launch_args __mycmux_claude_codex_with_hook __mycmux_python __mycmux_is_windows_shell claude claude-codex codex grok
+export -f __mycmux_issue_hook_cap __mycmux_ensure_dispatch_guard __mycmux_with_hook_cap __mycmux_codex_with_pane __mycmux_grok_with_home __mycmux_claude_codex_launch_args __mycmux_claude_codex_with_hook __mycmux_python __mycmux_is_windows_shell claude claude-codex codex grok
 
 # BEGIN CODEX RESTORE HELPERS
 # These helpers are also embedded in the backend's direct Codex supervisor.
@@ -344,6 +355,11 @@ __mycmux_restore_codex() {
       return 0
     fi
     reason=spawn-failed
+  fi
+  if [ "${MYCMUX_ACCOUNT_HOME_KIND:-}" = "codex" ]; then
+    printf '%s\n' '  Codex could not start for the account chosen for this tab (the codex command was not found or could not run). Nothing was started with another account. Fix the codex command, then reopen this tab.'
+    unset __MYCMUX_PENDING_LAUNCH_KIND
+    return 1
   fi
   __mycmux_drop_codex_restore_mapping
   __mycmux_codex_restore_report downgrade "$reason"
@@ -1371,17 +1387,33 @@ __spec_models_for() {
     # claude-codex (2026-09-18), and a Windows pane whose shell is Git Bash.
     codex|claude-codex)
       printf '%s\n' "Sol (6.1)|gpt-6.1-sol" "Terra (6.1)|gpt-6.1-terra" "Astra (6 flagship)|gpt-6-astra" "Sol (6)|gpt-6-sol" "Luna (6 light)|gpt-6-luna" "Sol (5.6)|gpt-5.6-sol" "Terra (5.6)|gpt-5.6-terra" "Luna (5.6)|gpt-5.6-luna" ;;
+    # agy 1.5.5: agy models, verified 2026-11-12.
     agy)
       printf '%s\n' \
-        "Gemini 3.1 Pro (High)|gemini-3.1-pro-high" \
-        "Gemini 3.1 Pro (Low)|gemini-3.1-pro-low" \
+        "Gemini 4 Argon (High)|gemini-4-argon-high" \
+        "Gemini 4 Argon (Medium)|gemini-4-argon-medium" \
+        "Gemini 4 Argon (Low)|gemini-4-argon-low" \
         "Gemini 3.8 Flash (High)|gemini-3.8-flash-high" \
         "Gemini 3.8 Flash (Medium)|gemini-3.8-flash-medium" \
         "Gemini 3.8 Flash (Low)|gemini-3.8-flash-low" \
-        "Claude Opus 4.6 (Thinking)|claude-opus-4-6-thinking" \
-        "Claude Sonnet 4.6 (Thinking)|claude-sonnet-4-6" ;;
+        "Claude Opus 5.5 (High)|claude-opus-5-5-high" \
+        "Claude Opus 5.5 (Medium)|claude-opus-5-5-medium" \
+        "Claude Opus 5.5 (Low)|claude-opus-5-5-low" \
+        "Claude Sonnet 5.5 (High)|claude-sonnet-5-5-high" \
+        "Claude Sonnet 5.5 (Medium)|claude-sonnet-5-5-medium" \
+        "Claude Sonnet 5.5 (Low)|claude-sonnet-5-5-low" \
+        "GPT-OSS 120B (Medium)|gpt-oss-120b-medium" ;;
+    # Grok Build 1.0.77: ~/.grok/models_cache.json, verified 2026-11-12.
+    grok)
+      printf '%s\n' \
+        "Grok 4.7|grok-4.7" \
+        "Grok 4.7 Fast|grok-4.7-build-fast" \
+        "Grok 4.6|grok-4.6" \
+        "Grok 4.5|grok-4.5" ;;
     omp)
       printf '%s\n' "Astra (6 flagship)|openai-codex/gpt-6-astra" "Sol (6)|openai-codex/gpt-6-sol" "Luna (6 light)|openai-codex/gpt-6-luna" ;;
+    # Recheck unavailable 2026-11-12: cursor-agent 2026.01.28 reported "No models available for this account".
+    # Public docs have names but no CLI ids; values remain as verified on 2026-10-15.
     cursor)
       printf '%s\n' \
         "Composer 2.5|composer-2.5" \
@@ -1395,9 +1427,8 @@ __spec_models_for() {
         "GPT-5.6 Sol (High)|gpt-5.6-sol-high" \
         "GPT-5.6 Sol (Extra High)|gpt-5.6-sol-xhigh" \
         "Gemini 3.1 Pro|gemini-3.1-pro" ;;
-    # grok はモデル ID 一覧を公開しておらず、fcc backend はアカウント次第。
-    # 一覧を持たず「入力する」で受ける。
-    grok|claude-codex-open) : ;;
+    # The fcc backend's open models depend on the account; keep its type-in path.
+    claude-codex-open) : ;;
   esac
   return 0
 }
@@ -1410,7 +1441,14 @@ __spec_efforts_for() {
         gpt-6-luna|gpt-5.6-luna) printf '%s\n' low medium high xhigh max ;;
         *) printf '%s\n' low medium high xhigh max ultra ;;
       esac ;;
-    grok|agy) printf '%s\n' low medium high ;;
+    # Grok Build 1.0.77 models_cache.json, verified 2026-11-12.
+    grok)
+      case "${2:-}" in
+        grok-4.5) printf '%s\n' low medium high ;;
+        *) printf '%s\n' low medium high xhigh ;;
+      esac ;;
+    # agy 1.5.5 --help, verified 2026-11-12.
+    agy) printf '%s\n' low medium high xhigh max ;;
     omp) printf '%s\n' low medium high xhigh max ;;
   esac
   return 0

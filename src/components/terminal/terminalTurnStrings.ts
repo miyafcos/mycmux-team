@@ -19,6 +19,7 @@ export const terminalTurnStrings = {
   openPanel: "会話履歴を開く",
   historyUnlinked: "このタブに対応する会話の記録がまだ確認できません",
   historyChecking: "このタブの会話の記録を確認中",
+  historyDisabled: "設定で会話履歴をオフにしています",
   recentHistory: "直近200件までの会話の記録",
   closePanel: "会話履歴を閉じる",
   listTitle: "送った命令",

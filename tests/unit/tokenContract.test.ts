@@ -74,7 +74,6 @@ describe("cmux design token contract", () => {
       "--cmux-dashboard-reading-line-height",
       "--cmux-dashboard-card-min-height",
       "--cmux-dashboard-tile-min-height",
-      "--cmux-dashboard-composer-min-height",
       "--cmux-accent-text",
       "--cmux-yellow",
       "--cmux-boot-bg",
@@ -90,5 +89,12 @@ describe("cmux design token contract", () => {
     // The boot ground is only useful if AppShell keeps feeding the key that
     // index.html reads before React mounts.
     expect(appShell).toContain('"mycmux-boot-chrome"');
+  });
+});
+
+describe("C1a-B17 retired composer tokens", () => {
+  it.each(["--cmux-dashboard-composer-min-height", "--cmux-chat-radius-input", "--cmux-chat-radius-send"])("does not retain the unused %s definition", token => {
+    const css = globalCss;
+    expect(css).not.toContain(token + ":");
   });
 });

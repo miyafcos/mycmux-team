@@ -1,3 +1,4 @@
+import { applyTabAccountToLaunchEnv } from "../terminal/terminalLaunchParams";
 import {
   writeToSession,
   writeToSessionGuarded,
@@ -979,6 +980,8 @@ export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pa
     MYCMUX_PANE_SESSION_ID: tab.sessionId,
     MYCMUX_TAB_ID: tab.id,
   };
+  applyTabAccountToLaunchEnv(launchEnv, launchEnv.MYCMUX_LAUNCH_TARGET ?? tab.agentKind
+    ?? (tab.agentId === "claude-code" ? "claude" : tab.agentId), tab.agentAccountId);
   const launchThroughLauncher = !tab.commandArgv?.length && requiresLauncherDispatch(launchEnv);
   const agent = launchThroughLauncher
     ? getDefaultAgent()

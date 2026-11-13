@@ -18,7 +18,38 @@ export const PROVIDER_TITLE: Record<CliProvider, string> = {
   grok: "Grok Build",
 };
 
+export { listCliAccountHomes, getCliAccountHomeLogin, unregisterCliAccountHome } from "./ipc";
+export type { CliAccountHomeStatus, CliAccountHomeLoginStatus, CliLoginPurpose } from "./ipc";
+
 const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
+  "cli_account.error.home_session_unsupported":
+    "このアカウント用のタブの会話は、複製と共有にまだ対応していません。元のタブで続けてください。",
+  "cli_account.error.home_login_timeout":
+    "原因: タブ用のログインが制限時間内に完了しませんでした。次にすること: 設定のアカウントからもう一度ログインしてください。会話と設定は残っています。",
+  "cli_account.error.home_login_cancelled":
+    "原因: タブ用のログインを中止しました。次にすること: 必要な場合は設定のアカウントからもう一度ログインしてください。会話と設定は残っています。",
+  "cli_account.error.home_not_ready":
+    "原因: このアカウントはタブ用のログインがまだです。次にすること: 設定のアカウントからログインしてください。",
+  "cli_account.error.home_owner_mismatch":
+    "原因: タブ用のログイン情報を登録と照合できません。次にすること: このタブ用ログインを中止し、対象のアカウントでログインし直してください。",
+  "cli_account.error.home_isolation_unavailable":
+    "原因: タブ用の設定を安全に準備できません。次にすること: CLI の設定と保存先のアクセス権を確認してください。",
+  "cli_account.error.home_in_use":
+    "原因: このアカウントはタブまたはログインで使用中です。次にすること: 対象のタブを閉じてからやり直してください。",
+  "cli_account.error.home_path_invalid":
+    "原因: タブ用の保存先の安全性を確認できません。次にすること: 設定のアカウント登録を確認してください。",
+  "cli_account.error.launch_token_invalid":
+    "原因: 長期トークンの形式が正しくありません。次にすること: Claude で setup-token を実行し、出力されたトークンを登録し直してください。",
+  "cli_account.error.launch_account_not_found":
+    "原因: 起動に指定した登録アカウントが見つかりません。次にすること: 設定のアカウントの画面を確認し、選び直してください。",
+  "cli_account.error.launch_token_owner_mismatch":
+    "原因: 長期トークンは選択したアカウントのものではありません。次にすること: 対象のアカウントで発行したトークンを登録してください。",
+  "cli_account.error.launch_token_record_mismatch":
+    "原因: 登録した長期トークンと、持ち主の確認の記録が合いません。次にすること: 設定のアカウントの画面で、トークンを登録し直してください。",
+  "cli_account.error.launch_token_missing":
+    "原因: このアカウント用の長期トークンが登録されていません。次にすること: 設定のアカウントの画面で登録してください。",
+  "cli_account.error.launch_token_expired":
+    "原因: このアカウント用の長期トークンの期限が切れています。次にすること: Claude で setup-token を実行し、新しいトークンを設定で登録してください。",
   "cli_account.error.snapshot_foreign":
     "原因: このアカウントの保存データに、別のアカウントのログイン情報が入っています。次にすること: このアカウントで再ログインしてから切り替えてください。",
   "cli_account.error.live_token_foreign":
@@ -104,12 +135,34 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
     "ログイン情報は反映されましたが、選択履歴を保存できませんでした。バックアップを残したまま、保存先のアクセス権を確認してください。",
 };
 
+/** Home login leaves files in place; staging-only cleanup wording must not leak here. */
+export function cliAccountHomeLoginMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  const homeCode = raw === "cli_account.error.login_timeout" ? "cli_account.error.home_login_timeout"
+    : raw === "cli_account.error.login_cancelled" ? "cli_account.error.home_login_cancelled" : raw;
+  return cliAccountMessage(homeCode);
+}
+
 export function cliAccountMessage(value: unknown): string {
   const raw = value instanceof Error ? value.message : typeof value === "string" ? value : "";
   return (
     CLI_ACCOUNT_MESSAGES[raw] ??
     "原因: CLIアカウント情報を処理できませんでした。次にすること: ログイン状態を確認して、もう一度お試しください。"
   );
+}
+
+/** Translate only account launch keys. Other terminal errors keep their existing presentation. */
+export function cliAccountLaunchErrorMessage(value: unknown): string | null {
+  const raw = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  const key = raw === "launch_account_not_found" ? "cli_account.error.launch_account_not_found" : raw;
+  if (!/^cli_account\.error\.[a-z_]+$/.test(key)) return null;
+  return cliAccountMessage(key) + "\n設定のアカウントで、タブ用のトークンかログインを済ませてから、タブを開き直してください";
+}
+
+/** Only this backend refusal changes duplicate/publish/join presentation. */
+export function cliAccountSessionErrorMessage(value: unknown): string | null {
+  const raw = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  return raw === "cli_account.error.home_session_unsupported" ? cliAccountMessage(raw) : null;
 }
 
 /**
@@ -226,13 +279,34 @@ function paneMatchesProvider(meta: AgentPaneMetadataLike, provider: CliProvider)
   );
 }
 
+type AccountWorkspaceLike = readonly { panes: readonly { tabs: readonly {
+  sessionId: string;
+  agentAccountId?: string;
+  agentKind?: string;
+  agentId?: string;
+  claudeSessionId?: string;
+  launchEnv?: Record<string, string>;
+}[] }[] }[];
+
+/** Missing, conflicting or metadata-only ownership stays in the warning. */
+function isPinnedProviderTab(sessionId: string, meta: AgentPaneMetadataLike, provider: CliProvider, workspaces: AccountWorkspaceLike): boolean {
+  if (meta.agentKind !== provider) return false; // claude-codex still counts toward both.
+  const tabs = workspaces.flatMap(workspace => workspace.panes.flatMap(pane => pane.tabs)).filter(tab => tab.sessionId === sessionId);
+  if (tabs.length !== 1 || !tabs[0].agentAccountId) return false;
+  const tab = tabs[0];
+  const kind = tab.launchEnv?.MYCMUX_LAUNCH_TARGET ?? tab.agentKind
+    ?? (tab.claudeSessionId || tab.agentId === "claude-code" ? "claude" : tab.agentId);
+  return kind === provider;
+}
+
 export function runningAgentPaneDetails(
   metadata: Record<string, AgentPaneMetadataLike>,
   provider: CliProvider,
   volatileMetadata: Record<string, Pick<AgentPaneMetadataLike, "processTitle">> = {},
+  workspaces: AccountWorkspaceLike = [],
 ): string[] {
   return Object.entries(metadata)
-    .filter(([, meta]) => paneMatchesProvider(meta, provider))
+    .filter(([sessionId, meta]) => paneMatchesProvider(meta, provider) && !isPinnedProviderTab(sessionId, meta, provider, workspaces))
     .map(([sessionId, meta]) => {
       const process = volatileMetadata[sessionId]?.processTitle?.trim()
         || meta.processTitle?.trim()
@@ -250,16 +324,25 @@ export function runningAgentPaneDetails(
  */
 export function runningAgentCounts(
   metadata: Record<string, AgentPaneMetadataLike>,
+  workspaces: AccountWorkspaceLike = [],
 ): Record<CliProvider, number> {
   const counts: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
-  for (const meta of Object.values(metadata)) {
-    if (!meta.agentKind || meta.processIsShell !== false) continue;
-    if (meta.agentKind === "claude") counts.claude += 1;
-    else if (meta.agentKind === "codex") counts.codex += 1;
-    else if (meta.agentKind === "grok") counts.grok += 1;
-    else if (meta.agentKind === "claude-codex") {
-      counts.claude += 1;
-      counts.codex += 1;
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    for (const provider of PROVIDER_ORDER) {
+      if (paneMatchesProvider(meta, provider) && !isPinnedProviderTab(sessionId, meta, provider, workspaces)) counts[provider] += 1;
+    }
+  }
+  return counts;
+}
+
+export function pinnedAgentCounts(
+  metadata: Record<string, AgentPaneMetadataLike>,
+  workspaces: AccountWorkspaceLike = [],
+): Record<CliProvider, number> {
+  const counts: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    for (const provider of PROVIDER_ORDER) {
+      if (paneMatchesProvider(meta, provider) && isPinnedProviderTab(sessionId, meta, provider, workspaces)) counts[provider] += 1;
     }
   }
   return counts;
@@ -270,6 +353,7 @@ export function switchWarningText(
   provider: CliProvider,
   targetLabel?: string,
   paneDetails: readonly string[] = [],
+  pinnedCount = 0,
 ): string {
   const target = targetLabel ? `「${targetLabel}」へ` : "別のアカウントへ";
   const running = count > 0
@@ -278,9 +362,10 @@ export function switchWarningText(
   const panes = paneDetails.length > 0
     ? `\n対象タブ:\n${paneDetails.map((detail) => `・${detail}`).join("\n")}`
     : "";
+  const pinned = pinnedCount > 0 ? `アカウントを指定したタブ ${pinnedCount} 件は、この切り替えの影響を受けません\n` : "";
   return (
     `${target}切り替えます。切り替え前の状態は自動でバックアップされ、新しく起動するセッションから反映されます。\n` +
-    `${running}${panes}\n` +
+    `${running}${panes}\n${pinned}` +
     "mycmux の外で動いている CLI は検知できません。実行中の CLI がある場合、認証情報を後から上書きする可能性があります。\n" +
     "切り替えを続行しますか？"
   );

@@ -100,6 +100,7 @@ beforeEach(() => {
   });
   vi.spyOn(focusController, "request").mockImplementation(() => {});
   useSettingsStore.setState({ agentTabContent: "terminal", showTerminalHistoryButton: false, showSplitRightButton: true, showSplitDownButton: true, declaredLaunchEnabled: true });
+  useAgentTabViewStore.setState({ views: {}, conversationTabs: {} });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {} });
   useSessionAttentionStore.getState().resetForTests();
   useLiveBriefStore.getState().reset();
@@ -126,7 +127,8 @@ describe("Stage 2a single heading", () => {
   it.each([120, 181, 209, 210, 237, 238, 244, 249, 250, 359, 360, 559, 560, 720])("replaces the former magnifier with the Claude switch at width %i", async value => {
     width = value;
     useSettingsStore.setState({ agentTabContent: "conversation" });
-    useAgentTabViewStore.setState({ views: {} });
+    // This harness mounts only the header; model the renderer painting a conversation explicitly.
+    useAgentTabViewStore.setState({ views: {}, conversationTabs: { t0: true } });
     await mount(pane(4, { agentId: "claude", agentKind: "claude", agentSessionId: "fixture-agent" }));
     expect(Boolean(host.querySelector(".pane-agent-content-switch"))).toBe(value >= 210);
     expect(host.querySelector(".pane-heading-row [data-terminal-magnifier]")).toBeNull();
@@ -136,13 +138,14 @@ describe("Stage 2a single heading", () => {
     expect(item("agent-tab-content")?.textContent).toBe(agentTabStrings.toTerminal);
     await click(item("agent-tab-content"));
     expect(useAgentTabViewStore.getState().views.t0).toBe("terminal");
+    await act(async () => useAgentTabViewStore.getState().setConversationVisible("t0", false));
     await menu(); expect(item("agent-tab-content")?.textContent).toBe(agentTabStrings.toConversation);
     await click(item("agent-tab-content"));
     expect(useAgentTabViewStore.getState().views.t0).toBe("conversation");
   });
   it("keeps the former magnifier width hysteresis and switches directly from the heading", async () => {
     useSettingsStore.setState({ agentTabContent: "conversation" });
-    useAgentTabViewStore.setState({ views: {} });
+    useAgentTabViewStore.setState({ views: {}, conversationTabs: { t0: true } });
     await mount(pane(1, { agentId: "claude", agentKind: "claude" }));
     for (const [nextWidth, visible] of [[800, true], [560, true], [360, true], [250, true], [210, true],
       [209, false], [210, false], [237, false], [238, true], [129, false], [158, false], [198, false],
@@ -153,6 +156,7 @@ describe("Stage 2a single heading", () => {
     }
     await click(host.querySelector(`button[aria-label="${agentTabStrings.toTerminal}"]`));
     expect(useAgentTabViewStore.getState().views.t0).toBe("terminal");
+    await act(async () => useAgentTabViewStore.getState().setConversationVisible("t0", false));
     await click(host.querySelector(`button[aria-label="${agentTabStrings.toConversation}"]`));
     expect(useAgentTabViewStore.getState().views.t0).toBe("conversation");
   });

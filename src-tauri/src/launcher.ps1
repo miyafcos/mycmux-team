@@ -135,6 +135,9 @@ function global:codex {
     $quotedPaneId = ConvertTo-Json -InputObject $env:MYCMUX_PANE_SESSION_ID -Compress
     $agentArgs = @("-c", "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=$quotedPaneId") + $agentArgs
   }
+  if ($env:MYCMUX_ACCOUNT_HOME_KIND -eq "codex") {
+    $agentArgs = @("--no-daemon", "-c", 'cli_auth_credentials_store="file"') + $agentArgs
+  }
   Invoke-MycmuxAgentWithHook "codex" (Join-Path $env:APPDATA "npm\codex.cmd") $agentArgs
 }
 
@@ -143,7 +146,9 @@ function global:grok {
     Write-Error "grok was not found on PATH."
     return
   }
-  Invoke-MycmuxAgentWithHook "grok" $global:MycmuxGrokExecutable @($args)
+  $agentArgs = @($args)
+  if ($env:MYCMUX_ACCOUNT_HOME_KIND -eq "grok") { $agentArgs = @("--no-leader") + $agentArgs }
+  Invoke-MycmuxAgentWithHook "grok" $global:MycmuxGrokExecutable $agentArgs
 }
 
 if ($env:MYCMUX_HOOK_WRAPPERS_ONLY -eq "1") {
@@ -920,6 +925,11 @@ function Invoke-MycmuxCodexRestore {
     }
     $reason = 'spawn-failed'
   }
+  if ($env:MYCMUX_ACCOUNT_HOME_KIND -eq 'codex') {
+    Write-Host '  Codex could not start for the account chosen for this tab (the codex command was not found or could not run). Nothing was started with another account. Fix the codex command, then reopen this tab.'
+    $script:MycmuxPendingLaunchKind = $null
+    return
+  }
   Remove-MycmuxCodexRestoreMapping
   Write-MycmuxCodexRestoreReport 'downgrade' $reason
   if (-not $script:MycmuxCodexReportWritten) {
@@ -1080,20 +1090,36 @@ $CodexModels = @(
   New-MycmuxModelChoice "Terra (5.6)" "gpt-5.6-terra"
   New-MycmuxModelChoice "Luna (5.6)" "gpt-5.6-luna"
 )
+# agy 1.5.5: agy models, verified 2026-11-12.
 $AgyModels = @(
-  New-MycmuxModelChoice "Gemini 3.1 Pro (High)" "gemini-3.1-pro-high"
-  New-MycmuxModelChoice "Gemini 3.1 Pro (Low)" "gemini-3.1-pro-low"
+  New-MycmuxModelChoice "Gemini 4 Argon (High)" "gemini-4-argon-high"
+  New-MycmuxModelChoice "Gemini 4 Argon (Medium)" "gemini-4-argon-medium"
+  New-MycmuxModelChoice "Gemini 4 Argon (Low)" "gemini-4-argon-low"
   New-MycmuxModelChoice "Gemini 3.8 Flash (High)" "gemini-3.8-flash-high"
   New-MycmuxModelChoice "Gemini 3.8 Flash (Medium)" "gemini-3.8-flash-medium"
   New-MycmuxModelChoice "Gemini 3.8 Flash (Low)" "gemini-3.8-flash-low"
-  New-MycmuxModelChoice "Claude Opus 4.6 (Thinking)" "claude-opus-4-6-thinking"
-  New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
+  New-MycmuxModelChoice "Claude Opus 5.5 (High)" "claude-opus-5-5-high"
+  New-MycmuxModelChoice "Claude Opus 5.5 (Medium)" "claude-opus-5-5-medium"
+  New-MycmuxModelChoice "Claude Opus 5.5 (Low)" "claude-opus-5-5-low"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 (High)" "claude-sonnet-5-5-high"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 (Medium)" "claude-sonnet-5-5-medium"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 (Low)" "claude-sonnet-5-5-low"
+  New-MycmuxModelChoice "GPT-OSS 120B (Medium)" "gpt-oss-120b-medium"
+)
+# Grok Build 1.0.77: ~/.grok/models_cache.json, verified 2026-11-12.
+$GrokModels = @(
+  New-MycmuxModelChoice "Grok 4.7" "grok-4.7"
+  New-MycmuxModelChoice "Grok 4.7 Fast" "grok-4.7-build-fast"
+  New-MycmuxModelChoice "Grok 4.6" "grok-4.6"
+  New-MycmuxModelChoice "Grok 4.5" "grok-4.5"
 )
 $OmpModels = @(
   New-MycmuxModelChoice "Astra (6 flagship)" "openai-codex/gpt-6-astra"
   New-MycmuxModelChoice "Sol (6)" "openai-codex/gpt-6-sol"
   New-MycmuxModelChoice "Luna (6 light)" "openai-codex/gpt-6-luna"
 )
+# Recheck unavailable 2026-11-12: cursor-agent 2026.01.28 reported "No models available for this account".
+# Public docs have names but no CLI ids; values remain as verified on 2026-10-15.
 $CursorModels = @(
   New-MycmuxModelChoice "Composer 2.5" "composer-2.5"
   New-MycmuxModelChoice "Grok 4.7 (Low)" "grok-4.7-low"
@@ -1109,18 +1135,19 @@ $CursorModels = @(
 )
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
 $CodexEfforts = @("low", "medium", "high", "xhigh", "max", "ultra")
-$ShortEfforts = @("low", "medium", "high")
+# agy 1.5.5 --help / Grok Build 1.0.77 models_cache.json, verified 2026-11-12.
+$AgyEfforts = @("low", "medium", "high", "xhigh", "max")
+$GrokEfforts = @("low", "medium", "high", "xhigh")
 $OmpEfforts = @("low", "medium", "high", "xhigh", "max")
 
 $LaunchSpecCatalog = @{
   "claude" = [pscustomobject]@{ Models = $ClaudeModels; Efforts = $ClaudeEfforts }
   "codex" = [pscustomobject]@{ Models = $CodexModels; Efforts = $CodexEfforts }
   "claude-codex" = [pscustomobject]@{ Models = $CodexModels; Efforts = $ClaudeEfforts }
-  # grok publishes no model id list, and the fcc backend serves whatever open
-  # models the account has: type one in rather than picking from a stale list.
-  "grok" = [pscustomobject]@{ Models = @(); Efforts = $ShortEfforts }
+  "grok" = [pscustomobject]@{ Models = $GrokModels; Efforts = $GrokEfforts }
+  # The fcc backend's open models depend on the account; keep its type-in path.
   "claude-codex-open" = [pscustomobject]@{ Models = @(); Efforts = $ClaudeEfforts }
-  "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $ShortEfforts }
+  "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $AgyEfforts }
   # hermes picks provider+model with `hermes model`; mycmux passes no flags.
   "hermes" = [pscustomobject]@{ Models = @(); Efforts = @() }
   "omp" = [pscustomobject]@{ Models = $OmpModels; Efforts = $OmpEfforts }
@@ -1553,6 +1580,7 @@ function Invoke-MycmuxLaunchSpecMenu {
   $effortChoices = @()
   foreach ($effort in $spec.Efforts) {
     if ($Option.Target -eq "codex" -and $model -cin @("gpt-6-luna", "gpt-5.6-luna") -and $effort -eq "ultra") { continue }
+    if ($Option.Target -eq "grok" -and $model -ceq "grok-4.5" -and $effort -eq "xhigh") { continue }
     $effortChoices += [pscustomobject]@{ Label = $effort; Value = $effort }
   }
   $effort = Show-MycmuxSpecMenu -Title ("{0} - effort" -f $Option.Label) -Choices $effortChoices -Note $note

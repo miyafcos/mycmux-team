@@ -109,15 +109,16 @@ describe("compact conversation tab boundaries", () => {
     const inputRef = createRef<HTMLTextAreaElement>();
     await act(async () => root.render(<div className="terminal-transcript-panel--tab"><ReplyComposer card={card} inputRef={inputRef} mentionTargets={[card]} tabSessionId={card.tab.sessionId} showSuggestions={false} /></div>));
     const note = host.querySelector<HTMLElement>(".cmux-dashboard-composer-note");
-    if (note) {
-      expect(note.childNodes).toHaveLength(0);
-      expect(note.getAttribute("role")).toBeNull();
+    expect(note).not.toBeNull();
+    {
+      expect(note!.childNodes).toHaveLength(0);
+      expect(note!.getAttribute("role")).toBeNull();
       // jsdom cannot measure geometry. Apply just the real :empty rule to
       // verify it removes this retained slot (including grid gap) from layout.
       style = document.createElement("style");
       style.textContent = css.match(/\.terminal-transcript-panel--tab \.cmux-dashboard-composer-note:empty\s*\{[^}]*\}/)?.[0] ?? "";
       document.head.append(style);
-      expect(getComputedStyle(note).display).toBe("none");
+      expect(getComputedStyle(note!).display).toBe("none");
     }
     await act(async () => root.render(<div className="cmux-dashboard-view"><ReplyComposer card={card} inputRef={inputRef} mentionTargets={[card]} showSuggestions={false} /></div>));
     expect(host.querySelector(".cmux-dashboard-composer-note")).toBeNull();
@@ -208,6 +209,31 @@ describe("tab archive diagnostic visibility and announcements", () => {
 });
 
 describe("tab archive row geometry and keyboard focus CSS", () => {
+  it("C1a-B14 keeps the measured separator gap in the system canvas under forced colors", () => {
+    const forced = css.match(/@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*?)\n\}/)?.[1];
+    expect(forced).toBeDefined();
+    expect(forced).toMatch(/\.cmux-archive-row\[data-kind="user"\]\[data-prev-kind\]\s*\{[^}]*border-top-color:\s*Canvas\s*;/);
+    expect(forced).not.toContain("forced-color-adjust: none");
+  });
+
+  it("C1a-B18 restores compact evidence padding at normal and narrow tab widths", () => {
+    expect(css).toContain(".terminal-transcript-panel--tab .cmux-archive-evidence { padding: 7px 9px; }");
+    const narrow = css.split("@container agent-conversation (max-width: 360px)")[1]?.split("@container")[0];
+    expect(narrow).toContain(".terminal-transcript-panel--tab .cmux-archive-evidence { padding: 5px 6px; }");
+  });
+
+  it("C1a-B21 draws navigation focus rings inside the horizontal scrolling viewport", () => {
+    expect(css).toMatch(/\.agent-tab-navigation\s*\{[^}]*overflow-x:\s*auto;/);
+    const rule = css.match(/\.terminal-transcript-panel--tab button:focus-visible\s*\{([^}]*)\}/)?.[1];
+    expect(rule).toContain("outline: 2px solid var(--cmux-accent)");
+    expect(rule).toContain("outline-offset: -2px");
+    const globalCss = readFileSync(resolve(import.meta.dirname, "../../src/global.css"), "utf8");
+    expect(globalCss).toContain("outline-offset: 1px !important;");
+    // The global !important rule defeats the generic inward tab rule.
+    // This more specific important declaration must also beat it when global.css loads last.
+    expect(css).toContain(".terminal-transcript-panel--tab .agent-tab-navigation button:focus-visible { outline-offset: -2px !important; }");
+  });
+
   it("S-1 keeps both separator rules and all their declarations inside the measured row", () => {
     expect(css).toContain('.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind] { position: relative; border-top: 10px solid transparent; padding-top: 11px; background-clip: padding-box; }');
     expect(css).toContain('.terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind]::before { content: ""; position: absolute; top: 0; left: 0; right: 0; border-top: 1px solid color-mix(in srgb, var(--cmux-border) 70%, transparent); pointer-events: none; }');
@@ -270,5 +296,43 @@ describe("tab archive row geometry and keyboard focus CSS", () => {
     expect(css).toContain(".terminal-transcript-panel--tab .agent-tab-view-switch button:focus-visible { outline-offset: -2px !important; }");
     expect(css).toMatch(/\.terminal-transcript-panel--tab \.agent-tab-view-switch\s*\{[^}]*overflow:\s*hidden;/);
     expect(css).toContain(".terminal-transcript-panel--tab button:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: -2px; }");
+  });
+});
+
+describe("C1a-B20 measured row spacing", () => {
+  it("keeps the same row offset through repeated measurements of internal separator gaps", async () => {
+    const heights = [75, 96, 75, 96, 75, 96];
+    state = { ...state, following: false, items: heights.map((_, index) => ({
+      ...state.items[0], occurrenceId: `measured:${index}`, sourceStart: String(index * 10),
+      sourceEnd: String(index * 10 + 10), kind: index % 2 ? "user" as const : "assistant" as const,
+    })) };
+    const observers: Array<{ targets: Element[]; callback: ResizeObserverCallback; active: boolean }> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      record: typeof observers[number];
+      constructor(callback: ResizeObserverCallback) { this.record = { targets: [], callback, active: true }; observers.push(this.record); }
+      observe(target: Element) { this.record.targets.push(target); }
+      disconnect() { this.record.active = false; }
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+      const log = this.closest<HTMLElement>("[role=log]");
+      const index = state.items.findIndex(item => item.occurrenceId === this.dataset.archiveRow);
+      const height = index >= 0 ? heights[index] : 150;
+      const top = index >= 0 ? heights.slice(0, index).reduce((sum, value) => sum + value, 0) - (log?.scrollTop ?? 0) : 0;
+      return { x: 0, y: top, top, left: 0, right: 720, bottom: top + height, width: 720, height, toJSON: () => ({}) };
+    });
+    await act(async () => root.render(<ArchiveHarness />));
+    const log = host.querySelector<HTMLElement>("[role=log]")!;
+    Object.defineProperties(log, { scrollHeight: { configurable: true, value: 1000 }, clientHeight: { configurable: true, value: 150 } });
+    const measure = () => observers.filter(observer => observer.active).forEach(observer => observer.callback(
+      observer.targets.filter(target => target.isConnected).map(target => ({ target } as ResizeObserverEntry)), {} as ResizeObserver));
+    await act(async () => measure());
+    await act(async () => { log.scrollTop = 120; log.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    const row = host.querySelector<HTMLElement>('[data-archive-row="measured:1"]')!;
+    const offset = row.getBoundingClientRect().top;
+    for (let pass = 1; pass <= 6; pass++) {
+      await act(async () => { heights[0] += 5; measure(); });
+      expect(log.scrollTop).toBe(120 + pass * 5);
+      expect(row.getBoundingClientRect().top).toBe(offset);
+    }
   });
 });

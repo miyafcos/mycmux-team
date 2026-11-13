@@ -112,3 +112,60 @@ Invoke-MycmuxResumeFromEnv | Where-Object { $_ -isnot [bool] }
     assert result.returncode == 0, result.stderr
     assert "KIND:resume" in result.stdout
     assert f"ARG:{expected_arg}" in result.stdout
+
+
+
+@pytest.mark.parametrize("engine", ["bash", "powershell"])
+@pytest.mark.parametrize("provider", ["codex", "grok"])
+@pytest.mark.parametrize("marker", ["", "matching", "other"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_private_home_flags_are_provider_scoped_and_precede_positionals(tmp_path: Path, engine: str, provider: str, marker: str, resume: bool) -> None:
+    executable = (str(Path(r"C:\Program Files\Git\bin\bash.exe")) if os.name == "nt" else shutil.which("bash")) if engine == "bash" else (shutil.which("powershell") or shutil.which("pwsh"))
+    if not executable or (engine == "bash" and os.name == "nt" and not Path(executable).is_file()):
+        pytest.skip(f"{engine} unavailable")
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith(("MYCMUX_", "ORCA_"))}
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), APPDATA=str(tmp_path), TEST_LAUNCHER=(SH.as_posix() if engine == "bash" else str(PS)), MYCMUX_HOOK_WRAPPERS_ONLY="1", MYCMUX_DISPATCH_GUARD="off", TEST_PROVIDER=provider, TEST_RESUME="1" if resume else "0", MYCMUX_PANE_SESSION_ID="fixture-pane")
+    if marker:
+        env["MYCMUX_ACCOUNT_HOME_KIND"] = provider if marker == "matching" else ("grok" if provider == "codex" else "codex")
+    if engine == "bash":
+        script = r'''
+source "$TEST_LAUNCHER"
+__mycmux_issue_hook_cap() { printf fixture-cap; }
+__mycmux_ensure_dispatch_guard() { :; }
+fixture_agent() { printf 'ARG:%s\n' "$@"; }
+argv=(--model fixture-model)
+if [ "$TEST_RESUME" = 1 ]; then
+  if [ "$TEST_PROVIDER" = codex ]; then argv=(resume fixture-id --model fixture-model)
+  else argv=(--resume fixture-id --model fixture-model); fi
+fi
+if [ "$TEST_PROVIDER" = codex ]; then __mycmux_codex_with_pane fixture_agent "${argv[@]}"
+else __mycmux_grok_with_home fixture_agent "${argv[@]}"; fi
+'''
+        result = subprocess.run([executable, "--noprofile", "--norc", "-s"], input=script, env=env, text=True, capture_output=True, encoding="utf-8", timeout=20)
+    else:
+        script = r'''
+$src = Get-Content -LiteralPath $env:TEST_LAUNCHER -Raw -Encoding UTF8
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+foreach ($name in @('codex','grok')) {
+  $fn = $ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "global:$name"}, $true)
+  Invoke-Expression $fn.Extent.Text
+}
+function Invoke-MycmuxAgentWithHook { param([string]$Provider, [string]$Executable, [object[]]$AgentArgs) foreach ($arg in $AgentArgs) { Write-Output "ARG:$arg" } }
+$global:MycmuxGrokExecutable = 'fixture-never-executed'
+$argv = @('--model','fixture-model')
+if ($env:TEST_RESUME -eq '1') {
+  if ($env:TEST_PROVIDER -eq 'codex') { $argv = @('resume','fixture-id','--model','fixture-model') }
+  else { $argv = @('--resume','fixture-id','--model','fixture-model') }
+}
+& $env:TEST_PROVIDER @argv
+'''
+        result = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], env=env, text=True, capture_output=True, encoding="utf-8", timeout=20)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    actual = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG:")]
+    expected = (["resume", "fixture-id"] if provider == "codex" else ["--resume", "fixture-id"]) if resume else []
+    expected += ["--model", "fixture-model"]
+    if provider == "codex":
+        expected = ["-c", 'shell_environment_policy.set.MYCMUX_PANE_SESSION_ID="fixture-pane"'] + expected
+    if marker == "matching":
+        expected = (["--no-daemon", "-c", 'cli_auth_credentials_store="file"'] if provider == "codex" else ["--no-leader"]) + expected
+    assert actual == expected

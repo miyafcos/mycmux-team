@@ -1132,3 +1132,38 @@ describe("Claude slash suggestions in tab composers", () => {
     });
   });
 });
+
+describe("C1a-B16 disabled composer focus", () => {
+  const expectUnfocused = () => {
+    expect(container.querySelector(".cmux-composer-shell")?.classList.contains("is-focused")).toBe(false);
+    expect(container.querySelector(".cmux-composer-hint")?.classList.contains("is-visible")).toBe(false);
+  };
+
+  it("removes focus decoration during sending and does not restore it without a new focus", async () => {
+    let complete!: (value: unknown) => void;
+    mocks.handleSocketCommand.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const textarea = await renderComposer();
+    await input(textarea, "pending message");
+    await act(async () => textarea.focus());
+    expect(container.querySelector(".cmux-composer-shell")?.classList.contains("is-focused")).toBe(true);
+    await key(textarea, "Enter");
+    expect(textarea.disabled).toBe(true);
+    expectUnfocused();
+    await act(async () => complete({ confirmed: true }));
+    expect(textarea.disabled).toBe(false);
+    expectUnfocused();
+    await act(async () => { textarea.blur(); textarea.focus(); });
+    expect(container.querySelector(".cmux-composer-shell")?.classList.contains("is-focused")).toBe(true);
+  });
+
+  it("removes focus decoration when a question blocks the focused editor", async () => {
+    const textarea = await renderComposer();
+    await act(async () => textarea.focus());
+    await act(async () => ingestAskQuestionLines(first.tab.sessionId, askFixture, NOW, 1));
+    expect(textarea.disabled).toBe(true);
+    expectUnfocused();
+    await act(async () => useAskQuestionStore.getState().resetForTests());
+    expect(textarea.disabled).toBe(false);
+    expectUnfocused();
+  });
+});

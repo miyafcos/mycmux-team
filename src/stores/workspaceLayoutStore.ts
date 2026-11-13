@@ -47,7 +47,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "displayName" | "displayNameSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "delegatedByTabId" | "delegatedByAgentSessionId" | "delegatedAt" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "sessionId" | "label" | "labelSource" | "displayName" | "displayNameSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "agentAccountId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "sourceMtimeMs" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "delegatedByTabId" | "delegatedByAgentSessionId" | "delegatedAt" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -65,6 +65,7 @@ function makeTab(
     claudeSessionId: options?.claudeSessionId,
     agentKind: options?.agentKind,
     agentSessionId: options?.agentSessionId,
+    agentAccountId: options?.agentAccountId ?? options?.launchEnv?.MYCMUX_LAUNCH_ACCOUNT,
     suppressedAgentSessions: options?.suppressedAgentSessions,
     launchEnv: options?.launchEnv,
     initialPrompt: options?.initialPrompt,
@@ -480,6 +481,7 @@ function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPrevie
 }
 
 interface TerminalLaunchOptions {
+  agentAccountId?: string;
   agentId?: string;
   label?: string;
   labelSource?: PaneTab["labelSource"];
@@ -760,6 +762,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
                 agentSessionId: tabAgentSessionId,
+                agentAccountId: tabConfig.agent_account_id ?? undefined,
                 suppressedAgentSessions: isDeclaredRestoredTab || isWebRestoredTab
                   ? undefined
                   : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions),
@@ -957,6 +960,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       cwd: options.cwd,
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
+      agentAccountId: options.agentAccountId,
       launchEnv: options.launchEnv,
       origin: options.origin,
       delegatedByTabId: options.delegatedByTabId,
@@ -1105,6 +1109,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       cwd: options.cwd,
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
+      agentAccountId: options.agentAccountId,
       launchEnv: options.launchEnv,
       origin: options.origin,
       delegatedByTabId: options.delegatedByTabId,

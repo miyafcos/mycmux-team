@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 import pytest
 
@@ -22,6 +23,7 @@ spec.loader.exec_module(bridge_module)
 Bridge = bridge_module.Bridge
 BridgeError = bridge_module.BridgeError
 scan_ask_question = bridge_module.scan_ask_question
+ask_fingerprint = bridge_module._support.ask_fingerprint
 
 SESSION_ID = "pty-session-a"
 OTHER_SESSION_ID = "pty-session-b"
@@ -1258,3 +1260,532 @@ def test_answer_ask_free_text_cursor_never_writes_p_b01() -> None:
         make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 1})
     assert error.value.kind == "verification_unavailable"
     assert send_calls(transport) == []
+
+
+
+# Additional AskUserQuestion regression coverage.
+# Synthetic wrapped question; no transcript or dispatch body.
+RESUME_ASK = [
+    '  Ran 2 checks',
+    '',
+    '──────────────────────────────────────────',
+    ' ☐ Resume task',
+    '',
+    'A sample renderer wrapped this question',
+    'across several display rows.',
+    '',
+    '❯ 1. Continue',
+    '     Continue the synthetic task.',
+    '  2. Pause',
+    '     Keep the existing sample output.',
+    '  3. Type something.',
+    '──────────────────────────────────────────',
+    '  4. Chat about this',
+    '',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel',
+]
+
+
+LEGACY_PREVIEW_ASK = [
+    "─" * 80,
+    "☐ Layout",
+    "Pick a layout",
+    f"{'❯ 1. Compact':<30}    ┌────────────────┐",
+    f"{'layout ✔':<30}    │ Sample panel   │",
+    "└────────────────┘",
+    "2. Roomy",
+    "3. Type something.",
+    "─" * 80,
+    "4. Chat about this",
+    "Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · ctrl+g to edit in code · Esc to cancel",
+]
+
+
+PREVIEW_ASK = [
+    "─" * 80,
+    "☐  ☐ Layout  ☐ Density  ✔ Submit  ▶",
+    "Pick a layout",
+    f"{'❯ 1. Compact':<30}    ┌────────────────┐",
+    f"{'layout ✔':<30}    │ Sample panel   │",
+    "└────────────────┘",
+    "2. Roomy",
+    "Notes: sample note",
+    "─" * 80,
+    "  Chat about this",
+    # Two questions with a notes input: Tab switches questions and ctrl+g edits notes.
+    "Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · ctrl+g to edit in VS Code · Esc to cancel",
+]
+
+
+SINGLE_TYPING = [
+    line.removeprefix("❯ ").replace("3. Type something.", "❯ 3. Type something.")
+    for line in SINGLE_ASK
+]
+
+
+TABBED_TYPING = [
+    line.removeprefix("❯ ").replace("3. Type something.", "❯ 3. Type something.")
+    for line in TABBED_FIRST
+]
+
+
+MULTI_TYPING = [
+    line.removeprefix("❯ ").replace("4. [ ] Type something", "❯ 4. [ ] Type something")
+    for line in MULTI_START
+]
+
+
+def wrap_ansi_rows(text: str, width: int) -> list[str]:
+    """Plain-text wrap-ansi port for pane.read: trim=False, hard=True, wordWrap=True.
+
+    Symbols assume one cell; footer text was verified against wrap-ansi 9.0.2.
+    """
+    assert width > 0
+
+    def cell_width(character: str) -> int:
+        if unicodedata.category(character) in {"Mn", "Me", "Cf"}:
+            return 0
+        return 2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+
+    rows: list[str] = []
+    for line in text.split("\n"):
+        wrapped = [""]
+        used = 0
+        for index, word in enumerate(line.split(" ")):
+            if index:
+                if used >= width:
+                    wrapped.append("")
+                    used = 0
+                # trim:false preserves this space, including after an exactly full row.
+                wrapped[-1] += " "
+                used += 1
+            word_width = sum(cell_width(character) for character in word)
+            if word_width > width:
+                here = 1 + (word_width - (width - used) - 1) // width
+                fresh = (word_width - 1) // width
+                if fresh < here:
+                    wrapped.append("")
+                    used = 0
+                for character in word:
+                    cells = cell_width(character)
+                    if used + cells > width:
+                        wrapped.append("")
+                        used = 0
+                    wrapped[-1] += character
+                    used += cells
+            else:
+                if used + word_width > width and used and word_width:
+                    wrapped.append("")
+                    used = 0
+                wrapped[-1] += word
+                used += word_width
+        rows.extend(wrapped)
+    return rows
+
+
+def wrap_ask_chrome(screen: list[str], width: int, *, wrap_tabs: bool = False) -> list[str]:
+    """Wrap footer text like Ink; wrap_tabs is an unverified model, not a UI capture.
+
+    Claude Code 2.1.319 truncates tab labels instead of word-wrapping the bar.
+    The optional tab model exercises tolerant parsing only.
+    """
+    rows: list[str] = []
+    for line in screen:
+        if line.startswith(("Enter to select", "-- ")) or wrap_tabs and "✔ Submit" in line:
+            rows.extend(wrap_ansi_rows(line, width))
+        else:
+            rows.append(line)
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("text", "width", "rows"),
+    [
+        (
+            SINGLE_ASK[-1], 24,
+            ["Enter to select · ↑/↓ to", " navigate · Esc to ", "cancel"],
+        ),
+        (SINGLE_ASK[-1], 42, ["Enter to select · ↑/↓ to navigate · Esc to", " cancel"]),
+        ("Enter to select · 日本語の説明", 24, ["Enter to select · ", "日本語の説明"]),
+        ("Enter to select · " + "界" * 13, 24, ["Enter to select · " + "界" * 3, "界" * 10]),
+    ],
+    ids=["leading-and-trailing-space", "exact-width-leading-space", "cjk-width", "hard-cjk-word"],
+)
+def test_wrap_ask_chrome_matches_ink_trim_false_hard(text: str, width: int, rows: list[str]) -> None:
+    assert wrap_ask_chrome([text], width) == rows
+
+
+def test_ask_parser_accepts_42_column_resume_reproduction() -> None:
+    expected = scan_ask_question(RESUME_ASK)
+    assert expected is not None
+    assert expected["kind"] == "single"
+    assert expected["header"] == "Resume task"
+    assert len(expected["options"]) == 4
+    wrapped = [
+        *RESUME_ASK[:-1],
+        "Enter to select · ↑/↓ to navigate · Esc to",
+        "cancel",
+    ]
+
+    assert scan_ask_question(wrapped) == expected
+
+
+@pytest.mark.parametrize("width", range(24, 81))
+@pytest.mark.parametrize(
+    "screen", [SINGLE_ASK, TABBED_FIRST, TABBED_SECOND], ids=["single", "first-tab", "second-tab"]
+)
+def test_ask_parser_accepts_word_wrapped_footers(screen: list[str], width: int) -> None:
+    expected = scan_ask_question(screen)
+    assert expected is not None
+
+    parsed = scan_ask_question(wrap_ask_chrome(screen, width))
+
+    assert parsed == expected
+    assert ask_fingerprint(parsed) == ask_fingerprint(expected)
+
+
+@pytest.mark.parametrize("width", range(24, 81))
+@pytest.mark.parametrize(
+    "screen", [TABBED_FIRST, TABBED_SECOND, REVIEW, MULTI_START],
+    ids=["first-tab", "second-tab", "review", "multiselect"],
+)
+def test_ask_parser_accepts_unverified_wrapped_tab_bar_model(screen: list[str], width: int) -> None:
+    """Unverified wrapping model; 2.1.319 truncates labels in its actual tab bar."""
+    expected = scan_ask_question(screen)
+    assert expected is not None
+    # Keep the footer on one line to isolate tab-bar parsing from footer parsing.
+    wrapped = wrap_ask_chrome(screen[:-1], width, wrap_tabs=True) + screen[-1:]
+
+    parsed = scan_ask_question(wrapped)
+
+    assert parsed == expected
+    assert ask_fingerprint(parsed) == ask_fingerprint(expected)
+
+
+@pytest.mark.parametrize(
+    ("bar", "wrapped_bar"),
+    [
+        (
+            "←  ☐ Topic  ☐ Scope  ✔ Submit  →",
+            ["←  ☐ Topic  ☐ Scope", "✔ Submit  →"],
+        ),
+        (
+            "☐  ☐ Output format  ☐ Density  ✔ Submit  ▶",
+            ["☐  ☐ Output format", "☐ Density  ✔ Submit  ▶"],
+        ),
+        (
+            "☐  ☑ Output format  ☐ Density  ✔ Submit  ▶",
+            ["☐  ☑ Output", "format  ☐ Density", "✔ Submit  ▶"],
+        ),
+    ],
+    ids=["submit-on-second-row", "tab-on-second-row", "label-on-three-rows"],
+)
+def test_ask_parser_joins_unverified_tab_bar_row_models(bar: str, wrapped_bar: list[str]) -> None:
+    """These row splits are unverified models, not measured 2.1.319 rendering."""
+    screen = [TABBED_FIRST[0], bar, *TABBED_FIRST[2:]]
+    expected = scan_ask_question(screen)
+    assert expected is not None
+    wrapped = [screen[0], *wrapped_bar, *screen[2:]]
+
+    assert scan_ask_question(wrapped) == expected
+
+
+@pytest.mark.parametrize("arrow", ["→", "▶"])
+def test_ask_parser_does_not_join_question_text_as_a_tab_bar(arrow: str) -> None:
+    screen = [
+        SINGLE_ASK[0],
+        "☐ Direction",
+        f"Which way {arrow}",
+        "should we go?",
+        *SINGLE_ASK[3:],
+    ]
+
+    parsed = scan_ask_question(screen)
+
+    assert parsed is not None
+    assert parsed["kind"] == "single"
+    assert parsed["tabs"] == []
+    assert parsed["header"] == "Direction"
+    assert parsed["question"] == f"Which way {arrow} should we go?"
+
+
+def test_ask_parser_rejects_blank_rows_inside_wrapped_footer() -> None:
+    screen = [
+        *SINGLE_ASK[:-1],
+        "  Enter to select · ↑/↓ to navigate · Esc to  \r",
+        "",
+        "   ",
+        "  cancel\r",
+        "",
+        "  ",
+    ]
+
+    assert scan_ask_question(screen) is None
+
+
+@pytest.mark.parametrize("width", [24, 30, 42, 80])
+def test_ask_parser_allows_only_blank_rows_after_complete_footer(width: int) -> None:
+    screen = wrap_ask_chrome(SINGLE_ASK, width)
+
+    assert scan_ask_question([*screen, "", "  ", "\r"]) == scan_ask_question(SINGLE_ASK)
+    assert scan_ask_question([*screen, "", "· Esc to cancel"]) is None
+
+
+@pytest.mark.parametrize(
+    "question_rows", [["Which way ✔ Submit →", "should we go?"], ["Which way", "✔ Submit →", "should we go?"]],
+    ids=["arrow-row", "submit-row"],
+)
+def test_ask_parser_keeps_single_header_separate_from_tab_like_question(question_rows: list[str]) -> None:
+    screen = [SINGLE_ASK[0], "☐ Direction", *question_rows, *SINGLE_ASK[3:]]
+
+    parsed = scan_ask_question(screen)
+
+    assert parsed is not None
+    assert parsed["kind"] == "single"
+    assert parsed["tabs"] == []
+    assert parsed["header"] == "Direction"
+    assert parsed["question"] == " ".join(question_rows)
+
+
+@pytest.mark.parametrize("unverified_wrap_model", [False, True], ids=["one-line", "unverified-wrap-model"])
+def test_ask_parser_accepts_left_arrow_tab_bar_and_unverified_wrap_model(unverified_wrap_model: bool) -> None:
+    """The multiline variant is an unverified model of tolerant bar parsing."""
+    bar = "←  ☐ Colour  ☐ Size  ✔ Submit  →"
+    screen = [TABBED_FIRST[0], bar, *TABBED_FIRST[2:]]
+    expected = scan_ask_question(TABBED_FIRST)
+    assert expected is not None
+    if unverified_wrap_model:
+        screen = [screen[0], "←  ☐ Colour  ☐ Size", "✔ Submit  →", *screen[2:]]
+
+    assert scan_ask_question(screen) == expected
+
+
+@pytest.mark.parametrize("editor", [None, "VS Code", "Notepad"], ids=["no-editor", "vs-code", "notepad"])
+@pytest.mark.parametrize("mode", ["INSERT", "VISUAL", "VISUAL LINE"])
+@pytest.mark.parametrize("width", [None, 24, 30, 42], ids=["one-line", "24", "30", "42"])
+@pytest.mark.parametrize(
+    ("screen", "navigation"),
+    [(SINGLE_TYPING, "↑/↓ to navigate"), (MULTI_DOWN_3, "↑/↓ to navigate"), (TABBED_TYPING, "Tab/Arrow keys to navigate")],
+    ids=["single", "multiselect", "tabbed"],
+)
+def test_ask_parser_accepts_vim_footer_without_esc(
+    screen: list[str], navigation: str, width: int | None, mode: str, editor: str | None,
+) -> None:
+    expected = scan_ask_question(screen)
+    assert expected is not None
+    typed = [*screen[:-1], f"-- {mode} -- · Enter to select · {navigation}"]
+    if editor is not None:
+        typed[-1] += f" · ctrl+g to edit in {editor}"
+    wrapped = typed if width is None else wrap_ask_chrome(typed, width)
+
+    parsed = scan_ask_question(wrapped)
+
+    assert parsed == expected
+    assert ask_fingerprint(parsed) == ask_fingerprint(expected)
+    assert scan_ask_question([*wrapped, "answer accepted"]) is None
+
+
+def test_ask_parser_rejects_two_vim_mode_markers_in_footer() -> None:
+    screen = [*SINGLE_TYPING[:-1], "-- INSERT -- · -- VISUAL -- · Enter to select · ↑/↓ to navigate"]
+
+    assert scan_ask_question(screen) is None
+
+
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        [*SINGLE_ASK[:-1], "-- INSERT -- · ↑/↓ to navigate"],
+        [*TABBED_FIRST, "", "-- INSERT -- · Esc to cancel"],
+        [*TABBED_FIRST, "", "-- INSERT -- · ↑/↓ to navigate"],
+    ],
+    ids=["missing-enter", "stale-vim-esc-below-blank", "stale-vim-navigation-below-blank"],
+)
+def test_ask_parser_rejects_vim_footer_without_enter_to_select(screen: list[str]) -> None:
+    assert scan_ask_question(screen) is None
+
+
+@pytest.mark.parametrize("editor", ["VS Code", "Devin Desktop", "Sublime Text", "IntelliJ IDEA", "Android Studio"])
+@pytest.mark.parametrize("width", [None, 42], ids=["one-line", "42"])
+def test_ask_parser_accepts_spaced_editor_display_names(editor: str, width: int | None) -> None:
+    screen = [*SINGLE_ASK[:-1], f"{SINGLE_ASK[-1]} · ctrl+g to edit in {editor}"]
+    wrapped = screen if width is None else wrap_ask_chrome(screen, width)
+
+    assert scan_ask_question(wrapped) == scan_ask_question(SINGLE_ASK)
+    assert scan_ask_question([*wrapped, "answer accepted"]) is None
+    assert scan_ask_question([*wrapped[:-1], wrapped[-1] + " answer accepted"]) is None
+
+
+@pytest.mark.parametrize("review", [REVIEW, REVIEW_MULTI], ids=["tabbed", "multiselect"])
+@pytest.mark.parametrize("gap", [[""], ["", "  ", "\r"]], ids=["margin-row", "blank-rows"])
+def test_ask_parser_reads_review_with_blank_rows_before_options(review: list[str], gap: list[str]) -> None:
+    first_option = next(index for index, line in enumerate(review) if line.startswith("❯"))
+    screen = [*review[:first_option], *gap, *review[first_option:]]
+    expected = scan_ask_question(review)
+    assert expected is not None
+    assert expected["kind"] == "review"
+
+    parsed = scan_ask_question(screen)
+
+    assert parsed == expected
+    assert ask_fingerprint(parsed) == ask_fingerprint(expected)
+
+
+@pytest.mark.parametrize("width", [24, 42, 80])
+@pytest.mark.parametrize("tail", [["answer accepted"], ["$ "], ["· unrelated output"]])
+def test_ask_parser_rejects_stale_text_after_wrapped_footer(width: int, tail: list[str]) -> None:
+    assert scan_ask_question([*wrap_ask_chrome(SINGLE_ASK, width), *tail]) is None
+
+
+@pytest.mark.parametrize("inline", [False, True])
+@pytest.mark.parametrize("tail", ["answer accepted", "$", "· unrelated output"])
+def test_ask_parser_rejects_stale_text_after_editor_chord(inline: bool, tail: str) -> None:
+    footer = SINGLE_ASK[-1] + " · ctrl+g to edit in code"
+    screen = [*SINGLE_ASK[:-1], footer]
+    assert scan_ask_question(screen) == scan_ask_question(SINGLE_ASK)
+    stale = [*screen[:-1], f"{footer} {tail}"] if inline else [*screen, tail]
+
+    assert scan_ask_question(stale) is None
+
+
+def test_ask_parser_preserves_preview_layout() -> None:
+    parsed = scan_ask_question(LEGACY_PREVIEW_ASK)
+
+    assert parsed == {
+        "kind": "single",
+        "multi_select": False,
+        "tabs": [],
+        "question": "Pick a layout",
+        "options": [
+            {"index": 1, "label": "Compact layout", "current": True, "role": "option"},
+            {"index": 2, "label": "Roomy", "current": False, "role": "option"},
+            {"index": 3, "label": "Type something.", "current": False, "role": "typeSomething"},
+            {"index": 4, "label": "Chat about this", "current": False, "role": "chatAbout"},
+        ],
+        "layout": "preview",
+        "header": "Layout",
+    }
+
+
+def test_ask_parser_reads_two_question_preview_with_notes_input() -> None:
+    parsed = scan_ask_question(PREVIEW_ASK)
+
+    assert parsed == {
+        "kind": "tabbed",
+        "multi_select": False,
+        "tabs": [
+            {"label": "Layout", "answered": False, "active": True},
+            {"label": "Density", "answered": False, "active": False},
+        ],
+        "question": "Pick a layout",
+        "options": [
+            {"index": 1, "label": "Compact layout", "current": True, "role": "option"},
+            {"index": 2, "label": "Roomy", "current": False, "role": "option"},
+        ],
+        "layout": "preview",
+        "header": "Layout",
+    }
+
+
+@pytest.mark.parametrize("width", range(24, 81))
+def test_ask_parser_preserves_preview_with_wrapped_footer(width: int) -> None:
+    # Only the footer wraps; the preview's 30-cell column and right frame stay wide.
+    expected = scan_ask_question(PREVIEW_ASK)
+    assert expected is not None
+
+    assert scan_ask_question(wrap_ask_chrome(PREVIEW_ASK, width)) == expected
+
+
+@pytest.mark.parametrize(
+    ("screen", "fingerprint"),
+    [
+        (SINGLE_ASK, "3ca60a8b164a54c240e33b3edc13928dcf9f0ae148efdbb0948d528257af0bec"),
+        (RESUME_ASK, "6080ddec0ae3328a974c8ad6ddb0e29a749bfdcd496e77c742081116d1ac2eb7"),
+        (TABBED_FIRST, "763ece861cffea785e4343bd45183a1f8802af727899c3632cc8f527018fc218"),
+        (TABBED_SECOND, "1e2a06b09001d6cb89e9190d7cd23da3319a99bacb78846dda5da1b3fadb3b74"),
+        (REVIEW, "6ab29afb82a426e89eaf32cfb322d1f41011a09f73ad01302f971563767948ff"),
+        (MULTI_START, "bbe17085f5c9db7380f5fef54627a16b9a534f5d5eda8b47e086187a2d949d64"),
+        (LEGACY_PREVIEW_ASK, "31cf23500d0c80682b2274fcd80b26683d3ebb35b94c39068f95a2dc8a18c233"),
+    ],
+    ids=["single", "resume", "first-tab", "second-tab", "review", "multiselect", "preview"],
+)
+def test_ask_parser_preserves_starting_commit_fingerprints(screen: list[str], fingerprint: str) -> None:
+    # Original parser hashes; resume uses a synthetic fixture checked before import.
+    parsed = scan_ask_question(screen)
+
+    assert parsed is not None
+    assert ask_fingerprint(parsed) == fingerprint
+
+
+def test_ask_parser_rejects_footerless_effort_confirmation() -> None:
+    screen = ["Change effort level?", "❯ 1. Yes, switch to high", "2. No, go back"]
+
+    assert scan_ask_question(screen) is None
+
+
+@pytest.mark.parametrize("screen", [SINGLE_ASK, TABBED_FIRST, PREVIEW_ASK], ids=["single", "tabbed", "preview"])
+def test_ask_parser_rejects_question_scrolled_above_pane(screen: list[str]) -> None:
+    assert scan_ask_question(screen[3:]) is None
+
+
+@pytest.mark.parametrize("width", range(24, 81))
+def test_answer_ask_single_accepts_wrapped_footer(width: int) -> None:
+    screen = wrap_ask_chrome(SINGLE_ASK, width)
+    transport = AskTransport([screen, screen, ["done"], ["done"]], close_after_writes=1)
+
+    result = make_bridge(transport).answer_ask(SESSION_ID, {"Pick a fruit": 2})
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [(write["text"], write.get("key"), write["enter"]) for write in writes] == [
+        ("2", None, False)
+    ]
+    assert writes[0]["expectedInputRevision"] == 5
+
+
+@pytest.mark.parametrize("width", range(24, 81))
+def test_answer_ask_multiple_accepts_wrapped_footer_and_unverified_tab_model(width: int) -> None:
+    """The tab-row wrapping is an unverified model, not 2.1.319's truncating UI."""
+    first = wrap_ask_chrome(TABBED_FIRST, width, wrap_tabs=True)
+    second = wrap_ask_chrome(TABBED_SECOND, width, wrap_tabs=True)
+    review = wrap_ask_chrome(REVIEW, width, wrap_tabs=True)
+    transport = AskTransport(
+        [first, first, second, second, review, review, ["done"], ["done"]],
+        states=[state_response(attention="input", attention_id="ask-a", revision=10)],
+        close_after_writes=3,
+    )
+
+    result = make_bridge(transport).answer_ask(SESSION_ID, {"Pick a colour": 2, "Pick a size": 2})
+
+    assert result["result"] == "observed_delivered"
+    writes = send_calls(transport)
+    assert [(write["text"], write.get("key"), write["enter"]) for write in writes] == [
+        ("2", None, False),
+        ("2", None, False),
+        ("1", None, False),
+    ]
+    assert [write["expectedInputRevision"] for write in writes] == [5, 6, 7]
+
+
+@pytest.mark.parametrize("vim_insert", [False, True], ids=["normal-footer", "vim-insert"])
+@pytest.mark.parametrize(
+    ("screen", "answers"),
+    [(SINGLE_TYPING, {"Pick a fruit": 2}), (MULTI_TYPING, {"Pick toppings": [1]})],
+    ids=["single", "multiselect"],
+)
+def test_answer_ask_refuses_digits_on_free_text_row(
+    screen: list[str], answers: dict[str, Any], vim_insert: bool,
+) -> None:
+    if vim_insert:
+        screen = wrap_ask_chrome(
+            [*screen[:-1], "-- INSERT -- · Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code"], 30,
+        )
+    transport = AskTransport([screen])
+
+    with pytest.raises(BridgeError) as error:
+        make_bridge(transport).answer_ask(SESSION_ID, answers)
+
+    assert send_calls(transport) == []
+    assert error.value.kind == "verification_unavailable"
+    assert str(error.value) == "cursor is on the free-text row"

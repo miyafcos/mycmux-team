@@ -7,6 +7,7 @@ import { AccountSubscriptionDetails } from "../common/AccountSubscriptionDetails
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { revealInExplorer, type CliAccountProfile, type CliOrphanSnapshot, type CliProvider } from "../../lib/ipc";
 import {
   PROVIDER_ORDER,
@@ -19,10 +20,12 @@ import {
   liveForProvider,
   orderCliAccountProfiles,
   runningAgentCounts,
+  pinnedAgentCounts,
   runningAgentPaneDetails,
   switchWarningText,
 } from "../../lib/cliAccounts";
 import { AUTO_SWITCH_INTRO, AutoSwitchCandidateCheckbox, AutoSwitchToggle } from "./AccountAutoSwitchSettings";
+import { TabAccountSettings, TabAccountSettingsProvider } from "./TabAccountSettings";
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",
@@ -108,6 +111,7 @@ export function CliAccountsPanel() {
   };
 
   return (
+    <TabAccountSettingsProvider>
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--cmux-space-7)", fontSize: 12 }}>
       <div style={{ display: "grid", gap: "var(--cmux-space-3)" }}>
         <p style={noteStyle}>
@@ -170,6 +174,7 @@ export function CliAccountsPanel() {
         補足: 「現在のログインを登録/更新」は、すでに <code>claude /login</code> / <code>codex login</code> / <code>grok login</code> でログイン済みのアカウントを取り込むためのボタンです。Codex の切り替えは auth.json 全体を入れ替えるため、OPENAI_API_KEY を手動設定している場合はそれも切り替わります (切り替え前の内容はバックアップに残ります)。
       </p>
     </div>
+    </TabAccountSettingsProvider>
   );
 }
 
@@ -337,9 +342,10 @@ function ProfileRow({
 
   const handleSwitch = async () => {
     if (!canSwitchCliAccount(active, providerBusy, profile.needs_relogin)) return;
-    const count = runningAgentCounts(paneMetadata)[profile.provider];
-    const paneDetails = runningAgentPaneDetails(paneMetadata, profile.provider, volatilePaneMetadata);
-    const warning = switchWarningText(count, profile.provider, profile.label, paneDetails);
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    const count = runningAgentCounts(paneMetadata, workspaces)[profile.provider];
+    const paneDetails = runningAgentPaneDetails(paneMetadata, profile.provider, volatilePaneMetadata, workspaces);
+    const warning = switchWarningText(count, profile.provider, profile.label, paneDetails, pinnedAgentCounts(paneMetadata, workspaces)[profile.provider]);
     await executeCliAccountSwitch(
       active,
       providerBusy,
@@ -475,6 +481,7 @@ function ProfileRow({
         {!editing && <RowButton label="名前" onClick={() => { setLabelDraft(profile.label); setEditing(true); }} disabled={providerBusy} />}
         <RowButton label="削除" onClick={() => void handleDelete()} disabled={providerBusy} danger />
       </span>
+      <TabAccountSettings profile={profile} />
     </div>
   );
 }

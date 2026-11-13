@@ -22,6 +22,87 @@ pub enum OwnerCheck {
 
 pub type OwnerLookup<'a> = &'a dyn Fn(&str) -> Option<TokenOwner>;
 pub const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+pub const CLAUDE_ORG_URL: &str = "https://api.anthropic.com/api/oauth/org";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrganizationCheck {
+    Organization(String),
+    Unavailable { status: Option<u16> },
+}
+
+/// Internal lookup result. Neither request secrets nor response bodies reach IPC.
+pub struct LaunchOwnerCheck {
+    pub profile: OwnerCheck,
+    pub organization: Option<OrganizationCheck>,
+}
+
+impl From<OwnerCheck> for LaunchOwnerCheck {
+    fn from(profile: OwnerCheck) -> Self { Self { profile, organization: None } }
+}
+
+pub fn classify_organization_response(status: u16, body: &str) -> OrganizationCheck {
+    if (200..300).contains(&status) {
+        if let Some(org) = serde_json::from_str::<serde_json::Value>(body).ok()
+            .and_then(|value| value.get("organization_uuid")?.as_str().map(str::to_owned))
+            .filter(|org| !org.trim().is_empty()) {
+            return OrganizationCheck::Organization(org);
+        }
+    }
+    OrganizationCheck::Unavailable { status: Some(status) }
+}
+
+const OWNER_RESPONSE_LIMIT: usize = 256 * 1024;
+
+async fn read_owner_response(mut response: reqwest::Response) -> Result<String, ()> {
+    if response.content_length().is_some_and(|length| length > OWNER_RESPONSE_LIMIT as u64) {
+        return Err(());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+        if chunk.len() > OWNER_RESPONSE_LIMIT - body.len() { return Err(()); }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| ())
+}
+
+pub async fn fetch_claude_token_organization_at(client: &reqwest::Client, token: &str, url: &str) -> OrganizationCheck {
+    let Ok(response) = client.post(url).bearer_auth(token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::USER_AGENT, crate::usage::oauth_claude::claude_cli_user_agent())
+        .send().await else { return OrganizationCheck::Unavailable { status: None } };
+    let status = response.status().as_u16();
+    let Ok(body) = read_owner_response(response).await else { return OrganizationCheck::Unavailable { status: Some(status) } };
+    classify_organization_response(status, &body)
+}
+
+// Only the explicit two-stage launch-token lookup uses this transport.
+fn launch_owner_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
+        .timeout(Duration::from_secs(6))
+}
+
+/// Both lookups share the existing six-second budget. Leave time for the fallback.
+pub async fn fetch_claude_launch_owner(token: &str) -> LaunchOwnerCheck {
+    let Ok(client) = launch_owner_client_builder().build() else {
+        return LaunchOwnerCheck { profile: OwnerCheck::Unavailable,
+            organization: Some(OrganizationCheck::Unavailable { status: None }) };
+    };
+    fetch_claude_launch_owner_at(&client, token, CLAUDE_PROFILE_URL, CLAUDE_ORG_URL).await
+}
+
+async fn fetch_claude_launch_owner_at(client: &reqwest::Client, token: &str, profile_url: &str, org_url: &str) -> LaunchOwnerCheck {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    let profile = tokio::time::timeout(Duration::from_secs(3),
+        fetch_claude_token_owner_at(client, token, profile_url)).await.unwrap_or(OwnerCheck::Unavailable);
+    let organization = if matches!(profile, OwnerCheck::Owner(_)) { None } else {
+        Some(tokio::time::timeout_at(deadline,
+            fetch_claude_token_organization_at(client, token, org_url)).await
+            .unwrap_or(OrganizationCheck::Unavailable { status: None }))
+    };
+    LaunchOwnerCheck { profile, organization }
+}
 
 pub fn token_key(access_token: &str) -> String {
     hex::encode(Sha256::digest(access_token.as_bytes()))
@@ -150,7 +231,7 @@ pub async fn fetch_claude_token_owner_at(
     let status = response.status().as_u16();
     let retry_after_secs = response.headers().get("retry-after")
         .and_then(|value| value.to_str().ok()).and_then(|value| value.parse().ok());
-    let Ok(body) = response.text().await else {
+    let Ok(body) = read_owner_response(response).await else {
         return OwnerCheck::Unavailable;
     };
     let result = classify_profile_response(status, retry_after_secs, &body);
@@ -354,6 +435,152 @@ mod tests {
         assert!(cached_owner(token).is_some());
         assert!(request.await.unwrap().starts_with("GET / "));
     }
+
+    #[test]
+    fn v1_organization_response_accepts_only_nonempty_string_and_never_returns_body() {
+        for body in [r#"{}"#, r#"{"organization_uuid":null}"#, r#"{"organization_uuid":7}"#,
+            r#"{"organization_uuid":""}"#, r#"{"organization_uuid":"  "}"#, "synthetic-secret-body"] {
+            assert_eq!(classify_organization_response(200, body), OrganizationCheck::Unavailable { status: Some(200) });
+        }
+        assert_eq!(classify_organization_response(200, r#"{"organization_uuid":"org-1"}"#),
+            OrganizationCheck::Organization("org-1".into()));
+        assert_eq!(classify_organization_response(403, "synthetic-secret-body"),
+            OrganizationCheck::Unavailable { status: Some(403) });
+    }
+
+    #[tokio::test]
+    async fn v1_launch_lookup_falls_back_to_bodyless_org_post_only_without_profile_owner() {
+        let (profile, profile_request) = crate::usage::reset_tickets::fake_http_once("{}").await;
+        let (org, org_request) = crate::usage::reset_tickets::fake_http_once(r#"{"organization_uuid":"org-1"}"#).await;
+        let result = fetch_claude_launch_owner_at(&reqwest::Client::new(), "synthetic-launch-token", &profile, &org).await;
+        assert_eq!(result.profile, OwnerCheck::Unavailable);
+        assert_eq!(result.organization, Some(OrganizationCheck::Organization("org-1".into())));
+        assert!(profile_request.await.unwrap().starts_with("GET / "));
+        let request = org_request.await.unwrap();
+        assert!(request.starts_with("POST / "));
+        assert!(request.to_lowercase().contains("authorization: bearer synthetic-launch-token"));
+        assert!(request.to_lowercase().contains("content-type: application/json"));
+        assert!(request.ends_with("\r\n\r\n"));
+        let (profile, request) = crate::usage::reset_tickets::fake_http_once(
+            r#"{"account":{"uuid":"owner-test"}}"#).await;
+        let result = fetch_claude_launch_owner_at(&reqwest::Client::new(), "synthetic-profile-token", &profile, "invalid-org-url").await;
+        assert!(matches!(result.profile, OwnerCheck::Owner(_)));
+        assert_eq!(result.organization, None);
+        assert!(request.await.unwrap().starts_with("GET / "));
+    }
+
+
+    fn rv02_test_client() -> reqwest::Client {
+        // Only HTTPS-only is relaxed for the fake HTTP servers. Keep the production redirect policy.
+        launch_owner_client_builder().https_only(false).build().unwrap()
+    }
+
+    async fn rv_read_request(stream: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+            let size = stream.read(&mut buffer).await.unwrap();
+            if size == 0 { break; }
+            request.extend_from_slice(&buffer[..size]);
+        }
+    }
+
+    async fn rv_fake_http(status: u16, headers: String, body: Vec<u8>, length: bool)
+        -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            rv_read_request(&mut stream).await;
+            let length = if length { format!("Content-Length: {}\r\n", body.len()) } else { String::new() };
+            let head = format!("HTTP/1.1 {status} Fixture\r\n{headers}{length}Content-Type: application/json\r\nConnection: close\r\n\r\n");
+            // A capped reader may close as soon as it sees a large declared length.
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+        });
+        (url, handle)
+    }
+
+    async fn rv02_assert_redirect(status: u16, organization: bool) {
+        use tokio::io::AsyncWriteExt;
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_url = format!("http://{}/redirected", target.local_addr().unwrap());
+        let reached = tokio::spawn(async move {
+            let Ok(Ok((mut stream, _))) = tokio::time::timeout(Duration::from_millis(500), target.accept()).await else { return false };
+            rv_read_request(&mut stream).await;
+            let body = r#"{"account":{"uuid":"redirect-owner"},"organization_uuid":"redirect-org"}"#;
+            let reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(reply.as_bytes()).await;
+            true
+        });
+        let (url, response) = rv_fake_http(status, format!("Location: {target_url}\r\n"), vec![], true).await;
+        let client = rv02_test_client();
+        if organization {
+            let result = fetch_claude_token_organization_at(&client, "rv02-synthetic", &url).await;
+            assert!(!reached.await.unwrap(), "redirect target received an organization request");
+            assert_eq!(result, OrganizationCheck::Unavailable { status: Some(status) });
+        } else {
+            let result = fetch_claude_token_owner_at(&client, "rv02-synthetic", &url).await;
+            assert!(!reached.await.unwrap(), "redirect target received a profile request");
+            assert_eq!(result, OwnerCheck::Unavailable);
+        }
+        response.await.unwrap();
+    }
+
+    macro_rules! rv02_redirect_case {
+        ($name:ident, $status:expr, $organization:expr) => {
+            #[tokio::test]
+            async fn $name() { rv02_assert_redirect($status, $organization).await; }
+        };
+    }
+    rv02_redirect_case!(rv02_profile_does_not_follow_302, 302, false);
+    rv02_redirect_case!(rv02_profile_does_not_follow_307, 307, false);
+    rv02_redirect_case!(rv02_profile_does_not_follow_308, 308, false);
+    rv02_redirect_case!(rv02_org_does_not_follow_302, 302, true);
+    rv02_redirect_case!(rv02_org_does_not_follow_307, 307, true);
+    rv02_redirect_case!(rv02_org_does_not_follow_308, 308, true);
+
+    async fn rv03_assert_body(organization: bool, length: bool, status: u16, extra: usize) {
+        let mut body = if organization { br#"{"organization_uuid":"rv03-org"}"#.to_vec() }
+            else { br#"{"account":{"uuid":"rv03-owner"}}"#.to_vec() };
+        body.resize(256 * 1024 + extra, b' ');
+        let (url, response) = rv_fake_http(status, String::new(), body, length).await;
+        let client = rv02_test_client();
+        if organization {
+            let result = fetch_claude_token_organization_at(&client, "rv03-synthetic", &url).await;
+            let expected = if extra == 0 && status == 200 { OrganizationCheck::Organization("rv03-org".into()) }
+                else { OrganizationCheck::Unavailable { status: Some(status) } };
+            assert_eq!(result, expected);
+        } else {
+            let result = fetch_claude_token_owner_at(&client, "rv03-synthetic", &url).await;
+            let expected = if extra == 0 && status == 200 {
+                OwnerCheck::Owner(TokenOwner { account_uuid: "rv03-owner".into(), email: None, organization_uuid: None })
+            } else { OwnerCheck::Unavailable };
+            assert_eq!(result, expected);
+        }
+        response.await.unwrap();
+    }
+
+    macro_rules! rv03_body_case {
+        ($name:ident, $org:expr, $length:expr, $status:expr, $extra:expr) => {
+            #[tokio::test]
+            async fn $name() { rv03_assert_body($org, $length, $status, $extra).await; }
+        };
+    }
+    rv03_body_case!(rv03_profile_rejects_limit_plus_one_with_length, false, true, 200, 1);
+    rv03_body_case!(rv03_profile_rejects_limit_plus_one_without_length, false, false, 200, 1);
+    rv03_body_case!(rv03_org_rejects_limit_plus_one_with_length, true, true, 200, 1);
+    rv03_body_case!(rv03_org_rejects_limit_plus_one_without_length, true, false, 200, 1);
+    rv03_body_case!(rv03_profile_accepts_exact_limit_with_length, false, true, 200, 0);
+    rv03_body_case!(rv03_profile_accepts_exact_limit_without_length, false, false, 200, 0);
+    rv03_body_case!(rv03_org_accepts_exact_limit_with_length, true, true, 200, 0);
+    rv03_body_case!(rv03_org_accepts_exact_limit_without_length, true, false, 200, 0);
+    rv03_body_case!(rv03_profile_caps_large_403_with_length, false, true, 403, 1);
+    rv03_body_case!(rv03_profile_caps_large_403_without_length, false, false, 403, 1);
+    rv03_body_case!(rv03_org_caps_large_403_with_length, true, true, 403, 1);
+    rv03_body_case!(rv03_org_caps_large_403_without_length, true, false, 403, 1);
 
     #[test]
     fn verdict_table() {

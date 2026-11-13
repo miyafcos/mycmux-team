@@ -18,6 +18,7 @@ vi.mock("../../src/components/terminal/terminalCache", () => ({
 }));
 
 import {
+  HTTP_LINK_REGEX,
   clearLocalPathResolutionCache,
   findBareLocalPathCandidates,
   findLocalFilePathLinks,
@@ -134,6 +135,15 @@ function createLinkProviderHarness(
     render: () => renderListener?.({ start: 0, end: Math.max(0, lines.length - 1) }),
   };
 }
+
+describe("C1b-B19 HTTP link truncation", () => {
+  it.each(["https://example.test/a", "http://example.test", "https://example.test/a?b=c"])(
+    "ends the link before a display ellipsis: %s", url => {
+      expect(`${url}…`.match(HTTP_LINK_REGEX)?.[0]).toBe(url);
+      expect(`${url}…continued`.match(HTTP_LINK_REGEX)?.[0]).toBe(url);
+    },
+  );
+});
 
 describe("terminal local file path links", () => {
   it("limits a long wrapped paragraph to 4096 nearby characters without changing the local link", async () => {

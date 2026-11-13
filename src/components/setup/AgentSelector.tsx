@@ -12,6 +12,7 @@ import {
   type PaneLaunchSpec,
 } from "../../lib/agentCatalog";
 import { useLaunchModels } from "../../lib/claudeCodexModels";
+import { LaunchAccountRow, useLaunchAccounts } from "../workspace/LaunchAccountRow";
 
 interface AgentSelectorProps {
   slotIndex: number;
@@ -48,6 +49,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
   const serviceVisible = useAgentServiceVisibility();
   const modelListId = useId();
   const entry = getCatalogEntry(value.target);
+  const launchAccounts = useLaunchAccounts(value.target);
   const models = useLaunchModels(entry);
   const model = value.model ?? "";
   const efforts = getLaunchEfforts(entry, model);
@@ -88,6 +90,8 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
             </option>
           ))}
         </select>
+
+        <LaunchAccountRow accounts={launchAccounts} value={value.account ?? ""} onChange={account => onChange({ ...value, account })} />
 
         {entry && (
           <div style={{ display: "flex", gap: 4 }}>

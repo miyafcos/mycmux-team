@@ -16,7 +16,7 @@ mycmux 内 (`MYCMUX_TERM_PROGRAM=mycmux`) 限定。実体は `mycmux_agent_cli.p
 
 ## 作法
 
-1. `--dry-run` で brief と push コマンドを確認 (256 KB 上限・NDA ガード)
+1. `--dry-run` で brief と push コマンドを確認 (256 KB 上限・送る前のガード)
 2. push 後は「載せた。送るのは利用者」と 1 行報告して止まる。`--send` は利用者の明示があるときだけ
 3. 回答を取り込むときは `collect --engine <engine>` (引数なしでそのサービスの最新の Web ペインを読む。特定のペインは `--tab <tabId>`、会話 URL からは `--url`)
    → `answer.md` / `transcript.md`。`--latest` は OracleChrome (cdp) の履歴を読むので、ペインで続けた会話の回収には使わない

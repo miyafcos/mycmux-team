@@ -58,7 +58,7 @@ export function TerminalHistoryEntry({ sessionId, visible = true, searchTitle, v
   return <button type="button" className={menu ? "pane-history-menu-button" : "pane-action-btn"} role={menu ? "menuitem" : undefined} data-terminal-magnifier="true"
     data-terminal-magnifier-destination={menu || history ? "history" : "terminal"}
     aria-label={label} aria-disabled={disabled}
-    title={menu && !history ? checked ? terminalTurnStrings.historyUnlinked : terminalTurnStrings.historyChecking : !sessionId ? terminalPaneStrings.searchUnavailable : history ? label : searchTitle ?? label}
+    title={menu && !history ? !enabled ? terminalTurnStrings.historyDisabled : checked ? terminalTurnStrings.historyUnlinked : terminalTurnStrings.historyChecking : !sessionId ? terminalPaneStrings.searchUnavailable : history ? label : searchTitle ?? label}
     style={menu ? { display: "block", width: "100%", border: 0, background: "transparent", font: "inherit", textAlign: "left", padding: "6px 12px", color: disabled ? "var(--cmux-text-tertiary)" : "var(--cmux-text)", opacity: disabled ? 0.55 : 1, cursor: disabled ? "default" : "pointer" } : { flexShrink: 0, opacity: disabled ? 0.55 : 1 }}
     onMouseEnter={event => { if (menu && !disabled) event.currentTarget.style.background = "var(--cmux-hover)"; }}
     onMouseLeave={event => { if (menu) event.currentTarget.style.background = "transparent"; }}

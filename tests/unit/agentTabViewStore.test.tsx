@@ -72,3 +72,17 @@ describe("agent tab settings and bounded per-tab choices", () => {
     expect(store.getState().views["current-tab"]).toBe("terminal");
   });
 });
+
+describe("C1a-B10 actual content state", () => {
+  it("keeps actual conversation visibility transient and independent from the saved choice", async () => {
+    const { useAgentTabViewStore: store, AGENT_TAB_VIEW_KEY } = await import("../../src/stores/agentTabViewStore");
+    store.getState().setView("visible-tab", "conversation");
+    const saved = localStorage.getItem(AGENT_TAB_VIEW_KEY);
+    store.getState().setConversationVisible("visible-tab", true);
+    expect(store.getState().conversationTabs["visible-tab"]).toBe(true);
+    store.getState().setConversationVisible("visible-tab", false);
+    expect(store.getState().conversationTabs).toEqual({});
+    expect(store.getState().views["visible-tab"]).toBe("conversation");
+    expect(localStorage.getItem(AGENT_TAB_VIEW_KEY)).toBe(saved);
+  });
+});

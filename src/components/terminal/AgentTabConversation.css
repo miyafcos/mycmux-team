@@ -67,6 +67,7 @@
 .terminal-transcript-panel--tab .cmux-dashboard-chat > * { width: calc(100% - 20px); max-width: 760px; margin-inline: auto; padding: 3px 0; }
 .terminal-transcript-panel--tab .cmux-dashboard-chat > * { flex-shrink: 0; margin-bottom: 2px; }
 .terminal-transcript-panel--tab .cmux-dashboard-msg { max-width: 100%; font-family: var(--cmux-font-ui); font-size: var(--cmux-dash-font-size); line-height: max(var(--cmux-dash-line-height), 1.45); animation: none; }
+.terminal-transcript-panel--tab .cmux-archive-evidence { padding: 7px 9px; }
 .terminal-transcript-panel--tab .cmux-dashboard-msg.is-agent { padding: 0; background: none; }
 .terminal-transcript-panel--tab .cmux-archive-row > .is-agent { width: 100%; padding-inline: 0; }
 .terminal-transcript-panel--tab .cmux-dashboard-msg.is-user { align-self: stretch; width: auto; max-width: 100%; margin-inline: 0; padding: 0 0 0 8px; border-left: 2px solid var(--cmux-accent); border-radius: 0; background: none; font-family: var(--cmux-font-ui); }
@@ -141,8 +142,12 @@
 .terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-state="error"]::before { background: var(--status-error); }
 .terminal-transcript-panel--tab [data-agent-tab-arrival="true"] { box-shadow: inset 2px 0 var(--cmux-accent); }
 .terminal-transcript-panel--tab button:focus-visible { outline: 2px solid var(--cmux-accent); outline-offset: -2px; }
+.terminal-transcript-panel--tab .agent-tab-navigation button:focus-visible { outline-offset: -2px !important; }
 .terminal-transcript-panel--tab .agent-tab-view-switch button:focus-visible { outline-offset: -2px !important; }
 @keyframes agent-tab-live-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (forced-colors: active) {
+  .terminal-transcript-panel--tab .cmux-archive-row[data-kind="user"][data-prev-kind] { border-top-color: Canvas; }
+}
 @media (prefers-reduced-motion: reduce) {
   .terminal-transcript-panel--tab .agent-tab-live-strip[data-agent-tab-live-pulsing="true"]::before { animation: none; }
   .terminal-transcript-panel--tab [data-agent-tab-arrival="true"] { box-shadow: none; }
@@ -151,6 +156,7 @@
 /* Leave the existing composer in layout, preserving the PTY size. */
 [data-agent-tab-surface]:has(> .terminal-transcript-panel--tab) > [data-composer-session] { visibility: hidden; pointer-events: none; }
 @container agent-conversation (max-width: 360px) {
+  .terminal-transcript-panel--tab .cmux-archive-evidence { padding: 5px 6px; }
   .terminal-transcript-panel--tab .terminal-transcript-panel__head { padding-inline: 4px; gap: 2px; }
   .terminal-transcript-panel--tab .terminal-transcript-panel__head[data-tab-search-open="true"] .agent-tab-view-switch { display: none; }
   .terminal-transcript-panel--tab .cmux-dashboard-msg-who > span:last-child { display: none; }

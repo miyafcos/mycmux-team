@@ -253,6 +253,10 @@ fn grok_session_exists(session_id: &str) -> bool {
         return false;
     };
     let sessions_dir = home.join(".grok").join("sessions");
+    grok_session_exists_in_dir(&sessions_dir, session_id)
+}
+
+fn grok_session_exists_in_dir(sessions_dir: &Path, session_id: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(sessions_dir) else {
         return false;
     };
@@ -507,10 +511,7 @@ fn agent_restore_error(kind: &str, session_id: &str, cwd: Option<&str>) -> Optio
     ))
 }
 
-pub(super) fn validate_agent_restore_request(
-    cwd: Option<&str>,
-    env: &HashMap<String, String>,
-) -> Result<(), String> {
+pub(super) fn validate_agent_restore_request(cwd: Option<&str>, env: &HashMap<String, String>) -> Result<(), String> {
     let Some(session_id) = env
         .get("MYCMUX_SESSION_ID")
         .map(|value| value.as_str())
@@ -530,6 +531,55 @@ pub(super) fn validate_agent_restore_request(
         return Err(error);
     }
     Ok(())
+}
+
+pub(super) fn validate_agent_restore_request_with_home(
+    cwd: Option<&str>, env: &HashMap<String, String>, context: Option<&crate::cli_accounts::account_homes::AccountLaunchContext>,
+) -> Result<(), String> {
+    validate_home_restore(env, context, || validate_agent_restore_request(cwd, env))
+}
+
+fn validate_home_restore(
+    env: &HashMap<String, String>, context: Option<&crate::cli_accounts::account_homes::AccountLaunchContext>,
+    global: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(context) = context {
+        if let Some(kind) = env.get("MYCMUX_RESUME").or_else(|| env.get("MYCMUX_SESSION_ID").and_then(|_| env.get("MYCMUX_AGENT_KIND"))) {
+            let id = env.get("MYCMUX_SESSION_ID").filter(|id| is_uuid_like(id))
+                .ok_or_else(|| crate::cli_accounts::account_homes::ERR_HOME_NOT_READY.to_string())?;
+            let provider = crate::cli_accounts::account_homes::provider_name(context.provider)?;
+            if kind != provider || !context.session_roots().iter().any(|root| match provider {
+                "codex" => private_codex_session_exists(root, id),
+                "grok" => private_grok_session_exists(root, id),
+                _ => false,
+            }) { return Err(crate::cli_accounts::account_homes::ERR_HOME_NOT_READY.into()); }
+        }
+        return Ok(());
+    }
+    global()
+}
+
+fn private_grok_session_exists(root: &Path, id: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else { return false; };
+    entries.flatten().any(|entry| {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink()) { return false; }
+        std::fs::symlink_metadata(entry.path().join(id)).is_ok_and(|meta| {
+            #[cfg(windows)] {
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes() & 0x400 != 0 { return false; }
+            }
+            meta.is_dir() && !meta.file_type().is_symlink()
+        })
+    })
+}
+
+fn private_codex_session_exists(root: &Path, id: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else { return false; };
+    entries.flatten().any(|entry| {
+        let Ok(kind) = entry.file_type() else { return false; };
+        if kind.is_dir() { private_codex_session_exists(&entry.path(), id) }
+        else { kind.is_file() && codex_session_file_matches(&entry.path(), id) }
+    })
 }
 
 fn normalize_claude_project_path(path: &str) -> String {
@@ -1069,4 +1119,64 @@ mod tests {
         assert!(!candidate.title.contains("private"));
     }
 
+}
+
+
+#[cfg(test)]
+mod account_homes_restore_tests {
+    use super::*;
+    use crate::cli_accounts::{CliProvider, account_homes};
+    use std::cell::Cell;
+    const ID: &str="11111111-1111-4111-8111-111111111111";
+    fn request(kind: &str)->HashMap<String,String> { HashMap::from([("MYCMUX_RESUME".into(),kind.into()),("MYCMUX_SESSION_ID".into(),ID.into())]) }
+    #[test]
+    fn account_homes_restore_uses_private_sessions_and_archives_without_global_fallback() {
+        for (provider,location) in [(CliProvider::Codex,"sessions"),(CliProvider::Codex,"archived_sessions"),(CliProvider::Grok,"sessions")] {
+            let home=tempfile::tempdir().unwrap(); let other=tempfile::tempdir().unwrap();
+            let root=home.path().join(location); std::fs::create_dir_all(&root).unwrap();
+            let kind=account_homes::provider_name(provider).unwrap();
+            if provider==CliProvider::Codex {
+                std::fs::write(root.join(format!("rollout-fixture-{ID}.jsonl")),format!("{{\"payload\":{{\"id\":\"{ID}\"}}}}\n")).unwrap();
+            } else { std::fs::create_dir_all(root.join("encoded-cwd").join(ID)).unwrap(); }
+            let context=account_homes::test_context(provider,home.path().into());
+            let global=Cell::new(0);
+            assert!(validate_home_restore(&request(kind),Some(&context),|| {global.set(global.get()+1); Err("must not inspect global".into())}).is_ok());
+            let wrong=account_homes::test_context(provider,other.path().into());
+            assert_eq!(validate_home_restore(&request(kind),Some(&wrong),|| {global.set(global.get()+1); Ok(())}).unwrap_err(),account_homes::ERR_HOME_NOT_READY);
+            assert_eq!(global.get(),0);
+        }
+    }
+    #[test]
+    fn account_homes_restore_without_context_keeps_the_original_global_fallback() {
+        let calls=Cell::new(0);
+        assert_eq!(validate_home_restore(&request("codex"),None,|| {calls.set(calls.get()+1); Err("global-fixture-result".into())}).unwrap_err(),"global-fixture-result");
+        assert_eq!(calls.get(),1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn account_homes_restore_does_not_follow_nested_codex_symlinks() {
+        let home=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("sessions")).unwrap();
+        std::fs::write(outside.path().join(format!("rollout-fixture-{ID}.jsonl")),format!("{{\"payload\":{{\"id\":\"{ID}\"}}}}\n")).unwrap();
+        std::os::unix::fs::symlink(outside.path(),home.path().join("sessions/escape")).unwrap();
+        let context=account_homes::test_context(CliProvider::Codex,home.path().into());
+        assert!(validate_home_restore(&request("codex"),Some(&context),|| panic!("global fallback")).is_err());
+    }
+}
+
+
+#[cfg(all(test, unix))]
+mod account_homes_grok_restore_link_test {
+    use super::*;
+    #[test]
+    fn account_homes_grok_restore_does_not_follow_a_bucket_or_session_symlink() {
+        let root=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap();
+        let id="11111111-1111-4111-8111-111111111111";
+        std::fs::create_dir(outside.path().join(id)).unwrap();
+        std::os::unix::fs::symlink(outside.path(),root.path().join("linked-bucket")).unwrap();
+        assert!(!private_grok_session_exists(root.path(),id));
+        std::fs::create_dir(root.path().join("ordinary-bucket")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join(id),root.path().join("ordinary-bucket").join(id)).unwrap();
+        assert!(!private_grok_session_exists(root.path(),id));
+    }
 }

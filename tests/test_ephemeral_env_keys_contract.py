@@ -7,6 +7,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_EPHEMERAL_ENV_KEYS = {
+    "MYCMUX_LAUNCH_ACCOUNT",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_HOME",
+    "GROK_HOME",
+    "CODEX_SQLITE_HOME",
+    "GROK_AUTH_PATH",
+    "GROK_LEADER_SOCKET",
+    "MYCMUX_ACCOUNT_HOME_KIND",
+    "MYCMUX_CLI_LOGIN_ID",
     "MYCMUX_RESUME",
     "MYCMUX_SESSION_ID",
     "MYCMUX_AGENT_KIND",
@@ -131,6 +140,7 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
             # Unlike canonical internal paths, terminal.rs must not strip them.
             EXPECTED_EPHEMERAL_ENV_KEYS - {
                 "MYCMUX_LAUNCH_TARGET",
+                "MYCMUX_LAUNCH_ACCOUNT",
                 "MYCMUX_LAUNCH_COMMAND",
                 "MYCMUX_LAUNCH_MODEL",
                 "MYCMUX_LAUNCH_EFFORT",

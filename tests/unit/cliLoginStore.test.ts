@@ -171,8 +171,9 @@ describe("cliLoginStore.start", () => {
     const tab = loginTab();
     expect(tab).toBeDefined();
     expect(tab?.ephemeral).toBe(true);
-    expect(tab?.commandArgv).toEqual(["claude"]);
-    expect(tab?.launchEnv).toEqual({ CLAUDE_CONFIG_DIR: "C:\\staging\\login-1" });
+    expect(tab?.commandArgv).toBeUndefined();
+    expect(tab?.launchEnv).toEqual({ MYCMUX_CLI_LOGIN_ID: loginId });
+    expect(tab?.launchEnv).not.toHaveProperty("CLAUDE_CONFIG_DIR");
     expect(tab?.cwd).toBe("C:\\Users\\test");
     expect(tab?.label).toBe("Claude Code ログイン");
 

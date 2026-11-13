@@ -43,8 +43,11 @@ def test_transfer_file_drop_is_intercepted_before_terminal_path_paste() -> None:
     )[0]
 
     transfer_index = drop_handler.index("isSavepointTransferPath(paths[0])")
-    assert transfer_index < drop_handler.index('closest("[data-session-id]")')
-    assert transfer_index < drop_handler.index("await isDirectory(paths[0])")
+    assert 'import { handleTerminalPathDrop } from "./components/terminal/terminalPathDrop";' in app
+    assert transfer_index < drop_handler.index("await handleTerminalPathDrop(paths, el)")
+    path_router = read("src/components/terminal/terminalPathDrop.ts")
+    assert path_router.index('closest("[data-session-id]")') < path_router.index("await isDirectory(paths[0])")
+    assert 'await writeToSession(sessionId, quoted + " ")' in path_router
     transfer_branch = drop_handler[transfer_index : drop_handler.index("// Convert physical pixels")]
     assert "await receiveSavepointTransfer(paths[0])" in transfer_branch
     assert "return;" in transfer_branch

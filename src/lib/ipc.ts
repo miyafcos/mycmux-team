@@ -100,6 +100,7 @@ interface BeginCliLoginArgs {
   provider: CliProvider;
   mode: CliLoginMode;
   expectedProfileId?: string;
+  purpose?: CliLoginPurpose;
 }
 interface LoginIdArgs { loginId: string }
 
@@ -1394,6 +1395,7 @@ export interface SuppressedAgentSessionConfig {
 }
 
 export interface PaneTabConfig {
+  agent_account_id?: string | null;
   tab_id?: string | null;
   session_id?: string | null;
   agent_id: string;
@@ -1827,6 +1829,56 @@ export interface CliSwitchResult {
   warnings: string[];
 }
 
+/** Non-secret launch-token registration status; secrets are write-only over IPC. */
+export interface CliLaunchTokenStatus {
+  profile_id: string;
+  registered_at: string;
+  expires_at: string;
+  owner_check: "verified" | "org_matched" | "org_shared" | "unverified" | "mismatch";
+  owner_checked_at?: string;
+  owner_method?: "profile" | "org";
+  owner_check_status?: number;
+  fingerprint: string;
+}
+
+/** Session-only, non-secret proof of the login used at the PTY boundary. */
+export interface TabAccountEvidence {
+  provider: CliProvider;
+  profile_id: string;
+  method: "claude_launch_token" | "account_home";
+  result: CliLaunchTokenStatus["owner_check"] | "matched" | "stale";
+  checked_at: string;
+  launched_at: string;
+  fingerprint?: string;
+  owner_email?: string;
+  owner_method?: "profile" | "org";
+  owner_check_status?: number;
+}
+
+export async function getTabAccountEvidence(sessionId: string): Promise<TabAccountEvidence | null> {
+  return invoke<TabAccountEvidence | null>("get_tab_account_evidence", { sessionId });
+}
+
+export async function recheckTabAccount(sessionId: string): Promise<TabAccountEvidence | null> {
+  return invoke<TabAccountEvidence | null>("recheck_tab_account", { sessionId });
+}
+
+export async function getCliLaunchTokens(): Promise<CliLaunchTokenStatus[]> {
+  return invoke<CliLaunchTokenStatus[]>("get_cli_launch_tokens");
+}
+
+export async function setCliLaunchToken(profileId: string, token: string): Promise<CliLaunchTokenStatus> {
+  return invoke<CliLaunchTokenStatus>("set_cli_launch_token", { profileId, token });
+}
+
+export async function recheckCliLaunchToken(profileId: string): Promise<CliLaunchTokenStatus> {
+  return invoke<CliLaunchTokenStatus>("recheck_cli_launch_token", { profileId });
+}
+
+export async function removeCliLaunchToken(profileId: string): Promise<void> {
+  return invoke<void>("remove_cli_launch_token", { profileId });
+}
+
 export async function listCliAccounts(): Promise<CliAccountsSnapshot> {
   return invoke<CliAccountsSnapshot>("list_cli_accounts");
 }
@@ -1865,12 +1917,38 @@ export async function resolveCliAccountOrphan(
 // ─── Isolated CLI login (add an account without touching the live one) ───────
 
 export type CliLoginMode = "new" | "reauth";
+export type CliLoginPurpose = { kind: "global_staging" } | { kind: "account_home"; profile_id: string };
+export type CliAccountHomeState = "created" | "awaiting_login" | "ready" | "needs_login";
+export interface CliAccountHomeStatus {
+  provider: CliProvider;
+  profile_id: string;
+  state: CliAccountHomeState;
+  owner: string;
+  generation: number;
+}
+export interface CliAccountHomeLoginStatus {
+  login_id: string;
+  provider: CliProvider;
+  profile_id: string;
+  state: "pending" | "ready" | "failed";
+  reason: string | null;
+  home: CliAccountHomeStatus;
+}
+export async function listCliAccountHomes(): Promise<CliAccountHomeStatus[]> {
+  return invoke<CliAccountHomeStatus[]>("list_cli_account_homes");
+}
+export async function getCliAccountHomeLogin(loginId: string): Promise<CliAccountHomeLoginStatus> {
+  return invoke<CliAccountHomeLoginStatus>("get_cli_account_home_login", { loginId });
+}
+export async function unregisterCliAccountHome(provider: CliProvider, profileId: string): Promise<void> {
+  return invoke<void>("unregister_cli_account_home", { provider, profileId });
+}
 
 /**
- * How the backend wants the CLI launched. The command, arguments and
- * environment are decided in Rust because the isolation guarantee rests
- * entirely on the config-directory override — never rebuild them here, pass
- * them through to the pane as they arrive.
+ * Opaque login reservation. The tab sends only MYCMUX_CLI_LOGIN_ID;
+ * create_session resolves its command, arguments and home inside Rust.
+ * Legacy command/args/env/staging_dir fields are empty for wire compatibility.
+ * They must never be used to choose a home in the UI.
  */
 export interface CliLoginSession {
   login_id: string;
@@ -1893,6 +1971,7 @@ export interface CliLoginCompletedPayload {
   login_id: string;
   profile: CliAccountProfile;
   updated_existing: boolean;
+  purpose?: CliLoginPurpose;
 }
 
 export interface CliLoginFailedPayload {
@@ -1916,11 +1995,13 @@ export async function beginCliLogin(
   provider: CliProvider,
   mode: CliLoginMode,
   expectedProfileId?: string,
+  purpose?: CliLoginPurpose,
 ): Promise<CliLoginSession> {
   return invoke<CliLoginSession>("begin_cli_login", {
     provider,
     mode,
     expectedProfileId,
+    ...(purpose ? { purpose } : {}),
   } satisfies BeginCliLoginArgs);
 }
 

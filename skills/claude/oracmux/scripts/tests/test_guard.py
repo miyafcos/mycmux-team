@@ -65,9 +65,21 @@ def test_guard_json_merges_over_defaults(tmp_path, monkeypatch):
         guard.load(target)
 
 
-def test_shipped_guard_json_loads():
+def test_shipped_guard_json_lists_no_markers(monkeypatch):
+    """2026-11-10: the operator withdrew the marker guard, so the shipped
+    configuration must not stop a send on marker words. Read it the way the CLI
+    does (guard.json, or guard.example.json where only the example is shipped)."""
     from oracmux_lib import paths
 
+    monkeypatch.delenv("ORACMUX_GUARD")
     loaded = guard.load(paths.guard_json())
-    assert "社外秘" in loaded["markers_ja"]
+    assert loaded["markers_ja"] == [] and loaded["markers_ascii"] == []
     assert isinstance(loaded["deny_roots"], list)
+    assert guard.scan("この 社外秘 NDA CONFIDENTIAL 資料", [], loaded) == []
+
+
+def test_cli_with_shipped_guard_does_not_stop_on_marker_words(isolated_home, monkeypatch):
+    import oracmux
+
+    monkeypatch.delenv("ORACMUX_GUARD")
+    assert oracmux.main(["ask", "--engine", "grok", "-q", "この 社外秘 資料の要点は？", "--dry-run"]) == oracmux.EXIT_OK

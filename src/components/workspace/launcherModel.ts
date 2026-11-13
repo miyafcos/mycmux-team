@@ -66,11 +66,11 @@ export function terminalLaunchItem(): LauncherLaunchItem {
   return { kind: "shell", target: "shell", label: S.terminal, short: S.terminal, iconKind: "shell" };
 }
 
-export type SpecRow = "model" | "effort" | "launch";
+export type SpecRow = "account" | "model" | "effort" | "launch";
 
-export function specRowsFor(entry: { models: readonly unknown[]; efforts: readonly string[] }): SpecRow[] {
+export function specRowsFor(entry: { models: readonly unknown[]; efforts: readonly string[] }, includeAccount = false): SpecRow[] {
   // Model is always present, either as chips or as a free-text input.
-  return entry.efforts.length > 0 ? ["model", "effort", "launch"] : ["model", "launch"];
+  return [...(includeAccount ? ["account" as const] : []), "model", ...(entry.efforts.length > 0 ? ["effort" as const] : []), "launch"];
 }
 
 export function moveSpecRow(rows: readonly SpecRow[], current: SpecRow, step: 1 | -1): SpecRow {

@@ -89,11 +89,8 @@ pub(super) struct CodexRolloutDetector {
 
 impl CodexRolloutDetector {
     pub(super) fn new() -> Self {
-        let codex_root = std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".codex")));
         Self {
-            sessions_root: codex_root.map(|root| root.join("sessions")),
+            sessions_root: None,
             bindings: HashMap::new(),
             known_identities: HashMap::new(),
             claimed_paths: HashMap::new(),
@@ -116,6 +113,13 @@ impl CodexRolloutDetector {
         identity: CodexProcessIdentity,
         exact_rollout_id: Option<&str>,
     ) -> Vec<Evidence> {
+        let roots = match &self.sessions_root {
+            Some(root) => vec![root.clone()],
+            None => crate::agent_home_roots::for_session(crate::cli_accounts::CliProvider::Codex, session_id)
+                .unwrap_or_default().into_iter().map(|root| root.path).collect(),
+        };
+        if self.bindings.get(session_id).is_some_and(|binding| !roots.iter().any(|root| binding.path.starts_with(root))
+            || !crate::agent_home_roots::record_path_allowed(&binding.path)) { self.drop_binding(session_id); }
         if self
             .bindings
             .get(session_id)
@@ -134,12 +138,7 @@ impl CodexRolloutDetector {
             }) {
                 return Vec::new();
             }
-            let Some(root) = self.sessions_root.as_deref() else {
-                return Vec::new();
-            };
-            let Some((path, meta)) = find_unique_rollout(root, identity, exact_rollout_id) else {
-                return Vec::new();
-            };
+            let Some((path, meta)) = find_unique_rollout(&roots, identity, exact_rollout_id) else { return Vec::new(); };
             if self
                 .claimed_paths
                 .get(&path)
@@ -204,11 +203,11 @@ impl CodexRolloutDetector {
 }
 
 fn find_unique_rollout(
-    sessions_root: &Path,
+    sessions_roots: &[PathBuf],
     identity: CodexProcessIdentity,
     exact_rollout_id: Option<&str>,
 ) -> Option<(PathBuf, RolloutMeta)> {
-    let search_roots = rollout_search_roots(sessions_root, identity.started_at, exact_rollout_id);
+    let search_roots = sessions_roots.iter().flat_map(|root| rollout_search_roots(root, identity.started_at, exact_rollout_id));
     let mut matches = Vec::new();
     for root in search_roots {
         visit_rollout_files(&root, exact_rollout_id, &mut |path| {
@@ -270,11 +269,13 @@ fn rollout_search_roots(
 }
 
 fn visit_rollout_files(dir: &Path, exact_rollout_id: Option<&str>, visit: &mut impl FnMut(&Path)) {
+    if !crate::agent_home_roots::record_path_allowed(dir) { return; }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if !crate::agent_home_roots::record_path_allowed(&path) { continue; }
         if path.is_dir() {
             visit_rollout_files(&path, exact_rollout_id, visit);
             continue;
@@ -1009,5 +1010,41 @@ mod tests {
         assert!(detector
             .poll("pty-other", identity(now), Some(id))
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod account_home_rollout_monitor_tests {
+    use super::*;
+    use crate::{agent_home_roots::{self,Origin,RecordRoot},cli_accounts::{account_homes,CliProvider}};
+    #[test]
+    fn tail_binding_is_scoped_to_the_selected_home_with_identical_cwd_and_birth() {
+        let dir=tempfile::tempdir().unwrap();let now=crate::session_state::unix_epoch_millis();
+        let identity=CodexProcessIdentity {pid:42,started_at:now,session_epoch:7};
+        for (name,id) in [("global","global-id"),("A","home-A-id"),("B","home-B-id")] {
+            let root=dir.path().join(name).join("sessions");std::fs::create_dir_all(&root).unwrap();
+            let stamp=DateTime::<Utc>::from_timestamp_millis(now as i64).unwrap().to_rfc3339();
+            std::fs::write(root.join(format!("rollout-{id}.jsonl")),format!("{}\n{}\n",serde_json::json!({"type":"session_meta","timestamp":stamp,"payload":{"id":id,"cwd":"/same/cwd"}}),serde_json::json!({"type":"event_msg","timestamp":stamp,"payload":{"type":"task_started","turn_id":"turn"}}))).unwrap();
+        }
+        let global=vec![RecordRoot {origin:Origin::Global,path:dir.path().join("global/sessions")}];
+        for (alive,has_context,expected) in [(true,true,"home-A-id"),(true,false,"global-id"),(false,true,"global-id")] {
+            let selected=agent_home_roots::select_session_roots(CliProvider::Codex,global.clone(),alive,||Ok(has_context.then(||account_homes::test_context(CliProvider::Codex,dir.path().join("A"))))).unwrap();
+            let mut detector=CodexRolloutDetector::with_sessions_root(selected[0].path.clone());
+            assert!(!detector.poll("fixture-pty",identity,None).is_empty());
+            assert_eq!(detector.bindings["fixture-pty"].rollout_id,expected);
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod fix2b1_link_tests {
+    use super::*;
+    use crate::agent_home_roots::link_tests::{Fixture,MODES,ID};
+    #[test]
+    fn fix2b1_monitor_tail_follows_global_root_ancestor_and_nested_directory_links() {
+        for mode in MODES {
+            let f=Fixture::new(mode);let identity=CodexProcessIdentity {pid:42,started_at:f.started_at,session_epoch:7};
+            let found=find_unique_rollout(&[f.root.path],identity,Some(ID));assert_eq!(found.unwrap().1.id,ID,"{mode:?}");
+        }
     }
 }

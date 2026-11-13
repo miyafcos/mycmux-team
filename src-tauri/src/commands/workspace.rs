@@ -441,6 +441,7 @@ mod tests {
         let mut pane = pane_with_session();
         pane.active_tab_id = Some("tab-1".to_string());
         pane.tabs = Some(vec![PaneTabConfig {
+            agent_account_id: None,
             tab_id: Some("tab-1".to_string()),
             session_id: None,
             agent_id: "codex".to_string(),

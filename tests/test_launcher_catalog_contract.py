@@ -30,6 +30,31 @@ CATALOG = ROOT / "src" / "lib" / "agentCatalog.ts"
 LAUNCHER_PS1 = ROOT / "src-tauri" / "src" / "launcher.ps1"
 LAUNCHER_SH = ROOT / "src-tauri" / "src" / "launcher.sh"
 
+# SPEC-L: verified CLI catalogs on 2026-11-12 (id, exact display label).
+REFRESHED_MODELS = {
+    "agy": [
+        ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+        ("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+        ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+        ("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+        ("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
+        ("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
+        ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+        ("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+        ("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+        ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+    ],
+    "grok": [
+        ("grok-4.7", "Grok 4.7"),
+        ("grok-4.7-build-fast", "Grok 4.7 Fast"),
+        ("grok-4.6", "Grok 4.6"),
+        ("grok-4.5", "Grok 4.5"),
+    ],
+}
+
 # Rows a new workspace has no use for: resuming needs a session that does not
 # exist yet, "Custom..." prompts for a command, and "shell" skips the launcher.
 LAUNCHER_ONLY_TARGETS = {
@@ -259,8 +284,8 @@ $fn = $ast.FindAll({
 if ($fn.Count -ne 1) { throw "New-MycmuxModelChoice not found" }
 Invoke-Expression $fn[0].Extent.Text
 $want = @(
-  "ClaudeModels","CodexModels","AgyModels","OmpModels","CursorModels",
-  "ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog"
+  "ClaudeModels","CodexModels","AgyModels","GrokModels","OmpModels","CursorModels",
+  "ClaudeEfforts","CodexEfforts","AgyEfforts","GrokEfforts","OmpEfforts","LaunchSpecCatalog"
 )
 foreach ($a in $ast.FindAll({
   param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst]
@@ -272,6 +297,7 @@ $out = @{}
 foreach ($key in $LaunchSpecCatalog.Keys) {
   $out[$key] = @{
     models = @($LaunchSpecCatalog[$key].Models | ForEach-Object { $_.Value })
+    labels = @($LaunchSpecCatalog[$key].Models | ForEach-Object { $_.Label })
     efforts = @($LaunchSpecCatalog[$key].Efforts)
   }
 }
@@ -314,17 +340,21 @@ def shell_spec_catalog() -> dict[str, dict[str, list[str]]]:
     )
     assert result.returncode == 0, f"bash failed: {result.stderr}"
 
-    out: dict[str, dict[str, list[str]]] = {t: {"models": [], "efforts": []} for t in targets}
+    out: dict[str, dict[str, list[str]]] = {t: {"models": [], "labels": [], "efforts": []} for t in targets}
     current: list[str] | None = None
+    labels: list[str] | None = None
     for line in result.stdout.splitlines():
         header = re.match(r"== (\S+) (models|efforts)$", line)
         if header:
             current = out[header.group(1)][header.group(2)]
+            labels = out[header.group(1)]["labels"] if header.group(2) == "models" else None
             continue
         if current is None or not line.strip():
             continue
         # Model rows are "label|value"; effort rows are the value itself.
         current.append(line.split("|", 1)[1] if "|" in line else line)
+        if labels is not None and "|" in line:
+            labels.append(line.split("|", 1)[0])
     return out
 
 
@@ -368,6 +398,24 @@ def test_the_menu_offers_the_same_models_and_efforts_as_the_dialog() -> None:
             )
 
 
+@pytest.mark.parametrize("target,expected", REFRESHED_MODELS.items())
+def test_refreshed_cli_model_ids_labels_and_order(target: str, expected: list[tuple[str, str]]) -> None:
+    reference = next(entry["models_ref"] for entry in catalog_entries() if entry["target"] == target)
+    block = read(CATALOG).split(f"const {reference}: readonly ModelChoice[] = [", 1)[1].split("\n];", 1)[0]
+    assert re.findall(r'\{ value: "([^"]+)", label: "([^"]+)" \}', block) == expected
+    for catalog in (powershell_spec_catalog(), shell_spec_catalog()):
+        assert list(zip(catalog[target]["models"], catalog[target]["labels"])) == expected
+
+
+@pytest.mark.parametrize("target,expected", [
+    ("grok", ["low", "medium", "high", "xhigh"]),
+    ("agy", ["low", "medium", "high", "xhigh", "max"]),
+])
+def test_refreshed_cli_effort_steps(target: str, expected: list[str]) -> None:
+    for catalog in (catalog_choices_by_target(), powershell_spec_catalog(), shell_spec_catalog()):
+        assert list(catalog[target]["efforts"]) == expected
+
+
 def test_the_spec_menu_is_reachable_without_changing_the_existing_keys() -> None:
     """Enter and the number keys must still launch at the CLI's own default."""
     ps1 = read(LAUNCHER_PS1)
@@ -405,8 +453,8 @@ PARITY_CASES = [
     ("codex-resume-terra-61", "codex resume --no-alt-screen --last", "gpt-6.1-terra", "max"),
     ("claude-codex-terra-61", "claude-codex --backend gpt", "gpt-6.1-terra", "max"),
     ("codex-positional", "codex resume --no-alt-screen --last", "gpt-5.6-sol", "max"),
-    ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4", "high"),
-    ("agy", "agy", "gemini-3.1-pro-high", "high"),
+    ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4.7", "high"),
+    ("agy", "agy", "gemini-4-argon-high", "high"),
     ("cursor", "cursor-agent", "composer-2.5", "high"),
     ("cursor-cmd", "C:/Tools/cursor-agent.cmd", "grok-4.7-high", "max"),
     ("cursor-default", "cursor-agent", "", ""),
@@ -563,7 +611,7 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     # the end where `codex resume <id>` would lose its id.
     assert by_id["codex-positional"].endswith("resume --no-alt-screen --last")
     assert "--reasoning-effort high" in by_id["grok"]
-    assert by_id["agy"] == "agy --model gemini-3.1-pro-high --effort high"
+    assert by_id["agy"] == "agy --model gemini-4-argon-high --effort high"
     assert by_id["omp"] == "omp --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
     assert by_id["omp-astra-max"] == "omp --model openai-codex/gpt-6-astra --thinking max --allow-home"
     assert by_id["omp-exe"] == "C:/Users/me/AppData/Local/omp/omp.exe --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
@@ -643,8 +691,17 @@ MENU_CASES = [
     ("typed-claude-codex", "claude-codex", "0gpt-6.1-terra\\n6", ["0", "6"], ["gpt-6.1-terra"], "gpt-6.1-terra|max"),
     ("typed-effort", "codex", "20high\\n", ["2", "0"], ["high"], "gpt-6.1-sol|high"),
     ("typed-arrows", "codex", "\\x1b[A\\ngpt-5.6-custom\\n1", ["up", "enter", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
-    # grok publishes no model list, so its type-in row is row 2.
-    ("typed-grok", "grok", "2grok-4-fast\\n4", ["2", "4"], ["grok-4-fast"], "grok-4-fast|high"),
+    # Grok: default, 4.7, 4.7 Fast, 4.6, 4.5, type-in (row 6; shortcut 0 also works).
+    ("typed-grok", "grok", "6grok-4-fast\\n4", ["6", "4"], ["grok-4-fast"], "grok-4-fast|high"),
+    ("grok-47-xhigh", "grok", "25", ["2", "5"], [], "grok-4.7|xhigh"),
+    ("grok-fast-xhigh", "grok", "35", ["3", "5"], [], "grok-4.7-build-fast|xhigh"),
+    ("grok-46-xhigh", "grok", "45", ["4", "5"], [], "grok-4.6|xhigh"),
+    # Up twice skips type-in and selects the last offered effort: high for 4.5.
+    ("grok-45-cap", "grok", "5\\x1b[A\\x1b[A\\n", ["5", "up", "up", "enter"], [], "grok-4.5|high"),
+    ("typed-grok-45-cap", "grok", "0grok-4.5\\n\\x1b[A\\x1b[A\\n", ["0", "up", "up", "enter"], ["grok-4.5"], "grok-4.5|high"),
+    ("grok-default-xhigh", "grok", "15", ["1", "5"], [], "|xhigh"),
+    ("agy-argon-max", "agy", "26", ["2", "6"], [], "gemini-4-argon-high|max"),
+    ("agy-gptoss-max", "agy", "\\x1b[A\\x1b[A\\n6", ["up", "up", "enter", "6"], [], "gpt-oss-120b-medium|max"),
     (
         "typed-trim",
         "codex",
@@ -728,7 +785,7 @@ if ($found -ne $wantFunctions.Count) { throw "expected $($wantFunctions.Count) f
 
 function Get-MycmuxClaudeCodexModelChoices { return @() }
 
-$wantVars = @("ClaudeModels","CodexModels","AgyModels","OmpModels","ClaudeEfforts","CodexEfforts","ShortEfforts","OmpEfforts","LaunchSpecCatalog")
+$wantVars = @("ClaudeModels","CodexModels","AgyModels","GrokModels","OmpModels","ClaudeEfforts","CodexEfforts","AgyEfforts","GrokEfforts","OmpEfforts","LaunchSpecCatalog")
 foreach ($a in $ast.FindAll({
   param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst]
 }, $true)) {
@@ -923,3 +980,22 @@ def test_the_claude_codex_fixture_values_pass_the_launch_spec_check() -> None:
     assert by_id["claude-codex-gateway"].split()[2] in {choice["value"] for choice in expected}
     for choice in expected:
         assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", choice["value"]), choice
+
+
+def test_account_home_codex_start_failure_explains_the_reason_and_next_action() -> None:
+    message = (
+        "  Codex could not start for the account chosen for this tab "
+        "(the codex command was not found or could not run). "
+        "Nothing was started with another account. "
+        "Fix the codex command, then reopen this tab."
+    )
+    ps1 = read(LAUNCHER_PS1)
+    sh = read(LAUNCHER_SH)
+    assert ps1.count(f"Write-Host '{message}'") == 1
+    assert sh.count(f"printf '%s\\n' '{message}'") == 1
+    for source in (ps1, sh):
+        emitted_lines = re.findall(
+            r"(?im)^\s*(?:Write-(?:Host|Warning|Error|Output)|printf|echo)\b[^\n]*",
+            source,
+        )
+        assert not any("cli_account.error." in line for line in emitted_lines)

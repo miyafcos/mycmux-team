@@ -190,7 +190,7 @@ def add_question_arguments(parser: argparse.ArgumentParser, *, required: bool) -
     parser.add_argument("--output-contract", default=brief_mod.DEFAULT_OUTPUT_CONTRACT, help="出力契約 (既定: 結論先行・根拠→結論・要確認明記・日本語)")
     parser.add_argument("--file", action="extend", nargs="+", default=[], help="添付するテキストファイル (複数可・glob 可・本文に展開)")
     parser.add_argument("--slug", help="run フォルダ名の slug (英数字とハイフンに正規化される)")
-    parser.add_argument("--allow-markers", action="store_true", help="NDA マーカー検出を承知で送る (deny_roots・サイズ超過は上書き不可)")
+    parser.add_argument("--allow-markers", action="store_true", help="guard.json の markers に当たっても送る (deny_roots・サイズ超過は上書き不可。2026-11-10 から markers は空)")
     parser.add_argument("--max-inline-chars", type=positive_int, help="本文に展開する上限文字数 (既定: engines.json)")
 
 
@@ -333,7 +333,7 @@ def print_guard_block(blocking: list[dict[str, str]]) -> None:
     print("GUARD: blocked — the brief or its inputs carry confidentiality markers / deny roots / size limits:")
     for hit in blocking:
         print(f"  - [{hit['kind']}] {hit['where']}: {hit['detail']}")
-    print("  marker hits can be overridden with --allow-markers after a human check; deny_roots and size cannot.")
+    print("  marker hits can be overridden with --allow-markers; deny_roots and size cannot.")
 
 
 def prepare_brief(ns: argparse.Namespace, engine_label: str, max_inline_chars: int) -> tuple[brief_mod.Brief, str, list[Path], str]:

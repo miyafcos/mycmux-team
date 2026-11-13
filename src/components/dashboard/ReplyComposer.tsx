@@ -328,6 +328,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       ? route.reason === "webPane" ? dashboardStrings.composerWebPane : dashboardStrings.composerNotStarted
       : null;
   const canSubmit = !blocked && !sending && Boolean(draft.trim());
+  useEffect(() => { if (blocked || sending) setFocused(false); }, [blocked, sending]);
 
   const hasCurrentQuestionGuard = () => commandKind !== "answer-forward" || Boolean(
     questionGuard

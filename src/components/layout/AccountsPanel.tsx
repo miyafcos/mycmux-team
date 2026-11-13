@@ -9,6 +9,7 @@ import {
   executeCliAccountSwitch,
   loginRemainingLabel,
   runningAgentCounts,
+  pinnedAgentCounts,
   runningAgentPaneDetails,
   switchWarningText,
 } from "../../lib/cliAccounts";
@@ -32,6 +33,7 @@ import { accountLimitLabel, groupAccountRows, type AccountPanelGroup } from "../
 import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useUsageStore } from "../../stores/usageStore";
 import { useResetTicketStore } from "../../stores/resetTicketStore";
 import {
@@ -321,13 +323,15 @@ function AccountRow({
     }
     if (!canSwitchCliAccount(row.is_active, providerBusy, row.needs_relogin))
       return;
-    const count = runningAgentCounts(paneMetadata)[row.provider];
-    const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider, volatilePaneMetadata);
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    const count = runningAgentCounts(paneMetadata, workspaces)[row.provider];
+    const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider, volatilePaneMetadata, workspaces);
     const warning = switchWarningText(
       count,
       row.provider,
       row.label,
       paneDetails,
+      pinnedAgentCounts(paneMetadata, workspaces)[row.provider],
     );
     const result = await executeCliAccountSwitch(
       row.is_active,

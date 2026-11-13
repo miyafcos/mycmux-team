@@ -279,12 +279,12 @@ describe("full-tab conversation", () => {
     await act(async () => vi.advanceTimersByTimeAsync(20));
     expect(host.querySelector("[data-agent-tab-fallback=empty]")?.textContent).toBe(agentTabStrings.fallback.empty);
     expect(panel()).toBeNull();
-    expect(onVisible).toHaveBeenLastCalledWith(false);
+    expect(onVisible).toHaveBeenLastCalledWith(false, false);
     await act(async () => useLiveBriefStore.setState({ briefsBySession: { [sessionId]: brief({ agentKind: "claude" }) }, eventsBySession: { [sessionId]: events() } }));
     await act(async () => vi.advanceTimersByTimeAsync(20));
     expect(panel()).not.toBeNull();
     expect(host.textContent).toContain("archive response");
-    expect(onVisible).toHaveBeenLastCalledWith(true);
+    expect(onVisible).toHaveBeenLastCalledWith(true, false);
     expect(useAgentTabViewStore.getState().views[tabId]).toBe("conversation");
     expect(localStorage.getItem(AGENT_TAB_VIEW_KEY)).toBe(stored);
     expect(mocks.send).not.toHaveBeenCalled();

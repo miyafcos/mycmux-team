@@ -4,9 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(), nextContext: 0,
+  invoke: vi.fn(), nextContext: 0, fitHeights: [] as number[],
   terminalInstances: [] as Array<{ dispose: ReturnType<typeof vi.fn> }>,
-  observers: [] as Array<{ disconnect: ReturnType<typeof vi.fn>; target?: Element }>,
+  observers: [] as Array<{ disconnect: ReturnType<typeof vi.fn>; target?: Element; notify: () => void }>,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -119,9 +119,13 @@ vi.mock("@xterm/xterm", () => {
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
-    activate(): void {}
+    terminal?: { element?: HTMLElement; rows: number };
+    activate(terminal: { element?: HTMLElement; rows: number }): void { this.terminal = terminal; }
     dispose(): void {}
-    fit(): void {}
+    fit(): void {
+      const height = this.terminal?.element?.parentElement?.getBoundingClientRect().height;
+      if (height !== undefined) { mocks.fitHeights.push(height); this.terminal!.rows = Math.floor(height / 20); }
+    }
   },
 }));
 vi.mock("@xterm/addon-search", () => ({
@@ -139,6 +143,9 @@ vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { activate(): void {} d
 
 
 import XTermWrapper from "../../src/components/terminal/XTermWrapper";
+import PaneTabBar from "../../src/components/workspace/PaneTabBar";
+import { terminalPaneStrings } from "../../src/components/workspace/terminalPaneStrings";
+import { agentTabStrings } from "../../src/components/terminal/agentTabStrings";
 import { TERMINAL_SEARCH_EVENT } from "../../src/components/terminal/terminalSearchEvents";
 import { evictTerminalCache } from "../../src/components/terminal/terminalCache";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -162,6 +169,7 @@ vi.mock("../../src/components/layout/socketCommands", () => ({ handleSocketComma
 
 let host: HTMLDivElement, root: Root, sequence = 0, sessionId: string, tabId: string;
 let agentKind: "claude" | "grok";
+const originalSetView = useAgentTabViewStore.getState().setView;
 const archivePage = (): TranscriptPage => ({
   readerId: "search-request-fixture", sourceGeneration: "generation", snapshotEnd: "10",
   items: [{ occurrenceId: "archive:0:0", sourceStart: "0", sourceEnd: "10", slot: 0, kind: "assistant",
@@ -174,7 +182,7 @@ const reply = () => host.querySelector<HTMLTextAreaElement>(".cmux-dashboard-com
 const transcriptSearch = () => host.querySelector<HTMLInputElement>("[data-transcript-search-input]");
 const terminalSearch = () => host.querySelector<HTMLInputElement>("[data-terminal-search] input");
 
-async function render(kind: "claude" | "grok" = "claude", empty = false) {
+async function render(kind: "claude" | "grok" = "claude", empty = false, withHeader = false) {
   agentKind = kind;
   useLiveBriefStore.setState({
     briefsBySession: { [sessionId]: { ptySessionId: sessionId, agentKind, agentSessionId: "agent",
@@ -183,7 +191,10 @@ async function render(kind: "claude" | "grok" = "claude", empty = false) {
     eventsBySession: { [sessionId]: empty ? [] : [{ eventId: "u", sourceRevision: 1, occurredAt: Date.now(),
       sourceByteStart: 0, sourceByteEnd: 10, kind: { type: "userMessage", kind: "taskStart", text: "Fixture request", digest: "u" } }] },
   });
-  await act(async () => root.render(<div data-agent-tab-surface="true" style={{ position: "relative", height: 800, width: 720 }}>
+  await act(async () => root.render(<div data-agent-tab-surface="true" data-dnd-pane-id={withHeader ? "p" : undefined}
+    data-dnd-workspace-id={withHeader ? "w" : undefined} data-session-id={withHeader ? sessionId : undefined}
+    style={{ position: "relative", height: 800, width: 720 }}>
+    {withHeader ? <PaneTabBar pane={useWorkspaceListStore.getState().workspaces[0].panes[0]} workspaceId="w" hasTerminalBuffer={() => true} /> : null}
     <XTermWrapper workspaceId="w" sessionId={sessionId} command="powershell.exe" args={[]}
       agentId="shell-starter" agentKind={agentKind} />
   </div>));
@@ -232,14 +243,18 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class {
     constructor(private callback: ResizeObserverCallback) {}
-    observe(target: Element) { this.callback([{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry], this as never); }
+    observe(target: Element) {
+      const notify = () => this.callback([{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry], this as never);
+      mocks.observers.push({ target, notify, disconnect: vi.fn() });
+      notify();
+    }
     disconnect() {}
   });
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0,
     right: 720, bottom: 800, width: 720, height: 800, toJSON: () => ({}) });
   sessionId = `conversation-search-${++sequence}`; tabId = `conversation-search-tab-${sequence}`;
-  mocks.terminalInstances.length = 0; mocks.invoke.mockReset(); vi.mocked(handleSocketCommand).mockReset();
+  mocks.observers.length = 0; mocks.fitHeights.length = 0; mocks.terminalInstances.length = 0; mocks.invoke.mockReset(); vi.mocked(handleSocketCommand).mockReset();
   mocks.invoke.mockImplementation(async (command: string) => {
     if (command === "get_terminal_config") return { font_size: 14, shell: "powershell.exe", background: "#000000",
       foreground: "#ffffff", ansi: [], windows_build_number: null };
@@ -251,8 +266,8 @@ beforeEach(() => {
     return undefined;
   });
   useSettingsStore.setState({ agentTabContent: "conversation", conversationHistoryMode: "manual",
-    terminalRenderer: "dom", notificationsEnabled: false });
-  useKeybindingStore.getState().resetAll(); useAgentTabViewStore.setState({ views: {} });
+    terminalRenderer: "dom", notificationsEnabled: false, showTerminalHistoryButton: true });
+  useKeybindingStore.getState().resetAll(); useAgentTabViewStore.setState({ views: {}, conversationTabs: {} });
   useComposerStore.setState({ draftBySession: {}, mentionTokensBySession: {}, commandKindBySession: {},
     dashboardOptimisticMessagesBySession: {}, dashboardRetryBySession: {} });
   usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {}, lastLog: {}, lastLogAt: {} });
@@ -267,7 +282,10 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount()); evictTerminalCache(sessionId); host.remove();
-  useKeybindingStore.getState().resetAll(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+  useKeybindingStore.getState().resetAll(); vi.restoreAllMocks();
+  // Zustand snapshots copy spied actions, so restore the action on the current snapshot too.
+  useAgentTabViewStore.setState({ setView: originalSetView });
+  vi.unstubAllGlobals();
 });
 
 describe("conversation search requests through the running terminal", () => {
@@ -502,4 +520,287 @@ describe("terminal search when the conversation covers the tab", () => {
     expect(host.querySelector("[data-terminal-search]")).toBeNull();
     expectNoPtyWrites();
   }, 20000);
+});
+
+describe("C1a conversation focus and search regressions", () => {
+  it("B06 does not move a terminal's in-progress input when records recover automatically", async () => {
+    await render("grok", true);
+    const terminal = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
+    await act(async () => terminal.focus());
+    await act(async () => useLiveBriefStore.setState({ eventsBySession: { [sessionId]: [{
+      eventId: "recovered", sourceRevision: 1, occurredAt: Date.now(), sourceByteStart: 0, sourceByteEnd: 10,
+      kind: { type: "userMessage", kind: "taskStart", text: "recovered record", digest: "recovered" },
+    }] } }));
+    await vi.waitFor(() => expect(reply()).not.toBeNull());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    expect(document.activeElement).toBe(terminal);
+    expectNoPtyWrites();
+  }, 15000);
+
+  it("B06 does not focus the terminal when a focused conversation editor disappears", async () => {
+    await render("grok");
+    await act(async () => { useComposerStore.getState().setDraft(sessionId, "unfinished draft"); reply().focus(); });
+    await act(async () => useLiveBriefStore.setState({ eventsBySession: { [sessionId]: [] } }));
+    expect(host.querySelector("[data-agent-tab-fallback=empty]")).not.toBeNull();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    expect(document.activeElement).not.toBe(host.querySelector(".xterm-helper-textarea"));
+    expect(useComposerStore.getState().draftBySession[sessionId]).toBe("unfinished draft");
+    expectNoPtyWrites();
+  }, 15000);
+
+  it.each(["events", "brief", "mode"] as const)("B06/201 keeps readable archive search independent of recent %s", async cause => {
+    useSettingsStore.setState({ conversationHistoryMode: cause === "mode" ? "manual" : "legacy" });
+    await render();
+    await requestSearch();
+    await typeInFocusedSearch("F");
+    await vi.waitFor(() => expect(host.querySelector("[data-archive-row]")).not.toBeNull());
+    const input = transcriptSearch()!;
+    await act(async () => {
+      if (cause === "brief") useLiveBriefStore.setState({ briefsBySession: {} });
+      else useLiveBriefStore.setState({ eventsBySession: { [sessionId]: [] } });
+      if (cause === "mode") useSettingsStore.setState({ conversationHistoryMode: "legacy" });
+    });
+    expect(host.querySelector("[data-agent-tab-fallback]")).toBeNull();
+    expect(transcriptSearch()).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("F");
+    expect(host.querySelector(".xterm-helper-textarea")?.parentElement?.parentElement?.hasAttribute("inert")).toBe(true);
+    expectNoPtyWrites();
+  }, 15000);
+
+  it.each([{ key: "f", shiftKey: false }, { key: "F", shiftKey: true }])("B11 preserves plain $key input in both conversation editors", async plain => {
+    await render();
+    useKeybindingStore.getState().setOverride("terminal.search", plain.shiftKey ? "shift+f" : "f");
+    const options = { ...plain, code: "KeyF", ctrlKey: false, altKey: false, metaKey: false };
+    await act(async () => reply().focus());
+    expect((await key(reply(), options)).defaultPrevented).toBe(false);
+    expect(transcriptSearch()).toBeNull();
+    await requestSearch();
+    expect((await key(transcriptSearch()!, options)).defaultPrevented).toBe(false);
+    expectVisibleConversationSearch();
+    expectNoPtyWrites();
+  }, 15000);
+
+  it("B07 fits terminal rows below the measured fallback band", async () => {
+    let bandHeight = 24;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+      const reserve = Number(this.style.height.match(/calc\(100% - (\d+)px\)/)?.[1] ?? 0);
+      const height = this.classList.contains("agent-tab-conversation-fallback") ? bandHeight : 800 - reserve;
+      return { x: 0, y: 0, top: 0, left: 0, right: 720, bottom: height, width: 720, height, toJSON: () => ({}) };
+    });
+    await render("grok", true);
+    await vi.waitFor(() => expect(mocks.fitHeights).toContain(776));
+    const terminal = host.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
+    expect(terminal.parentElement!.parentElement!.style.top).toBe("24px");
+    await act(async () => {
+      bandHeight = 48;
+      mocks.observers.filter(observer => observer.target?.classList.contains("agent-tab-conversation-fallback"))
+        .forEach(observer => observer.notify());
+    });
+    await vi.waitFor(() => expect(mocks.fitHeights).toContain(752));
+    expect(terminal.parentElement!.parentElement!.style.top).toBe("48px");
+    await act(async () => useAgentTabViewStore.getState().setView(tabId, "terminal"));
+    expect(terminal.parentElement!.parentElement!.style.height).toBe("100%");
+    expect(terminal.parentElement!.parentElement!.style.top).toBe("");
+    await vi.waitFor(() => expect(mocks.fitHeights.at(-1)).toBe(800));
+    expect(mocks.terminalInstances).toHaveLength(1);
+  }, 15000);
+});
+
+describe("C1a visible header and history menu", () => {
+  const historyPanel = () => host.querySelector<HTMLElement>(".terminal-transcript-panel:not(.terminal-transcript-panel--tab)");
+  async function openMenu() {
+    await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${terminalPaneStrings.paneActions}"]`)!.click());
+    const menu = document.querySelector<HTMLElement>(".pane-actions-menu")!;
+    expect(menu).not.toBeNull();
+    return menu;
+  }
+
+  it.each(["conversation", "fallback"] as const)("B09 opens menu history from %s and keeps the running terminal", async view => {
+    if (view === "fallback") useSettingsStore.setState({ conversationHistoryMode: "legacy" });
+    await render("claude", view === "fallback", true);
+    const terminal = host.querySelector(".xterm-helper-textarea");
+    const instance = mocks.terminalInstances[0];
+    const menu = await openMenu();
+    const entry = menu.querySelector<HTMLButtonElement>("[data-terminal-magnifier]")!;
+    await vi.waitFor(() => expect(entry.getAttribute("aria-disabled")).toBe("false"));
+    await act(async () => entry.click());
+    await vi.waitFor(() => expect(historyPanel()).not.toBeNull());
+    expect(useAgentTabViewStore.getState().views[tabId]).toBe("terminal");
+    expect(panel()).toBeNull();
+    expect(host.querySelector(".xterm-helper-textarea")).toBe(terminal);
+    expect(instance.dispose).not.toHaveBeenCalled();
+    expect(mocks.terminalInstances).toHaveLength(1);
+    expectNoPtyWrites();
+    const first = historyPanel();
+    const reopened = await openMenu();
+    await act(async () => reopened.querySelector<HTMLButtonElement>("[data-terminal-magnifier]")!.click());
+    expect(historyPanel()).toBe(first);
+    await act(async () => historyPanel()!.querySelector<HTMLButtonElement>(".terminal-transcript-panel__close")!.click());
+    expect(historyPanel()).toBeNull();
+  }, 15000);
+
+
+  it.each(["empty", "missing", "unsupported", "unreadable", "partial", "loading"] as const)(
+    "RB-03 disables both ineffective switches during %s fallback", async reason => {
+      useSettingsStore.setState({ conversationHistoryMode: "legacy" });
+      useAgentTabViewStore.setState({ views: { [tabId]: "conversation" } });
+      let release = () => {};
+      const gate = new Promise<void>(done => { release = done; });
+      const base = mocks.invoke.getMockImplementation()!;
+      mocks.invoke.mockImplementation(async (command: string, ...rest: any[]) => {
+        if (command === "read_agent_session_mappings" && reason === "missing") return {};
+        if (command === "open_transcript_history") {
+          if (reason === "loading") await gate;
+          if (reason === "unsupported") throw new Error("unsupportedAgent");
+          if (reason === "partial") return { ...archivePage(), items: [],
+            diagnostics: [{ reason: "readerBusy", sourceStart: "0", sourceEnd: "10" }] };
+        }
+        return base(command, ...rest);
+      });
+      try {
+        await render("claude", true, true);
+        if (reason === "unreadable") {
+          await act(async () => useLiveBriefStore.setState(state => ({ briefsBySession: {
+            ...state.briefsBySession,
+            [sessionId]: { ...state.briefsBySession[sessionId], telemetryHealth: "unavailable", telemetryDetail: "readError" },
+          } })));
+        } else if (reason !== "empty") {
+          await act(async () => useSettingsStore.setState({ conversationHistoryMode: "manual" }));
+        }
+        await vi.waitFor(() => expect(host.querySelector(`[data-agent-tab-fallback="${reason}"]`)).not.toBeNull());
+        const button = host.querySelector<HTMLButtonElement>(".pane-agent-content-switch")!;
+        const menu = await openMenu();
+        const action = menu.querySelector<HTMLButtonElement>('[data-pane-action="agent-tab-content"]')!;
+        const setView = vi.spyOn(useAgentTabViewStore.getState(), "setView");
+        const unavailable = "会話の記録を読めるようになると、会話の表示に戻ります";
+        expect.soft(button.disabled || button.getAttribute("aria-disabled") === "true").toBe(true);
+        expect.soft(button.getAttribute("title")).toBe(unavailable);
+        expect.soft(button.getAttribute("aria-label")).toBe(agentTabStrings.toConversation);
+        expect.soft(action.getAttribute("aria-disabled")).toBe("true");
+        expect.soft(action.getAttribute("title")).toBe(unavailable);
+        expect.soft(action.textContent).toBe(agentTabStrings.toConversation);
+        await act(async () => { button.click(); action.click(); });
+        expect.soft(setView).not.toHaveBeenCalled();
+        expect.soft(host.querySelector(`[data-agent-tab-fallback="${reason}"]`)).not.toBeNull();
+        expect(useAgentTabViewStore.getState().views[tabId]).toBe("conversation");
+        if (reason === "empty" || reason === "unreadable" || reason === "loading") {
+          await act(async () => {
+            release();
+            if (reason !== "loading") useLiveBriefStore.setState(state => ({
+              briefsBySession: { ...state.briefsBySession,
+                [sessionId]: { ...state.briefsBySession[sessionId], telemetryHealth: "live", telemetryDetail: undefined } },
+              eventsBySession: { [sessionId]: [{
+                eventId: "rb03-recovery", sourceRevision: 2, occurredAt: Date.now(), sourceByteStart: 0, sourceByteEnd: 10,
+                kind: { type: "userMessage", kind: "taskStart", text: "readable again", digest: "rb03" },
+              }] },
+            }));
+          });
+          await vi.waitFor(() => expect(panel()).not.toBeNull());
+          expect.soft(button.disabled).toBe(false);
+          expect.soft(button.getAttribute("aria-disabled")).not.toBe("true");
+          expect.soft(button.getAttribute("title")).toBe(agentTabStrings.toTerminal);
+          expect.soft(button.getAttribute("aria-label")).toBe(agentTabStrings.toTerminal);
+          expect.soft(action.getAttribute("aria-disabled")).not.toBe("true");
+          expect.soft(action.getAttribute("title")).not.toBe(unavailable);
+          expect(action.textContent).toBe(agentTabStrings.toTerminal);
+        }
+        expectNoPtyWrites();
+      } finally { release(); }
+    }, 15000,
+  );
+
+  it("RB-03 also disables the implicit conversation choice during empty fallback", async () => {
+    await render("grok", true, true);
+    const setView = vi.spyOn(useAgentTabViewStore.getState(), "setView");
+    const button = host.querySelector<HTMLButtonElement>(".pane-agent-content-switch")!;
+    const menu = await openMenu();
+    const action = menu.querySelector<HTMLButtonElement>('[data-pane-action="agent-tab-content"]')!;
+    expect.soft(button.disabled || button.getAttribute("aria-disabled") === "true").toBe(true);
+    expect.soft(action.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => { button.click(); action.click(); });
+    expect.soft(setView).not.toHaveBeenCalled();
+    expect(useAgentTabViewStore.getState().views[tabId]).toBeUndefined();
+    expectNoPtyWrites();
+  }, 15000);
+
+  it.each(["heading", "menu"] as const)("RB-03 keeps the %s switch enabled after choosing terminal view", async entry => {
+    await render("claude", false, true);
+    await act(async () => useAgentTabViewStore.getState().setView(tabId, "terminal"));
+    const menu = await openMenu();
+    const button = entry === "heading" ? host.querySelector<HTMLButtonElement>(".pane-agent-content-switch")!
+      : menu.querySelector<HTMLButtonElement>('[data-pane-action="agent-tab-content"]')!;
+    const setView = vi.spyOn(useAgentTabViewStore.getState(), "setView");
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).not.toBe("true");
+    expect(button.getAttribute("aria-label") ?? button.textContent).toBe(agentTabStrings.toConversation);
+    await act(async () => button.click());
+    expect(setView).toHaveBeenCalledExactlyOnceWith(tabId, "conversation");
+    await vi.waitFor(() => expect(panel()).not.toBeNull());
+    expectNoPtyWrites();
+  }, 15000);
+
+  it.each(["heading", "menu"] as const)("RB-03 keeps the %s switch enabled while menu history is open", async entry => {
+    await render("claude", false, true);
+    const menu = await openMenu();
+    const history = menu.querySelector<HTMLButtonElement>("[data-terminal-magnifier]")!;
+    await vi.waitFor(() => expect(history.getAttribute("aria-disabled")).toBe("false"));
+    await act(async () => history.click());
+    await vi.waitFor(() => expect(historyPanel()).not.toBeNull());
+    expect(useAgentTabViewStore.getState().views[tabId]).toBe("terminal");
+    const reopened = await openMenu();
+    const button = entry === "heading" ? host.querySelector<HTMLButtonElement>(".pane-agent-content-switch")!
+      : reopened.querySelector<HTMLButtonElement>('[data-pane-action="agent-tab-content"]')!;
+    const setView = vi.spyOn(useAgentTabViewStore.getState(), "setView");
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).not.toBe("true");
+    expect(button.getAttribute("aria-label") ?? button.textContent).toBe(agentTabStrings.toConversation);
+    await act(async () => button.click());
+    expect(setView).toHaveBeenCalledExactlyOnceWith(tabId, "conversation");
+    await vi.waitFor(() => { expect(panel()).not.toBeNull(); expect(historyPanel()).toBeNull(); });
+    expectNoPtyWrites();
+  }, 15000);
+
+  it("B10 labels the header and menu from actual content through fallback and recovery", async () => {
+    await render("grok", true, true);
+    const switchButton = () => host.querySelector<HTMLButtonElement>(".pane-agent-content-switch")!;
+    expect(switchButton().getAttribute("aria-label")).toBe(agentTabStrings.toConversation);
+    const menu = await openMenu();
+    const action = menu.querySelector<HTMLElement>('[data-pane-action="agent-tab-content"]')!;
+    expect(action.textContent).toBe(agentTabStrings.toConversation);
+    expect([...menu.querySelectorAll("[data-pane-action]")].slice(0, 3).map(item => item.getAttribute("data-pane-action")))
+      .toEqual(["agent-tab-content", "tab-account", "new-tab"]);
+    await act(async () => useLiveBriefStore.setState({ eventsBySession: { [sessionId]: [{
+      eventId: "header-recovery", sourceRevision: 1, occurredAt: Date.now(), sourceByteStart: 0, sourceByteEnd: 10,
+      kind: { type: "userMessage", kind: "taskStart", text: "recovered record", digest: "recovered" },
+    }] } }));
+    expect(switchButton().getAttribute("aria-label")).toBe(agentTabStrings.toTerminal);
+    expect(action.textContent).toBe(agentTabStrings.toTerminal);
+    expect(useAgentTabViewStore.getState().views[tabId]).toBeUndefined();
+    await act(async () => action.click());
+    expect(useAgentTabViewStore.getState().views[tabId]).toBe("terminal");
+    expect(switchButton().getAttribute("aria-label")).toBe(agentTabStrings.toConversation);
+    expectNoPtyWrites();
+  }, 15000);
+});
+
+describe("C1a-B20 notices while real tab search is open", () => {
+  it.each(["manual", "legacy"] as const)("keeps the reader notice visible through search in %s mode", async mode => {
+    useSettingsStore.setState({ conversationHistoryMode: mode });
+    const base = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, ...rest: any[]) => command === "open_transcript_history"
+      ? { ...archivePage(), diagnostics: [{ reason: "readerBusy", sourceStart: "0", sourceEnd: "10" }] }
+      : base(command, ...rest));
+    await render();
+    await requestSearch();
+    await typeInFocusedSearch("F");
+    await vi.waitFor(() => {
+      const notice = host.querySelector<HTMLElement>(".cmux-archive-notice[role=status]");
+      expect(notice).not.toBeNull();
+      expect(notice!.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("ほかの会話を読み取り中です");
+      expect(notice!.closest("[hidden]")).toBeNull();
+    });
+    expect(host.querySelector(".agent-tab-navigation")?.hasAttribute("hidden")).toBe(true);
+    expectNoPtyWrites();
+  }, 15000);
 });

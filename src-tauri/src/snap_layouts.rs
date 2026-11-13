@@ -56,6 +56,21 @@ impl RectRejection {
     }
 }
 
+fn rejection_message(
+    label: &str,
+    reason: RectRejection,
+    rect: ButtonRect,
+    width: i32,
+    height: i32,
+    scale: f64,
+    stage: &str,
+) -> String {
+    format!(
+        "{label}: button rectangle rejected (stage={stage}, reason={}); rect={rect:?}; client={width}x{height}; scale={scale}",
+        reason.as_str(),
+    )
+}
+
 /// Diagnostic episodes are independent of failures that disable native buttons.
 #[derive(Default)]
 struct RejectedMeasurements {
@@ -85,6 +100,16 @@ impl ButtonRect {
     fn measured(mut self, width: i32, height: i32, scale: f64) -> Option<Self> {
         self.measure(width, height, scale).ok()?;
         Some(self)
+    }
+
+    /// The first validation uses the DOM viewport; the second uses the native client.
+    /// Call only for a measurement that has a rejection reason.
+    fn rejection_stage(self, width: i32, height: i32, scale: f64) -> &'static str {
+        if self.checked_physical(width, height, scale).is_err() {
+            "dom"
+        } else {
+            "native"
+        }
     }
 
     fn rejection_reason(mut self, width: i32, height: i32, scale: f64) -> Option<RectRejection> {
@@ -505,9 +530,9 @@ mod native {
                 if let Some(reason) = r.rejection_reason(client.right, client.bottom, scale) {
                     crate::diag::warn(
                         "snap_layouts",
-                        &format!(
-                            "{}: button rectangle rejected (reason={}); rect={r:?}; client={}x{}; scale={scale}",
-                            window.label(), reason.as_str(), client.right, client.bottom,
+                        &rejection_message(
+                            window.label(), reason, r, client.right, client.bottom, scale,
+                            r.rejection_stage(client.right, client.bottom, scale),
                         ),
                     );
                 }
@@ -758,6 +783,51 @@ mod tests {
             height: 18.0,
             viewport_width: 1000.0,
             viewport_height: 700.0,
+        }
+    }
+
+    #[test]
+    fn rejection_diagnostic_reports_dom_stage() {
+        let rect = ButtonRect { x: -1.0, ..button() };
+        let reason = rect.rejection_reason(1000, 700, 1.0).unwrap();
+        assert_eq!(rect.rejection_stage(1000, 700, 1.0), "dom");
+        assert_eq!(
+            rejection_message("main", reason, rect, 1000, 700, 1.0,
+                rect.rejection_stage(1000, 700, 1.0)),
+            format!("main: button rectangle rejected (stage=dom, reason=negative_x_at_least_one_css_px); rect={rect:?}; client=1000x700; scale=1"),
+        );
+    }
+
+    #[test]
+    fn rejection_diagnostic_reports_native_stage_after_rebasing() {
+        let rect = ButtonRect {
+            x: 0.0, y: 0.0, width: 32.0, height: 32.0,
+            viewport_width: 32.0, viewport_height: 32.0,
+        };
+        for (width, height, reason) in [
+            (20, 32, RectRejection::RightOverflow),
+            (32, 20, RectRejection::BottomOverflow),
+        ] {
+            assert_eq!(rect.rejection_reason(width, height, 1.0), Some(reason));
+            assert_eq!(rect.rejection_stage(width, height, 1.0), "native");
+            assert_eq!(
+                rejection_message("mycmux-w2", reason, rect, width, height, 1.0,
+                    rect.rejection_stage(width, height, 1.0)),
+                format!("mycmux-w2: button rectangle rejected (stage=native, reason={}); rect={rect:?}; client={width}x{height}; scale=1", reason.as_str()),
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_stage_keeps_original_dom_validation_failures() {
+        for (rect, width, height, scale) in [
+            (ButtonRect { x: f64::NAN, ..button() }, 1000, 700, 1.0),
+            (button(), 0, 700, 1.0),
+            (button(), 1000, 700, 0.0),
+            (ButtonRect { x: 999.0, ..button() }, 1000, 700, 1.0),
+        ] {
+            assert!(rect.rejection_reason(width, height, scale).is_some());
+            assert_eq!(rect.rejection_stage(width, height, scale), "dom");
         }
     }
 

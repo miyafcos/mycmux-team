@@ -489,6 +489,7 @@ pub fn start_monitor(
                                         kind,
                                         || {
                                             detect_codex_session_id(
+                                                &session_id,
                                                 &cwd,
                                                 agent_min_created,
                                                 &excluded_agent_session_ids,

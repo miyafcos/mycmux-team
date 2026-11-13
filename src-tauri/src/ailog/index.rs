@@ -221,34 +221,18 @@ enum FingerprintStatus {
 /// pass `Some("updates.jsonl")` for that root so telemetry never becomes a
 /// second transcript source.
 fn collect_jsonl(root: &Path, out: &mut Vec<PathBuf>, file_name: Option<&str>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        match entry.file_type() {
-            Ok(file_type) if file_type.is_dir() => collect_jsonl(&path, out, file_name),
-            Ok(file_type) if file_type.is_file() => {
-                if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-                    && file_name.map_or(true, |name| {
-                        path.file_name().and_then(|v| v.to_str()) == Some(name)
-                    })
-                {
-                    out.push(path);
-                }
-            }
-            _ => {}
-        }
-    }
+    crate::agent_home_roots::collect_files(root, out, file_name);
 }
 
 /// Walk an immutable archive kind directory collecting `*.jsonl.gz` files.
 pub(crate) fn collect_archive_jsonl(root: &Path, out: &mut Vec<PathBuf>, file_name: Option<&str>) {
+    if !crate::agent_home_roots::record_path_allowed(root) { return; }
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        if !crate::agent_home_roots::record_path_allowed(&path) { continue; }
         match entry.file_type() {
             Ok(file_type) if file_type.is_dir() => collect_archive_jsonl(&path, out, file_name),
             Ok(file_type) if file_type.is_file() => {
@@ -302,11 +286,9 @@ fn default_roots() -> Vec<(&'static str, PathBuf)> {
     if let Some(path) = crate::ailog::claude_root() {
         roots.push((KIND_CLAUDE, path));
     }
-    if let Some(path) = crate::ailog::codex_root() {
-        roots.push((KIND_CODEX, path));
-    }
-    if let Some(path) = crate::ailog::grok_root() {
-        roots.push((KIND_GROK, path));
+    for kind in [KIND_CODEX, KIND_GROK] {
+        roots.extend(crate::agent_home_roots::all(crate::agent_home_roots::provider(kind).unwrap())
+            .into_iter().map(|root| (kind, root.path)));
     }
     roots
 }
@@ -384,6 +366,7 @@ pub async fn run_index(
     let mut jobs: Vec<FileJob> = Vec::new();
     let mut skipped = 0usize;
     let mut bytes_total = 0u64;
+    let mut discovered_paths = HashSet::new();
     for (kind, root) in &roots {
         let mut files = Vec::new();
         collect_jsonl(
@@ -392,6 +375,7 @@ pub async fn run_index(
             (*kind == KIND_GROK).then_some("updates.jsonl"),
         );
         for path in files {
+            if !discovered_paths.insert(path.clone()) { continue; }
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
             };
@@ -423,18 +407,15 @@ pub async fn run_index(
         using_default_roots.then(crate::ailog::archive_root).flatten()
     });
     if let Some(archive_root) = configured_archive_root.filter(|path| path.is_dir()) {
-        let configured_live_roots: HashMap<&str, &PathBuf> = roots
-            .iter()
-            .map(|(kind, root)| (*kind, root))
-            .collect();
+        let mut archive_live_roots = roots.clone();
         for kind in [KIND_CLAUDE, KIND_CLAUDE_CODEX, KIND_CODEX, KIND_GROK] {
-            let Some(live_root) = configured_live_roots
-                .get(kind)
-                .map(|path| (*path).clone())
-                .or_else(|| live_root_for_kind(kind)) else {
-                continue;
-            };
-            let archive_kind_root = archive_root.join(kind);
+            if !archive_live_roots.iter().any(|(candidate,_)| *candidate == kind) {
+                if let Some(root) = live_root_for_kind(kind) { archive_live_roots.push((kind, root)); }
+            }
+        }
+        let mut archive_seen = HashSet::new();
+        for (kind, live_root) in archive_live_roots {
+            let archive_kind_root = crate::agent_home_roots::mirror_root(kind, &live_root, &archive_root);
             let mut files = Vec::new();
             collect_archive_jsonl(
                 &archive_kind_root,
@@ -442,6 +423,7 @@ pub async fn run_index(
                 (kind == KIND_GROK).then_some("updates.jsonl"),
             );
             for path in files {
+                if !archive_seen.insert(path.clone()) { continue; }
                 let Some(original_path) = archive_original_path(&archive_kind_root, &path, &live_root) else {
                     continue;
                 };

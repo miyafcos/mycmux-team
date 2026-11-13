@@ -15,6 +15,7 @@ import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { capturePaneFocusReturn, focusController } from "../../lib/focusController";
 import { onlineStrings } from "./onlineStrings";
+import { cliAccountSessionErrorMessage } from "../../lib/cliAccounts";
 import {
   collectOpenAgentSessions,
   collectOpenAgentIdentityKeys,
@@ -329,7 +330,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       });
     } catch (joinError) {
       console.error("[mycmux] failed to join online savepoint", joinError);
-      setError(onlineStrings.loadError);
+      setError(cliAccountSessionErrorMessage(joinError) ?? onlineStrings.loadError);
     }
   }, [addPaneToWorkspaceWithOptions, paneId, workspaceId]);
 
@@ -352,7 +353,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     } catch (joinError) {
       console.error("[mycmux] failed to fully join online savepoint", joinError);
       setJoinNotice(null);
-      setError(onlineStrings.loadError);
+      setError(cliAccountSessionErrorMessage(joinError) ?? onlineStrings.loadError);
     }
   }, [addPaneToWorkspaceWithOptions, paneId, workspaceId]);
 

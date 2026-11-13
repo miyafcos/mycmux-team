@@ -4,6 +4,7 @@ import type { PublishSavepointResult } from "../../lib/ipc";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { useToastStore } from "../../stores/toastStore";
 import { onlineStrings } from "./onlineStrings";
+import { cliAccountSessionErrorMessage } from "../../lib/cliAccounts";
 
 export interface OnlineSavepointEntry {
   bundle_dir: string;
@@ -272,6 +273,8 @@ export function savepointPublishSuccessMessage(
 
 /** Human-readable text for a savepoint publish that failed. */
 export function savepointPublishErrorMessage(error: unknown): string {
+  const accountMessage = cliAccountSessionErrorMessage(error);
+  if (accountMessage) return accountMessage;
   const message = String(error);
   return message.includes("Session transcript") && message.includes("not found")
     ? onlineStrings.publishNoTranscript

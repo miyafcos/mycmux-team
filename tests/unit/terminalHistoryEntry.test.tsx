@@ -93,6 +93,15 @@ afterEach(async () => {
 });
 
 describe("persistent exact-session history entry (P1)", () => {
+  it("C1a-B12 explains that history is disabled instead of claiming a mapping check", async () => {
+    useSettingsStore.setState({ showTerminalHistoryButton: false });
+    await render(<Harness variant="menu" />);
+    const button = container.querySelector<HTMLButtonElement>("[data-terminal-magnifier]")!;
+    expect(button.getAttribute("title")).toBe("設定で会話履歴をオフにしています");
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(mocks.mappings).not.toHaveBeenCalled();
+  });
+
   it.each((["header", "menu"] as const).flatMap(variant => [1, 2].flatMap(stage =>
     (["selection", "outside"] as const).map(decision => ({ variant, stage, decision })))))
   ("N1 $variant rejects late mapping step $stage after $decision while A stays displayed", async ({ variant, stage, decision }) => {

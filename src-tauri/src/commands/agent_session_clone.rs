@@ -16,6 +16,18 @@ pub struct DuplicateAgentSessionResult {
 }
 
 fn duplicate_agent_session_in_home(kind: &str, session_id: &str, resolved_cwd: &str, home: &Path) -> Result<DuplicateAgentSessionResult, String> {
+    let roots = if let Some(provider) = crate::agent_home_roots::provider(kind) {
+        let mut roots = crate::agent_home_roots::accounts(provider);
+        let folder = if kind == "codex" { ".codex" } else { ".grok" };
+        roots.push(crate::agent_home_roots::RecordRoot { origin: crate::agent_home_roots::Origin::Global, path: home.join(folder).join("sessions") });
+        if kind == "codex" { roots.push(crate::agent_home_roots::RecordRoot { origin: crate::agent_home_roots::Origin::Global, path: home.join(folder).join("archived_sessions") }); }
+        roots
+    } else { Vec::new() };
+    duplicate_agent_session_in_roots(kind, session_id, resolved_cwd, home, &roots)
+}
+
+fn duplicate_agent_session_in_roots(kind: &str, session_id: &str, resolved_cwd: &str, home: &Path, roots: &[crate::agent_home_roots::RecordRoot]) -> Result<DuplicateAgentSessionResult, String> {
+    if let Some(provider) = crate::agent_home_roots::provider(kind) { crate::agent_home_roots::reject_home_session(roots, provider, session_id)?; }
     let new_session_id = match kind {
         "claude" | "claude-codex" => {
             let projects = if kind == "claude" {
@@ -30,7 +42,8 @@ fn duplicate_agent_session_in_home(kind: &str, session_id: &str, resolved_cwd: &
         }
         "codex" => {
             let sessions = home.join(".codex").join("sessions");
-            let (source, _) = locate_codex_transcript(&sessions, resolved_cwd, Some(session_id))?;
+            let root = crate::agent_home_roots::find_unique(roots, crate::cli_accounts::CliProvider::Codex, session_id)?.map(|(root,_)|root.path).unwrap_or_else(||sessions.clone());
+            let (source, _) = locate_codex_transcript(&root, resolved_cwd, Some(session_id))?;
             import_codex_transcript(&source, &sessions, session_id, resolved_cwd)?
         }
         _ => return Err(format!("Unsupported agent kind: {kind}")),
@@ -118,5 +131,19 @@ mod tests {
         let temp = tempfile::tempdir().unwrap(); let id = uuid::Uuid::new_v4().to_string(); let cwd = r"C:\work\missing";
         claude_source(temp.path(), &uuid::Uuid::new_v4().to_string(), &format!("{}\n", claude_record()));
         assert!(duplicate_agent_session_in_home("claude", &id, cwd, temp.path()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod account_home_clone_tests {
+    use super::*;
+    use crate::{agent_home_roots::{Origin,RecordRoot,HOME_SESSION_UNSUPPORTED},cli_accounts::CliProvider};
+    #[test]
+    fn home_clone_is_rejected_before_global_fallback_or_writing() {
+        let dir=tempfile::tempdir().unwrap();let home=dir.path().join("global");
+        let root=RecordRoot {origin:Origin::AccountHome {provider:CliProvider::Codex,profile_id:"codex-A".into()},path:dir.path().join("base/cli_account_homes/codex/codex-A/sessions")};
+        let id="11111111-1111-4111-8111-111111111111";std::fs::create_dir_all(&root.path).unwrap();std::fs::write(root.path.join(format!("rollout-{id}.jsonl")),"{}\n").unwrap();
+        let error=duplicate_agent_session_in_roots("codex",id,"/same/cwd",&home,&[root]).err().unwrap();
+        assert_eq!(error,HOME_SESSION_UNSUPPORTED);assert!(!home.exists());
     }
 }

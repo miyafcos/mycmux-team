@@ -94,6 +94,7 @@ pub struct LoginCompletedPayload {
     pub login_id: String,
     pub profile: CliAccountProfile,
     pub updated_existing: bool,
+    pub purpose: super::account_homes::LoginPurpose,
 }
 
 #[derive(Serialize, Clone)]
@@ -110,7 +111,7 @@ pub struct LoginIdentityMismatchPayload {
 
 /// Tauri managed state: at most one in-flight login per provider.
 #[derive(Default)]
-pub struct LoginRegistry(Mutex<HashMap<String, PendingLogin>>);
+pub struct LoginRegistry(Mutex<HashMap<String, PendingLogin>>, Mutex<HashMap<String, String>>);
 
 impl LoginRegistry {
     /// A poisoned lock here means a previous holder panicked while editing a
@@ -137,6 +138,18 @@ impl LoginRegistry {
 
     pub fn remove(&self, login_id: &str) {
         self.guard().remove(login_id);
+        self.1.lock().unwrap_or_else(|e| e.into_inner()).remove(login_id);
+    }
+
+    /// Resolve only a backend-owned staging directory, once per login.
+    pub fn claim_launch(&self, login_id: &str, session_id: &str) -> Result<(CliProvider, PathBuf), String> {
+        let sessions = self.guard();
+        let pending = sessions.get(login_id).filter(|p| !p.cancel.load(Ordering::SeqCst))
+            .ok_or_else(|| super::ERR_LOGIN_SESSION_NOT_FOUND.to_string())?;
+        let mut claims = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        if claims.contains_key(login_id) { return Err(super::ERR_LOGIN_ALREADY_RUNNING.into()); }
+        claims.insert(login_id.into(), session_id.into());
+        Ok((pending.provider, pending.dir.clone()))
     }
 
     /// Ask the watcher to stop. It reacts on its next tick, cleans the staging
@@ -475,6 +488,7 @@ async fn run(app: &AppHandle, base: &Path, watch: &LoginWatch) {
                                 login_id: watch.login_id.clone(),
                                 profile,
                                 updated_existing,
+                                purpose: super::account_homes::LoginPurpose::GlobalStaging,
                             },
                         );
                     }
@@ -995,5 +1009,24 @@ mod tests {
         assert_eq!(listed[0].login_id, "a");
         assert_eq!(listed[0].mode, "reauth");
         assert!(listed[0].staging_dir.ends_with("a"));
+    }
+}
+
+
+#[cfg(test)]
+mod account_homes_global_login_claim_tests {
+    use super::*;
+    #[test]
+    fn account_homes_global_staging_launch_claim_uses_only_pending_backend_state() {
+        let registry=LoginRegistry::default(); let dir=tempfile::tempdir().unwrap();
+        let cancellation=Arc::new(AtomicBool::new(false));
+        assert!(registry.try_insert(PendingLogin { login_id:"fixture-login".into(),provider:CliProvider::Codex,dir:dir.path().into(),mode:LoginMode::New,started_at:Instant::now(),cancel:cancellation.clone() }));
+        let (provider,path)=registry.claim_launch("fixture-login","fixture-pty").unwrap();
+        assert_eq!(provider,CliProvider::Codex); assert_eq!(path,dir.path());
+        assert_eq!(registry.claim_launch("fixture-login","another-pty").unwrap_err(),super::super::ERR_LOGIN_ALREADY_RUNNING);
+        assert_eq!(registry.claim_launch("missing","fixture-pty").unwrap_err(),super::super::ERR_LOGIN_SESSION_NOT_FOUND);
+        assert!(registry.request_cancel("fixture-login"));
+        assert_eq!(registry.claim_launch("fixture-login","fixture-pty").unwrap_err(),super::super::ERR_LOGIN_SESSION_NOT_FOUND);
+        registry.remove("fixture-login"); assert!(registry.list().is_empty());
     }
 }

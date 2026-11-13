@@ -1,4 +1,5 @@
 import { onlineStrings } from "../components/online/onlineStrings";
+import { cliAccountSessionErrorMessage } from "./cliAccounts";
 import { focusController } from "./focusController";
 import { isSessionAlive, joinSavepointSummary, writeToSession } from "./ipc";
 import {
@@ -139,7 +140,7 @@ export async function commitSavepointPaste(
   } catch (error) {
     console.error("[mycmux] failed to paste dropped savepoint", error);
     useToastStore.getState().pushToast(
-      onlineStrings.dragDropErrorPrefix + String(error),
+      cliAccountSessionErrorMessage(error) ?? onlineStrings.dragDropErrorPrefix + String(error),
       "error",
     );
     return false;

@@ -757,7 +757,7 @@ pub(super) fn claude_human_queued_command(value: &Value) -> Option<&str> {
     if value["type"] != "attachment" || value["isSidechain"] == true || value["isMeta"] == true
         || attachment["type"] != "queued_command" || attachment["commandMode"] != "prompt"
         || attachment["isMeta"] == true || attachment["origin"]["kind"] != "human" { return None; }
-    attachment["prompt"].as_str().filter(|text| !text.trim().is_empty())
+    attachment["prompt"].as_str().filter(|text| !text.trim().is_empty() && !is_injected_user_text(text))
 }
 
 /// Human enqueues omit mode/origin in Claude's transcript. Explicit machine
@@ -930,19 +930,75 @@ pub(super) fn collect_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Only leading, known Codex context markers identify injected user blocks.
+/// A marker must be followed by its complete context envelope. Keep this
+/// streaming so oversized archive records use exactly the same classification.
+#[derive(Clone, Default)]
+pub(super) struct CodexInjectionProbe {
+    prefix: String,
+    closing: Option<&'static str>,
+    tail: String,
+    header_seen: bool,
+    complete: bool,
+    invalid: bool,
+}
+
+const CODEX_CONTEXT_TAGS: [(&str, &str); 6] = [
+    ("<INSTRUCTIONS>", "</INSTRUCTIONS>"),
+    ("<user_instructions>", "</user_instructions>"),
+    ("<environment_context>", "</environment_context>"),
+    ("<recommended_plugins>", "</recommended_plugins>"),
+    ("<plan_mode>", "</plan_mode>"),
+    ("<system_reminder>", "</system_reminder>"),
+];
+
+impl CodexInjectionProbe {
+    pub(super) fn push(&mut self, c: char) {
+        if self.invalid { return; }
+        if let Some(closing) = self.closing {
+            self.tail.push(c);
+            while self.tail.len() > closing.len() {
+                let first = self.tail.chars().next().unwrap().len_utf8();
+                self.tail.drain(..first);
+            }
+            if self.tail == closing {
+                self.closing = None; self.tail.clear(); self.complete = true;
+            }
+            return;
+        }
+        if self.prefix.is_empty() && c.is_whitespace() { return; }
+        self.prefix.push(c);
+        for (opening, closing) in CODEX_CONTEXT_TAGS {
+            if self.prefix == opening {
+                self.prefix.clear(); self.closing = Some(closing); self.complete = false;
+                return;
+            }
+        }
+        if CODEX_CONTEXT_TAGS.iter().any(|(opening, _)| opening.starts_with(&self.prefix)) { return; }
+        if !self.header_seen && !self.complete
+            && ["# AGENTS.md instructions", "# Codex CLI"].iter()
+                .any(|heading| heading.starts_with(&self.prefix) || self.prefix.starts_with(heading))
+        {
+            if c == '\n' {
+                let heading = self.prefix.trim_end();
+                let valid = matches!(heading, "# Codex CLI" | "# AGENTS.md instructions")
+                    || heading.strip_prefix("# AGENTS.md instructions for ")
+                    .is_some_and(|path| !path.trim().is_empty());
+                self.invalid = !valid; self.header_seen = true; self.prefix.clear();
+            } else if self.prefix.len() > 4096 { self.invalid = true; }
+            return;
+        }
+        self.invalid = true;
+    }
+
+    pub(super) fn is_injected(&self) -> bool {
+        !self.invalid && self.complete && self.closing.is_none() && self.prefix.is_empty()
+    }
+}
+
 pub(super) fn is_codex_injected_block(text: &str) -> bool {
-    let text = text.trim_start();
-    [
-        "# AGENTS.md instructions",
-        "<INSTRUCTIONS>",
-        "<user_instructions>",
-        "<environment_context>",
-        "<recommended_plugins>",
-        "<plan_mode>",
-        "<system_reminder>",
-        "# Codex CLI",
-    ].iter().any(|prefix| text.starts_with(prefix))
+    let mut probe = CodexInjectionProbe::default();
+    for c in text.chars() { probe.push(c); if probe.invalid { return false; } }
+    probe.is_injected()
 }
 
 /// Filter each user block before joining, so mixed records keep operator text.
@@ -1330,10 +1386,68 @@ mod tests {
     }
 
     #[test]
+    fn fix1_b03_pathless_agents_header_is_injected_in_live_and_archive_readers() {
+        let text = "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nsynthetic\n</INSTRUCTIONS>";
+        assert!(is_codex_injected_block(text));
+        for value in [
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+        ] {
+            let mut adapter = AgentAdapter::new("codex").unwrap();
+            assert!(decode(&mut adapter, &value.to_string()).is_empty());
+            assert!(super::super::archive_projection::project("codex", &value).is_empty());
+        }
+    }
+
+    #[test]
+    fn c1b_codex_marker_only_user_messages_remain_in_live_and_archive_views() {
+        for text in ["# Codex CLI\nExplain this heading", "# AGENTS.md instructions\nExplain this heading",
+            "# AGENTS.md instructions", "# AGENTS.md instructions for documentation\nExplain the format",
+            "# AGENTS.md instructions for \n\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>",
+            "# AGENTS.md instructions for \t\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>", "<INSTRUCTIONS> explain this tag",
+            "<user_instructions> explain this tag", "<environment_context> explain this tag",
+            "<recommended_plugins> explain this tag", "<plan_mode> explain this tag",
+            "<system_reminder> explain this tag"] {
+            assert!(!is_codex_injected_block(text), "{text}");
+            for value in [
+                serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":text}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+            ] {
+                let mut adapter = AgentAdapter::new("codex").unwrap();
+                let events = decode(&mut adapter, &value.to_string());
+                assert_eq!(events.len(), 1, "{text}");
+                assert!(matches!(&events[0], SemanticEventKind::UserMessage { text: actual, .. } if actual == text));
+                let rows = super::super::archive_projection::project("codex", &value);
+                assert_eq!(rows.len(), 1, "{text}");
+                assert_eq!(rows[0].text, text);
+            }
+        }
+    }
+
+    #[test]
+    fn c1b_claude_queued_commands_apply_the_shared_injection_filter() {
+        for kind in ["claude", "claude-codex"] {
+            for text in ["<system-reminder>synthetic</system-reminder>", "<command-name>/synthetic</command-name>",
+                "<local-command-stdout>synthetic</local-command-stdout>"] {
+                let value = serde_json::json!({"type":"attachment","attachment":{"type":"queued_command",
+                    "commandMode":"prompt","origin":{"kind":"human"},"prompt":text}});
+                assert_eq!(claude_human_queued_command(&value), None);
+                let mut adapter = AgentAdapter::new(kind).unwrap();
+                assert!(decode(&mut adapter, &value.to_string()).is_empty());
+                assert!(super::super::archive_projection::project(kind, &value).is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn codex_injected_blocks_require_a_known_leading_marker() {
         for prefix in ["# AGENTS.md instructions", "<INSTRUCTIONS>", "<user_instructions>",
             "<environment_context>", "<recommended_plugins>", "<plan_mode>", "<system_reminder>", "# Codex CLI"] {
-            let injected = format!(" \n\t{prefix} synthetic context");
+            let injected = match prefix {
+                "# AGENTS.md instructions" => " \n# AGENTS.md instructions for C:\\synthetic\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>".to_string(),
+                "# Codex CLI" => "# Codex CLI\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>".to_string(),
+                _ => format!(" \n\t{prefix}synthetic{}", prefix.replacen('<', "</", 1)),
+            };
             assert!(is_codex_injected_block(&injected));
             assert!(!is_codex_injected_block(&format!("Explain {prefix} in this text")));
             let record = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":injected}});
@@ -1364,7 +1478,7 @@ mod tests {
         let events = decode(&mut adapter, &mixed.to_string());
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], SemanticEventKind::UserMessage { kind: UserMessageKind::TaskStart, text, .. } if text == request));
-        let blocks = serde_json::json!([{"text":" first "},{"text":"<plan_mode>synthetic"},{"text":"second"}]);
+        let blocks = serde_json::json!([{"text":" first "},{"text":"<plan_mode>synthetic</plan_mode>"},{"text":"second"}]);
         assert_eq!(collect_codex_user_text(Some(&blocks)).as_deref(), Some(" first \nsecond"));
         for content in [serde_json::json!(""), serde_json::json!({"text":" \n"}), serde_json::json!([])] {
             assert_eq!(collect_codex_user_text(Some(&content)), None);
@@ -1394,10 +1508,10 @@ mod tests {
                     let event = codex_input(true, None, "2026-11-08T00:00:00Z");
                     let mut response = codex_input(false, None, "2026-11-08T00:00:01Z");
                     response["payload"]["content"].as_array_mut().unwrap().insert(0,
-                        serde_json::json!({"type":"input_text","text":"<environment_context>synthetic"}));
+                        serde_json::json!({"type":"input_text","text":"<environment_context>synthetic</environment_context>"}));
                     let mut injected = codex_input(event_form, turn, "2026-11-08T00:00:02Z");
-                    if event_form { injected["payload"]["message"] = serde_json::json!("<environment_context>synthetic"); }
-                    else { injected["payload"]["content"][0]["text"] = serde_json::json!("<environment_context>synthetic"); }
+                    if event_form { injected["payload"]["message"] = serde_json::json!("<environment_context>synthetic</environment_context>"); }
+                    else { injected["payload"]["content"][0]["text"] = serde_json::json!("<environment_context>synthetic</environment_context>"); }
                     let (first, second) = if reverse { (response, event) } else { (event, response) };
                     let events = codex_records(vec![
                         serde_json::json!({"type":"turn_context","payload":{"turn_id":"one"}}), first, injected, second]);

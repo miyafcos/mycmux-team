@@ -1122,6 +1122,15 @@ const EPHEMERAL_LAUNCH_ENV_KEYS = new Set([
   "MYCMUX_AGENT_KIND",
   "MYCMUX_RESUME_FORK",
   "MYCMUX_LAUNCH_TARGET",
+  "MYCMUX_LAUNCH_ACCOUNT",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CODEX_HOME",
+  "GROK_HOME",
+  "CODEX_SQLITE_HOME",
+  "GROK_AUTH_PATH",
+  "GROK_LEADER_SOCKET",
+  "MYCMUX_ACCOUNT_HOME_KIND",
+  "MYCMUX_CLI_LOGIN_ID",
   "MYCMUX_LAUNCH_COMMAND",
   "MYCMUX_LAUNCH_MODEL",
   "MYCMUX_LAUNCH_EFFORT",
@@ -1382,6 +1391,7 @@ export function toConfig(
             claude_session_id: tabClaudeId,
             agent_kind: tabKind,
             agent_session_id: tabAgentId,
+            agent_account_id: tab.agentAccountId ?? null,
             suppressed_agent_sessions: declared || !terminal
               ? null
               : toSuppressedAgentSessionConfigs(tab.suppressedAgentSessions),

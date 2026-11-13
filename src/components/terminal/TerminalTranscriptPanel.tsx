@@ -23,6 +23,7 @@ import { connectLiveBriefStore } from "../../stores/liveBriefStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { TranscriptSearch } from "../../stores/transcriptSearchStore";
 import { TranscriptHistorySearchBar } from "./TranscriptHistorySearchBar";
+import { isPlainTerminalInputEvent } from "./terminalFocusHelpers";
 
 const noSubscription = () => () => {};
 const noSnapshot = () => null;
@@ -49,7 +50,8 @@ export interface TerminalTranscriptPanelProps {
   fullTab?: {
     card: DashboardCardModel | null; cards: readonly DashboardCardModel[];
     active: boolean; inputRef: RefObject<HTMLTextAreaElement | null>;
-    onEscape: () => void; onVisible: (visible: boolean) => void; top?: number;
+    onEscape: () => void; onVisible: (visible: boolean, focusedInside?: boolean) => void; top?: number;
+    onFallbackHeight?: (height: number) => void; composerFocusRequest?: number;
   };
 }
 
@@ -65,6 +67,10 @@ export function TerminalTranscriptPanel({
   fullTab,
 }: TerminalTranscriptPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const fallbackRef = useRef<HTMLDivElement>(null);
+  const lastConversationFocus = useRef(false);
+  // Capture focus before a failed read removes the conversation DOM.
+  if (panelRef.current) lastConversationFocus.current = panelRef.current.contains(document.activeElement);
   // Opening/focusing history owns this interaction without activating its PTY.
   const [panelFocused, setPanelFocused] = useState(true);
   const focusReturnRef = useRef<ReturnType<typeof captureTemporaryFocusReturn> | null>(null);
@@ -171,23 +177,51 @@ export function TerminalTranscriptPanel({
   else if (fallback !== "loading") lastReadable.current = null;
   const keepWhileLoading = Boolean(fullTab && archiveEnabled && fallback === "loading" && sourceKey && lastReadable.current?.sourceKey === sourceKey);
   const retainedArchiveState = keepWhileLoading && lastReadable.current ? { ...lastReadable.current.state, status: "opening" as const, loading: "initial" as const } : undefined;
-  // A search-only legacy reader must not replace the conversation or release its focus.
+  // Prefer readable search results over the recent-event window. Until the
+  // archive is readable, legacy search keeps its original conversation.
   const displayFallback = fullTab && !ordinaryArchive && archiveEnabled
-    ? conversationFallback({ agentKind, brief, events, archiveEnabled: false, descriptor, history: readerState })
+    ? !fallback || keepWhileLoading ? null : conversationFallback({ agentKind, brief, events, archiveEnabled: false, descriptor, history: readerState })
     : keepWhileLoading ? null : fallback;
   const covered = Boolean(fullTab && !displayFallback && live);
   useLayoutEffect(() => {
-    fullTab?.onVisible(covered);
-    return () => fullTab?.onVisible(false);
+    fullTab?.onVisible(covered, lastConversationFocus.current);
+    return () => fullTab?.onVisible(false, lastConversationFocus.current);
   }, [covered, fullTab?.onVisible]);
+  const pendingComposerFocus = useRef(false);
+  const previousActive = useRef(false);
   useLayoutEffect(() => {
-    if (!covered || !fullTab?.active) return;
+    pendingComposerFocus.current = Boolean(fullTab?.composerFocusRequest);
+    if (!fullTab?.composerFocusRequest) return;
+    const cancel = () => { pendingComposerFocus.current = false; };
+    document.addEventListener("keydown", cancel, true);
+    document.addEventListener("pointerdown", cancel, true);
+    return () => {
+      document.removeEventListener("keydown", cancel, true);
+      document.removeEventListener("pointerdown", cancel, true);
+    };
+  }, [fullTab?.composerFocusRequest]);
+  useLayoutEffect(() => {
+    const activated = Boolean(fullTab?.active && !previousActive.current);
+    previousActive.current = Boolean(fullTab?.active);
+    if (!covered || !fullTab?.active || !activated && !pendingComposerFocus.current) return;
+    pendingComposerFocus.current = false;
     const focused = document.activeElement;
     if (focused instanceof Element && focused.closest("[role=dialog],[role=menu],[aria-modal=true]")) return;
     if (panelRef.current?.contains(focused) && focused !== panelRef.current) return;
     if (fullTab.inputRef.current && !fullTab.inputRef.current.disabled) fullTab.inputRef.current.focus();
     else panelRef.current?.focus();
-  }, [covered, fullTab?.active, sessionId]);
+  // Consume only a person's switch/activation, never a record-poll transition.
+  }, [covered, fullTab?.active, fullTab?.composerFocusRequest, sessionId]);
+  useLayoutEffect(() => {
+    const report = fullTab?.onFallbackHeight;
+    if (!report) return;
+    const band = fallbackRef.current;
+    const measure = () => report(Math.ceil(band?.getBoundingClientRect().height ?? 0));
+    measure();
+    const observer = band && typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (band) observer?.observe(band);
+    return () => { observer?.disconnect(); report(0); };
+  }, [fullTab?.onFallbackHeight, displayFallback, live]);
   const archiveEcho = useCallback((messages: readonly { text: string; occurredAt: number }[]) =>
     useComposerStore.getState().collapseDashboardOptimisticMessages(sessionId, messages), [sessionId]);
 
@@ -244,7 +278,7 @@ export function TerminalTranscriptPanel({
     snapshotEnd: searchState.snapshotEnd, sourceGeneration: searchState.sourceGeneration,
   } : undefined;
   if (fullTab && !live) return null;
-  if (fullTab && displayFallback) return <div className="agent-tab-conversation-fallback" data-agent-tab-fallback={displayFallback} role="status" style={{ top: fullTab.top ?? 0 }}>
+  if (fullTab && displayFallback) return <div ref={fallbackRef} className="agent-tab-conversation-fallback" data-agent-tab-fallback={displayFallback} role="status" style={{ top: fullTab.top ?? 0 }}>
     {agentTabStrings.fallback[displayFallback]}
   </div>;
 
@@ -258,7 +292,7 @@ export function TerminalTranscriptPanel({
       onKeyDown={fullTab ? event => {
         if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         const actions = useKeybindingStore.getState().getActionsForEvent(event.nativeEvent);
-        if (actions.includes("terminal.search")) {
+        if (!isPlainTerminalInputEvent(event.nativeEvent) && actions.includes("terminal.search")) {
           event.preventDefault(); event.stopPropagation(); openTabSearch(); return;
         }
         const target = event.target as Element;

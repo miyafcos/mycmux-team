@@ -11,7 +11,7 @@ fusion (Claude+Codex+agy の CLI 合議) の Web 版。価値は**訓練系統�
 
 ## 動き
 
-1. brief を 1 本作り (読者＝ChatGPT / Gemini / Grok)、NDA ガードを通す
+1. brief を 1 本作り (読者＝ChatGPT / Gemini / Grok)、送る前のガード (字数の上限など) を通す
 2. 各エンジンを `ask --run-dir <run>` の**別プロセス**で 2 秒ずらして起動する。経路は `--via` で選ぶ (既定 pane = 呼び出し元タブの裏ペイン、`--via cdp` = 同じ OracleChrome に 3 タブ)
 3. 30 秒おきに `progress.json` を集めて 1 行ログ (`chatgpt=answer_streaming(1200c) gemini=done(900c) grok=waiting_answer(0c)`)
 4. 全レーン終了後 `council.md` (回収状況の表 + 各回答 + judge 欄) と HTML (`quick_html.py`) を書く
@@ -32,4 +32,3 @@ HTML は `council.md` を作った時点のもの (judge 欄は空)。judge を�
 
 - 事実確認 1 件・軽微な判断 (ask 1 本で足りる)
 - 正解が機械照合で決まるもの (Codex Dual-Verify の領分)
-- 素材に社外秘が混じるもの (ガードが止めるが、そもそも Web に出さない)

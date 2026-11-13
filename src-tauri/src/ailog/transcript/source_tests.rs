@@ -416,3 +416,57 @@ fn l5_transcript_unreadable_recovery_folder_reports_access_denied_not_not_found(
     assert_eq!(error.code, "access_denied");
     assert!(!error.retryable);
 }
+
+#[test]
+fn fixr_r05_global_ailog_preserves_indexed_source_priority_across_duplicate_rollouts() {
+    const ID: &str = "11111111-1111-4111-8111-111111111111";
+    for scenario in ["sessions-and-archive", "two-sessions", "mirrored-then-archived"] {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join(".codex/sessions");
+        let archive = dir.path().join(".codex/archived_sessions");
+        let cfg = SourceConfig { roots: vec![(KIND_CODEX.into(), sessions.clone()), (KIND_CODEX.into(), archive.clone())],
+            archive: None, full_text: Some(dir.path().join("mirror")), claude_fallback: None };
+        let first = sessions.join(format!("2026/11/12/rollout-z-{ID}.jsonl"));
+        write_log(&first, KIND_CODEX, ID, "indexed source winner");
+        let second = if scenario == "two-sessions" { sessions.join(format!("2026/11/12/rollout-a-{ID}.jsonl")) }
+            else { archive.join(format!("2026/11/12/rollout-a-{ID}.jsonl")) };
+        let known = if scenario == "mirrored-then-archived" {
+            let mirrored = crate::agent_home_roots::mirror_root(KIND_CODEX, &sessions, cfg.full_text.as_ref().unwrap()).join(first.strip_prefix(&sessions).unwrap());
+            write_log(&PathBuf::from(format!("{}.gz", mirrored.display())), KIND_CODEX, ID, "indexed source winner");
+            std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+            std::fs::rename(&first, &second).unwrap();
+            vec![first, second]
+        } else {
+            write_log(&second, KIND_CODEX, ID, "other duplicate");
+            vec![first, second]
+        };
+        assert_eq!(load_paths(KIND_CODEX, ID, false, &known, &cfg).unwrap().messages[0].text, "indexed source winner", "{scenario}");
+        if scenario == "mirrored-then-archived" {
+            std::fs::rename(&known[1], known[1].with_extension("retained")).unwrap();
+            assert_eq!(load_paths(KIND_CODEX, ID, false, &known, &cfg).unwrap().messages[0].text, "indexed source winner");
+        }
+    }
+}
+
+#[test]
+fn fixr_r05_ailog_refuses_different_origins_even_when_only_mirrors_remain() {
+    const ID: &str = "11111111-1111-4111-8111-111111111111";
+    for include_global in [false, true] {
+        for mirror_only in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let first = if include_global { dir.path().join(".codex/sessions") }
+                else { dir.path().join("base/cli_account_homes/codex/codex-A/sessions") };
+            let second = dir.path().join("base/cli_account_homes/codex/codex-B/sessions");
+            let cfg = SourceConfig { roots: vec![(KIND_CODEX.into(), first.clone()), (KIND_CODEX.into(), second.clone())],
+                archive: None, full_text: Some(dir.path().join("mirror")), claude_fallback: None };
+            let paths: Vec<_> = [&first, &second].iter().map(|root| root.join(format!("rollout-{ID}.jsonl"))).collect();
+            for (root, path) in [&first, &second].iter().zip(&paths) {
+                if mirror_only {
+                    let mirrored = crate::agent_home_roots::mirror_root(KIND_CODEX, root, cfg.full_text.as_ref().unwrap()).join(path.strip_prefix(root).unwrap());
+                    write_log(&PathBuf::from(format!("{}.gz", mirrored.display())), KIND_CODEX, ID, "different origin");
+                } else { write_log(path, KIND_CODEX, ID, "different origin"); }
+            }
+            assert_eq!(load_paths(KIND_CODEX, ID, false, &paths, &cfg).unwrap_err().code, "ambiguousSource");
+        }
+    }
+}

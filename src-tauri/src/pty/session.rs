@@ -646,6 +646,21 @@ fn initialize_scrollback(preload: &[u8]) -> (VecDeque<u8>, u64) {
 // itself Send + Sync, so concurrent &PtySession access is serialized.
 unsafe impl Sync for PtySession {}
 
+/// CommandBuilder includes inherited process env and, on Windows, refreshed
+/// registry env. Scrub its complete base before adding backend-owned values.
+pub(crate) fn scrub_account_home_parent_env(cmd: &mut CommandBuilder, extra: Option<&std::collections::HashMap<String, String>>) {
+    let private_kind = extra.and_then(|env| env.get("MYCMUX_ACCOUNT_HOME_KIND").map(String::as_str)
+        .or_else(|| env.contains_key("CODEX_HOME").then_some("codex"))
+        .or_else(|| env.contains_key("GROK_HOME").then_some("grok")));
+    let aliases: Vec<String> = cmd.iter_full_env_as_str().filter(|(name, _)| {
+        crate::cli_accounts::account_homes::HOME_ENV_KEYS.iter().any(|key| name.eq_ignore_ascii_case(key))
+            || ["CLAUDE_CODE_OAUTH_TOKEN", "MYCMUX_LAUNCH_ACCOUNT"].iter().any(|key| name.eq_ignore_ascii_case(key))
+            || (private_kind == Some("codex") && ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OPENAI_AUTH_TOKEN"].iter().any(|key| name.eq_ignore_ascii_case(key)))
+            || (private_kind == Some("grok") && ["XAI_API_KEY", "GROK_API_KEY", "GROK_ACCESS_TOKEN"].iter().any(|key| name.eq_ignore_ascii_case(key)))
+    }).map(|(name, _)| name.to_string()).collect();
+    for name in aliases { cmd.env_remove(name); }
+}
+
 impl PtySession {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
@@ -677,6 +692,7 @@ impl PtySession {
             .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
         let mut cmd = CommandBuilder::new(command);
+        scrub_account_home_parent_env(&mut cmd, env.as_ref());
         cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");

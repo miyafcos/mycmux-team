@@ -15,10 +15,11 @@ export function tidyToolOutput(text: string): { text: string; lossy: boolean } {
     const trail = core.length - end;
     const middle = core.slice(lead, end);
 
-    if (!middle.includes(REPLACEMENT) && lead <= 3 && trail <= 3 && lead + trail >= 1) {
+    if (!middle.includes(REPLACEMENT) && lead <= 3 && trail <= 1 && lead + trail >= 1
+      && (middle.length > 0 || lead + trail === 1)) {
       return (lead ? ELLIPSIS : "") + middle + (trail ? ELLIPSIS : "") + carriageReturn;
     }
-    if (core.split(REPLACEMENT).length - 1 >= 3) lossy = true;
+    if (core.includes(REPLACEMENT)) lossy = true;
     return line;
   });
   return { text: lines.join("\n"), lossy };

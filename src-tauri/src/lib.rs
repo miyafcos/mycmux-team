@@ -19,6 +19,7 @@ pub fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(test))]
     { platform_dirs::home_dir() }
 }
+mod agent_home_roots;
 mod agent_titles;
 mod agent_transcript;
 mod agent_state;
@@ -584,10 +585,19 @@ app_commands![
             commands::ailog::ailog_get_usd_jpy_rate,
             commands::ailog::ailog_set_usd_jpy_rate,
             commands::cli_accounts::list_cli_accounts,
+            commands::cli_accounts::get_cli_launch_tokens,
+            commands::cli_accounts::set_cli_launch_token,
+            commands::cli_accounts::recheck_cli_launch_token,
+            commands::cli_accounts::get_tab_account_evidence,
+            commands::cli_accounts::recheck_tab_account,
+            commands::cli_accounts::remove_cli_launch_token,
             commands::cli_accounts::capture_cli_account,
             commands::cli_accounts::switch_cli_account,
             commands::cli_accounts::remove_cli_account,
             commands::cli_accounts::rename_cli_account,
+            commands::cli_accounts::list_cli_account_homes,
+            commands::cli_accounts::get_cli_account_home_login,
+            commands::cli_accounts::unregister_cli_account_home,
             commands::cli_accounts::begin_cli_login,
             commands::cli_accounts::cancel_cli_login,
             cli_accounts::resolve_cli_account_orphan,
@@ -655,6 +665,15 @@ pub fn run() {
         "MYCMUX_AGENT_KIND",
         "MYCMUX_RESUME_FORK",
         "MYCMUX_LAUNCH_TARGET",
+        "MYCMUX_LAUNCH_ACCOUNT",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_HOME",
+        "GROK_HOME",
+        "CODEX_SQLITE_HOME",
+        "GROK_AUTH_PATH",
+        "GROK_LEADER_SOCKET",
+        "MYCMUX_ACCOUNT_HOME_KIND",
+        "MYCMUX_CLI_LOGIN_ID",
         "MYCMUX_LAUNCH_COMMAND",
         "MYCMUX_LAUNCH_MODEL",
         "MYCMUX_LAUNCH_EFFORT",
@@ -677,6 +696,11 @@ pub fn run() {
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);
+        // Unix can carry differently-cased aliases; Windows registry values
+        // are separately scrubbed in the PTY CommandBuilder.
+        for alias in std::env::vars_os().map(|(name, _)| name).filter(|name| name.to_string_lossy().eq_ignore_ascii_case(key)).collect::<Vec<_>>() {
+            std::env::remove_var(alias);
+        }
     }
 
     let metadata_store = pty::monitor::new_metadata_store();
@@ -760,6 +784,9 @@ pub fn run() {
                 }
             }
             let state = app.state::<AppState>();
+            if let Ok(base) = app_handle.path().app_data_dir().map(test_profile::app_data_dir_from) {
+                agent_home_roots::register(base, &state.session_manager);
+            }
             let scrollback_dir = match db::storage::scrollback_dir(&app_handle) {
                 Ok(dir) => {
                     if state.scrollback_dir.set(dir.clone()).is_err() {

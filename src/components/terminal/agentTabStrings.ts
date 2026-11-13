@@ -5,6 +5,7 @@ export const agentTabStrings = {
   settingHint: "会話の表示では、端末は裏で動かし続け、見出しから切り替えられます。",
   toTerminal: "端末の表示にする",
   toConversation: "会話の表示にする",
+  contentSwitchUnavailable: "会話の記録を読めるようになると、会話の表示に戻ります",
   terminalButton: "端末",
   conversation: "会話の表示",
   conversationShort: "会話",

@@ -922,3 +922,10 @@
                 && payload.claude_session_id.is_none()
         }));
     }
+
+    #[test]
+    fn account_home_online_publish_is_rejected_before_creating_a_bundle() {
+        let dir=tempdir().unwrap();let root=dir.path().join("base/cli_account_homes/codex/codex-A/sessions");
+        let result=publish_savepoint_impl(&dir.path().join("missing.json"),dir.path(),&root,SavepointAgentKind::Codex,"/same/cwd",Some("11111111-1111-4111-8111-111111111111"),None,None,PublishMode::Current,Utc::now(),&mut |_|{});
+        assert_eq!(result.unwrap_err(),crate::agent_home_roots::HOME_SESSION_UNSUPPORTED);assert!(!dir.path().join(".mycmux/savepoints").exists());
+    }

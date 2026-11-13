@@ -377,7 +377,11 @@ mod tests {
         assert_eq!(project("codex", &multi)[0].text, format!("{request}\nsecond"));
         for prefix in ["# AGENTS.md instructions", "<INSTRUCTIONS>", "<user_instructions>",
             "<environment_context>", "<recommended_plugins>", "<plan_mode>", "<system_reminder>", "# Codex CLI"] {
-            let text = format!(" \n{prefix} synthetic");
+            let text = match prefix {
+                "# AGENTS.md instructions" => " \n# AGENTS.md instructions for C:\\synthetic\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>".to_string(),
+                "# Codex CLI" => "# Codex CLI\n<INSTRUCTIONS>synthetic</INSTRUCTIONS>".to_string(),
+                _ => format!(" \n\t{prefix}synthetic{}", prefix.replacen('<', "</", 1)),
+            };
             let event = json!({"type":"event_msg","payload":{"type":"user_message","message":text}});
             assert!(project("codex", &event).is_empty());
             for role in ["user", "developer", "assistant"] {
@@ -408,11 +412,11 @@ mod tests {
                 for (turn, expected) in [(None, 1), (Some("one"), 1), (Some("two"), 2)] {
                     let event = json!({"type":"event_msg","payload":{"type":"user_message","message":"repeat"}});
                     let response = json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
-                        {"text":"<environment_context>synthetic"},{"text":"repeat"}]}});
+                        {"text":"<environment_context>synthetic</environment_context>"},{"text":"repeat"}]}});
                     let mut injected = if event_form {
-                        json!({"type":"event_msg","payload":{"type":"user_message","message":"<environment_context>synthetic"}})
+                        json!({"type":"event_msg","payload":{"type":"user_message","message":"<environment_context>synthetic</environment_context>"}})
                     } else {
-                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<environment_context>synthetic"}]}})
+                        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"<environment_context>synthetic</environment_context>"}]}})
                     };
                     if let Some(turn) = turn { injected["payload"]["turn_id"] = json!(turn); }
                     let (first, second) = if reverse { (response, event) } else { (event, response) };

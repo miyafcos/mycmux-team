@@ -404,8 +404,10 @@ def test_guard_cards_satisfy_the_real_ops_entry_gate(tmp_path, cls, lines):
     times. Import the real validator rather than restating its rules here, so a
     change on either side fails this test instead of the delivery path.
     """
-    spec = importlib.util.spec_from_file_location(
-        "ops_common", Path.home() / ".claude" / "ops" / "ops_common.py")
+    ops_path = Path.home() / ".claude" / "ops" / "ops_common.py"
+    if not ops_path.is_file():
+        pytest.skip("ops_common.py is not installed; the real ops entry gate requires it")
+    spec = importlib.util.spec_from_file_location("ops_common", ops_path)
     ops = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ops)
 

@@ -1,4 +1,5 @@
-﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
+﻿import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
+import { cliAccountLaunchErrorMessage } from "../../lib/cliAccounts";
 import { AgentTabConversation } from "./AgentTabConversation";
 import { isAgentConversationKind } from "./agentTabConversationModel";
 import { resolveAgentConversationKind } from "../../lib/agentConversationKind";
@@ -818,13 +819,31 @@ export default memo(function XTermWrapper({
   const agentTabContent = useSettingsStore(state => state.agentTabContent);
   const conversationTabId = tabIdForSession(sessionId);
   const tabView = useAgentTabViewStore(state => conversationTabId ? state.views[conversationTabId] ?? "conversation" : "conversation");
+  const composerFocusRequest = useRef({ tabView, request: 0 });
+  if (composerFocusRequest.current.tabView !== tabView) {
+    composerFocusRequest.current.tabView = tabView;
+    if (tabView === "conversation") composerFocusRequest.current.request++;
+  }
   const conversationAgentKind = usePaneMetadataStore(state => resolveAgentConversationKind(
     state.volatileMetadata[sessionId], state.metadata[sessionId]?.agentKind, agentKind,
   ));
   const conversationWanted = agentTabContent === "conversation" && !!conversationTabId
     && isAgentConversationKind(conversationAgentKind) && tabView === "conversation";
   const [conversationReady, setConversationReady] = useState(false);
+  const conversationFocusWasInside = useRef(false);
+  const reportConversationVisible = useCallback((ready: boolean, focusedInside = false) => {
+    conversationFocusWasInside.current = focusedInside;
+    setConversationReady(ready);
+  }, []);
+  const [measuredFallbackHeight, setMeasuredFallbackHeight] = useState(0);
+  const conversationFallbackHeight = conversationWanted ? measuredFallbackHeight : 0;
   const conversationCovered = conversationWanted && conversationReady;
+  useLayoutEffect(() => {
+    if (!conversationTabId) return;
+    const store = useAgentTabViewStore.getState();
+    store.setConversationVisible(conversationTabId, conversationCovered);
+    return () => store.setConversationVisible(conversationTabId, false);
+  }, [conversationTabId, conversationCovered]);
   const conversationCoveredRef = useRef(conversationCovered);
   conversationCoveredRef.current = conversationCovered;
   const conversationInputRef = useRef<HTMLTextAreaElement>(null);
@@ -842,14 +861,20 @@ export default memo(function XTermWrapper({
     if (tabId) useAgentTabViewStore.getState().setView(tabId, "terminal");
   }, [sessionId]);
   const interruptConversation = useCallback(() => { chunkedWrite(sessionId, "\x1b"); }, [sessionId]);
+  const historyPanelOpeningRef = useRef(false);
   const previousConversationCovered = useRef(false);
+  const previousConversationView = useRef(tabView);
   useEffect(() => {
-    if (previousConversationCovered.current && !conversationCovered && historyVisible && !document.hidden
+    const chosenViewChanged = previousConversationView.current !== tabView;
+    const uncoveredOutsideConversation = previousConversationCovered.current && !conversationCovered && !conversationFocusWasInside.current;
+    if ((chosenViewChanged && tabView === "terminal" || uncoveredOutsideConversation) && !historyPanelOpeningRef.current && historyVisible && !document.hidden
       && !useDashboardViewStore.getState().open && useUiStore.getState().activePaneId === sessionId) focusController.focusSessionSoon(sessionId);
     previousConversationCovered.current = conversationCovered;
-  }, [conversationCovered, historyVisible, sessionId]);
+    previousConversationView.current = tabView;
+  }, [tabView, conversationCovered, historyVisible, sessionId]);
   const isAtBottomRef = useRef(true);
   const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
+  useLayoutEffect(() => { syncResizeRef.current(true); }, [conversationFallbackHeight]);
   const settingsResizeTimerRef = useRef<number | null>(null);
   // Latest-value mirror of the PTY launch parameters. The terminal effect below
   // is keyed on [sessionId] alone (adding these would respawn the terminal on
@@ -949,10 +974,17 @@ export default memo(function XTermWrapper({
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
   const turnListOpenRef = useRef(false);
   const { transcriptPanelOpen: historyPanelRequested, transcriptPanelFocusRequest, setTranscriptPanelOpen, closeTranscriptPanel: closeHistoryPanel, openAccepted } = useTerminalHistoryPanel(sessionId, historyVisible);
+  historyPanelOpeningRef.current = historyPanelRequested;
   const transcriptPanelOpen = historyPanelRequested && !conversationWanted;
+  const previousHistoryRequested = useRef(false);
   useEffect(() => {
-    if (conversationWanted && historyPanelRequested) setTranscriptPanelOpen(false);
-  }, [conversationWanted, historyPanelRequested, setTranscriptPanelOpen]);
+    const opening = historyPanelRequested && !previousHistoryRequested.current;
+    previousHistoryRequested.current = historyPanelRequested;
+    if (!conversationWanted || !historyPanelRequested) return;
+    // The existing history panel owns its reader and focus in terminal view.
+    if (opening) showConversationTerminal();
+    else setTranscriptPanelOpen(false);
+  }, [conversationWanted, historyPanelRequested, setTranscriptPanelOpen, showConversationTerminal]);
   const archiveEntry = useTerminalArchiveEntry(sessionId, tabIdForSession(sessionId), containerRef, termRef, transcriptPanelOpen, openAccepted, historyVisible);
   const archiveEntryRef = useRef(archiveEntry); archiveEntryRef.current = archiveEntry;
   const searchOpenRef = useRef(isSearchOpen); searchOpenRef.current = isSearchOpen;
@@ -3437,7 +3469,7 @@ export default memo(function XTermWrapper({
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
         if (handleResumeBlock(err)) return;
         console.error("[XTermWrapper] Failed to reattach session:", err);
-        useToastStore.getState().pushToast("Terminal reattach failed", "error");
+        useToastStore.getState().pushToast(cliAccountLaunchErrorMessage(err) ?? "Terminal reattach failed", "error");
       });
       return cleanup;
     }
@@ -3645,7 +3677,7 @@ export default memo(function XTermWrapper({
         if (err instanceof SessionClosedError || disposed || termDisposed) return;
         if (!handleResumeBlock(err)) {
           console.error("[XTermWrapper] Failed to create session:", err);
-          term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
+          term.writeln(`\r\n\x1b[31m${cliAccountLaunchErrorMessage(err) ?? `Failed to start: ${err}`}\x1b[0m`);
         }
       }
 
@@ -3810,12 +3842,13 @@ export default memo(function XTermWrapper({
       )}
       {conversationWanted && conversationTabId ? <AgentTabConversation sessionId={sessionId} tabId={conversationTabId}
         agentKind={conversationAgentKind} visible={historyVisible} active={isActivePane} inputRef={conversationInputRef}
-        focusRequest={conversationSearchRequest}
-        onTerminal={showConversationTerminal} onEscape={interruptConversation} onVisible={setConversationReady} /> : null}
+        focusRequest={conversationSearchRequest} composerFocusRequest={composerFocusRequest.current.request}
+        onTerminal={showConversationTerminal} onEscape={interruptConversation} onVisible={reportConversationVisible}
+        onFallbackHeight={setMeasuredFallbackHeight} /> : null}
       {isSearchOpen && (
         <div data-terminal-search="true" style={{
           position: "absolute",
-          top: 8,
+          top: 8 + conversationFallbackHeight,
           right: 16,
           zIndex: 50,
           background: "var(--cmux-surface, var(--cmux-bg, #1a1a1a))",
@@ -3858,7 +3891,8 @@ export default memo(function XTermWrapper({
         aria-hidden={conversationCovered || undefined}
         style={{
           width: "100%",
-          height: "100%",
+          height: conversationFallbackHeight ? `calc(100% - ${conversationFallbackHeight}px)` : "100%",
+          top: conversationFallbackHeight || undefined,
           overflow: "hidden",
           position: "relative",
           contain: "strict",

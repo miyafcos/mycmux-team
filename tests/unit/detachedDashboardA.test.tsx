@@ -183,7 +183,6 @@ describe("shared dashboard option A", () => {
       "reading-line-height": "1.85",
       "card-min-height": "calc(var(--cmux-space-7) * 5)",
       "tile-min-height": "calc(var(--cmux-space-7) * 4)",
-      "composer-min-height": "calc(var(--cmux-space-7) * 4)",
     };
     for (const [name, value] of Object.entries(expected)) expect(css).toContain(`--cmux-dashboard-${name}: ${value};`);
     expect(source("components/dashboard/DashboardView.tsx")).toContain('data-dashboard-compact={compact ? "true" : "false"}');

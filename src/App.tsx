@@ -14,8 +14,6 @@ import {
   preloadTerminalConfig,
   onPtyMetadata,
   onPtyWorkDone,
-  isDirectory,
-  writeToSession,
   getLaunchCwd,
   revealMainWindow,
   readAgentSessionMappings,
@@ -54,6 +52,7 @@ import { connectStallStore } from "./stores/stallStore";
 import { connectDispatchWatchdog } from "./stores/dispatchWatchdogStore";
 import { startAutoPaneNaming, stopAutoPaneNaming } from "./lib/autoPaneNaming";
 import { IS_MAC } from "./lib/keybindings";
+import { handleTerminalPathDrop } from "./components/terminal/terminalPathDrop";
 
 const loadAppShell = () => import("./components/layout/AppShell");
 const AppShell = lazy(loadAppShell);
@@ -312,28 +311,7 @@ function App() {
 
       // Find the terminal pane under the drop position
       const el = document.elementFromPoint(cssX, cssY);
-      const paneEl = el?.closest("[data-session-id]");
-      if (!paneEl) return;
-      const sessionId = paneEl.getAttribute("data-session-id");
-      if (!sessionId) return;
-
-      if (paths.length === 1) {
-        try {
-          const isDir = await isDirectory(paths[0]);
-          if (isDir) {
-            // Normalize backslashes for Git Bash compatibility
-            const normalized = paths[0].replace(/\\/g, "/");
-            await writeToSession(sessionId, `cd "${normalized}"\r`);
-            return;
-          }
-        } catch { /* fall through to paste */ }
-      }
-
-      // Paste file paths as quoted strings
-      const quoted = paths
-        .map((p) => `"${p.replace(/\\/g, "/")}"`)
-        .join(" ");
-      await writeToSession(sessionId, quoted + " ");
+      await handleTerminalPathDrop(paths, el);
     });
 
     const refreshAgentSessionMappings = (): void => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentKindIcon } from "../../src/components/icons/AgentIcons";
-import { AGENT_CATALOG, getCatalogEntry } from "../../src/lib/agentCatalog";
+import { AGENT_CATALOG, getCatalogEntry, getLaunchEfforts } from "../../src/lib/agentCatalog";
 import {
   cycleChoice,
   dirSections,
@@ -72,10 +72,22 @@ describe("launcher spec keyboard navigation", () => {
     expect(specRowsFor(claude)).toEqual(["model", "effort", "launch"]);
   });
 
-  it.each(["grok"])("keeps the free-text model row for %s", (target) => {
-    const entry = getCatalogEntry(target)!;
-    expect(entry.models).toHaveLength(0);
+  it("offers Grok's vetted models while keeping the model input row", () => {
+    const entry = getCatalogEntry("grok")!;
+    expect(entry.models.map((model) => model.value)).toEqual(["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]);
     expect(specRowsFor(entry)).toEqual(["model", "effort", "launch"]);
+  });
+
+  it.each(["grok-4.5", "  grok-4.5  "])("caps %s at high", (model) => {
+    expect(getLaunchEfforts(getCatalogEntry("grok"), model)).toEqual(["low", "medium", "high"]);
+  });
+
+  it.each(["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "", undefined, "custom-grok"])("offers xhigh for Grok model %s", (model) => {
+    expect(getLaunchEfforts(getCatalogEntry("grok"), model)).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
+  it("offers all five agy effort steps", () => {
+    expect(getLaunchEfforts(getCatalogEntry("agy"), "gemini-4-argon-high")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
   it("omits effort only when no efforts exist", () => {

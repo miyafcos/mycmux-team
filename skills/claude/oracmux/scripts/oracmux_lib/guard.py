@@ -1,8 +1,12 @@
-"""NDA / confidentiality guard.
+"""Pre-send guard: markers, deny roots and a size cap.
 
-Rule (CLAUDE.md, delegation.md): NDA material and anything not cleared for
-outside disclosure never goes to a web service — ChatGPT, Gemini and Grok
-are all external services.
+History: this was written as an NDA / confidentiality guard, under a rule
+that NDA material never goes to a web service. The operator withdrew that
+rule on 2026-11-10 ("そのガード不要です"), so the shipped guard.json lists no
+markers and marker words no longer stop a send. The mechanism below is
+unchanged: markers listed in guard.json (or the code defaults, when the file
+omits the keys) block unless --allow-markers; deny roots and the size cap
+block unconditionally.
 
 The guard is deterministic on purpose. It cannot know what is secret; it can
 only catch the markers people actually put on such material and the folders

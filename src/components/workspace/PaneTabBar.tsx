@@ -9,6 +9,9 @@ import { createPortal } from "react-dom";
 import type { RefObject } from "react";
 import { usePopoverPosition } from "../../hooks/usePopoverPosition";
 import { PaneTabRenameEditor } from "./PaneTabRenameEditor";
+import { TabAccountBadge } from "../layout/TabAccountBadge";
+import { TabAccountPanel, tabAccountProvider } from "../layout/TabAccountPanel";
+import { tabAccountPanelTitle } from "../layout/tabAccountStrings";
 import {
   ATTENTION_REASON_COLOR,
   ATTENTION_REASON_LABEL,
@@ -21,7 +24,8 @@ import { getTabDisplayLabel, getTabDisplayFullLabel } from "../../lib/tabDisplay
 import { resolveTabMark, tabMarkSource, type TabMark } from "../../lib/tabMark";
 import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
 import { openDormantCompletionRecord } from "../../lib/dormantCompletion";
-import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
+import { crsmCreateHandoff, duplicateAgentSession, type CliProvider } from "../../lib/ipc";
+import { cliAccountSessionErrorMessage } from "../../lib/cliAccounts";
 import {
   buildClonedDuplicateSessionPaneOptions,
   buildDuplicateSessionPaneOptions,
@@ -834,6 +838,7 @@ function PaneTabListMenu({
           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
             {declared ? `＋ ${label}（まだ）` : label}
           </span>
+          <TabAccountBadge accountId={tab.agentAccountId} sessionId={tab.sessionId} />
           {hoisted && detail && (
             <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--cmux-text-secondary)" }}>
               {detail}
@@ -972,7 +977,8 @@ export default memo(function PaneTabBar({
   const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
   const declaredLaunchEnabled = useSettingsStore((s) => s.declaredLaunchEnabled);
   const agentTabContent = useSettingsStore((s) => s.agentTabContent);
-  const tabViews = useAgentTabViewStore((s) => s.views);
+  const conversationTabs = useAgentTabViewStore((s) => s.conversationTabs);
+  const selectedTabContent = useAgentTabViewStore((s) => s.views[pane.activeTabId] ?? "conversation");
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
@@ -1026,6 +1032,7 @@ export default memo(function PaneTabBar({
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const contextFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
+  const [accountPanelTab, setAccountPanelTab] = useState<{ tab: PaneTab; provider: CliProvider } | null>(null);
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
   const publishPopoverRef = useRef<HTMLDivElement>(null);
@@ -1061,6 +1068,7 @@ export default memo(function PaneTabBar({
     setAllTabsOpen(false);
     setKebabOpen(false);
     setPublishPopoverOpen(false);
+    setAccountPanelTab(null);
   }, [isVisible]);
   const canCloseWholePane = useWorkspaceListStore((state) =>
     (state.workspaces.find((workspace) => workspace.id === workspaceId)?.panes.length ?? 1) > 1,
@@ -1134,10 +1142,11 @@ export default memo(function PaneTabBar({
   const contentAgentKind = resolveAgentConversationKind(activeVolatileMeta, activeMeta?.agentKind,
     activeTab ? resolveTabMark(activeTab)?.kind : undefined);
   const canSwitchContent = agentTabContent === "conversation" && canSearchTerminal && isAgentConversationKind(contentAgentKind);
-  const tabContent = activeTab ? tabViews[activeTab.id] ?? "conversation" : "conversation";
+  const tabContent = activeTab && conversationTabs[activeTab.id] ? "conversation" : "terminal";
   const contentSwitchLabel = tabContent === "conversation" ? agentTabStrings.toTerminal : agentTabStrings.toConversation;
+  const contentSwitchDisabled = tabContent === "terminal" && selectedTabContent === "conversation";
   const switchContent = () => {
-    if (activeTab && canSwitchContent) useAgentTabViewStore.getState().setView(activeTab.id, tabContent === "conversation" ? "terminal" : "conversation");
+    if (activeTab && canSwitchContent && !contentSwitchDisabled) useAgentTabViewStore.getState().setView(activeTab.id, tabContent === "conversation" ? "terminal" : "conversation");
   };
   // Heading and icon share the same authority; a live null cannot fall back
   // to the launcher's saved agentId.
@@ -1196,6 +1205,7 @@ export default memo(function PaneTabBar({
           await duplicateAgentSession(source.agentKind, source.agentSessionId, source.cwd),
         );
       } catch (cloneError) {
+        if (cliAccountSessionErrorMessage(cloneError)) throw cloneError;
         const message = cloneError instanceof Error ? cloneError.message : String(cloneError);
         useToastStore.getState().pushToast(
           `セッションの複製に失敗しました (${message})。引き継ぎ方式で開きます。`,
@@ -1231,7 +1241,7 @@ export default memo(function PaneTabBar({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       useToastStore.getState().pushToast(
-        `Failed to duplicate session: ${message}`,
+        cliAccountSessionErrorMessage(error) ?? `Failed to duplicate session: ${message}`,
         "error",
       );
     } finally {
@@ -1479,7 +1489,13 @@ export default memo(function PaneTabBar({
     run?: () => void;
     content?: ReactNode;
   }> = [
-    { id: "agent-tab-content", label: contentSwitchLabel, show: canSwitchContent, run: switchContent },
+    { id: "agent-tab-content", label: contentSwitchLabel, show: canSwitchContent, disabled: contentSwitchDisabled,
+      title: contentSwitchDisabled ? agentTabStrings.contentSwitchUnavailable : undefined, run: switchContent },
+    { id: "tab-account", label: tabAccountPanelTitle, show: tabAccountProvider(activeTab, activeVolatileMeta?.liveAgentKind) !== null,
+      run: () => {
+        const provider = tabAccountProvider(activeTab, activeVolatileMeta?.liveAgentKind);
+        if (activeTab && provider) setAccountPanelTab({ tab: activeTab, provider });
+      } },
     { id: "new-tab", label: paneToolbarStrings.newTab, run: () => onAddTab?.(getDefaultAgent().id, "launcher") },
     { id: "rename", label: paneTabMenuStrings.rename, disabled: !activeTab,
       run: () => { if (activeTab) startEditingTab(activeTab.id, activeTabLabel); } },
@@ -1626,6 +1642,7 @@ export default memo(function PaneTabBar({
       <span className="pane-active-heading-name" style={{ fontFamily: "var(--cmux-font-mono)", fontSize: "var(--cmux-font-size-xs)" }}>
         {activeTabDeclared ? `＋ ${label}（まだ）` : label}
       </span>
+      <TabAccountBadge accountId={tab.agentAccountId} sessionId={tab.sessionId} />
       {!activeTabDeclared && activeStateLabel ? <span className="pane-session-state" role="status"
         data-session-state={activePresentation ?? "unknown"}>{activeStateLabel}</span> : null}
     </div>;
@@ -1719,8 +1736,9 @@ export default memo(function PaneTabBar({
           </button>
         )}
         {canSwitchContent && visibleActions.includes("zoom") && (
-          <button type="button" className="pane-action-btn pane-agent-content-switch" title={contentSwitchLabel}
-            aria-label={contentSwitchLabel} onClick={switchContent}>
+          <button type="button" className="pane-action-btn pane-agent-content-switch"
+            title={contentSwitchDisabled ? agentTabStrings.contentSwitchUnavailable : contentSwitchLabel}
+            disabled={contentSwitchDisabled} aria-label={contentSwitchLabel} onClick={switchContent}>
             {tabContent === "conversation" ? <SquareTerminal size={12} aria-hidden="true" /> : <MessageSquareText size={12} aria-hidden="true" />}
           </button>
         )}
@@ -1770,6 +1788,8 @@ export default memo(function PaneTabBar({
           </div>, portalTarget)}
         </div>
       </div>
+      {isVisible && accountPanelTab && <TabAccountPanel key={accountPanelTab.tab.sessionId}
+        tab={accountPanelTab.tab} provider={accountPanelTab.provider} onClose={() => setAccountPanelTab(null)} />}
       {isVisible && publishPopoverOpen && agentSessionId && portalTarget && createPortal(
         <div
           ref={publishPopoverRef}

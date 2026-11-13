@@ -12,6 +12,7 @@ fn publish_savepoint_impl(
     now: chrono::DateTime<Utc>,
     progress: &mut dyn FnMut(PublishProgressPayload),
 ) -> Result<PublishSavepointResult, String> {
+    super::online::reject_account_home_savepoint(agent_kind, agent_session_id, Some(transcript_root))?;
     let _publish_guard = PUBLISH_LOCK
         .lock()
         .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;

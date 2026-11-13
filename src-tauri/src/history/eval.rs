@@ -621,12 +621,22 @@ fn discover_codex_sessions(
     home_dir: &Path,
 ) -> Result<CodexDiscovery, String> {
     let root = codex_transcript_root(home_dir);
+    let global = vec![crate::agent_home_roots::RecordRoot { origin: crate::agent_home_roots::Origin::Global, path: root },
+        crate::agent_home_roots::RecordRoot { origin: crate::agent_home_roots::Origin::Global, path: home_dir.join(".codex/archived_sessions") }];
+    let mut roots = global;
+    roots.extend(crate::agent_home_roots::accounts(crate::cli_accounts::CliProvider::Codex));
+    discover_codex_sessions_in_roots(current_cwd, &roots)
+}
+
+fn discover_codex_sessions_in_roots(current_cwd: &str, roots: &[crate::agent_home_roots::RecordRoot]) -> Result<CodexDiscovery, String> {
     let mut paths = Vec::new();
-    collect_jsonl_paths(&root, &mut paths)?;
+    for root in roots { collect_jsonl_paths(&root.path, &mut paths)?; }
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
     paths.sort_by(|left, right| newest_path_first(left, right));
     paths.truncate(MAX_CODEX_DISCOVERY_FILES);
 
-    let mut grouped = HashMap::<String, SourceSession>::new();
+    let mut grouped = HashMap::<(PathBuf, String), SourceSession>::new();
     let mut excluded = 0;
     for path in paths {
         let Some(session_id) = codex_session_id_for_current_cwd(&path, current_cwd) else {
@@ -642,10 +652,12 @@ fn discover_codex_sessions(
             continue;
         }
         source.external_session_id = session_id.clone();
-        match grouped.get(&session_id) {
+        let location = roots.iter().find(|root| source.path.starts_with(&root.path)).map(|root| root.path.clone()).unwrap_or_default();
+        let key = (location, session_id.clone());
+        match grouped.get(&key) {
             Some(current) if !is_better_representative(&source, current) => {}
             _ => {
-                grouped.insert(session_id, source);
+                grouped.insert(key, source);
             }
         }
     }
@@ -672,6 +684,7 @@ fn claude_project_key(path: &Path) -> String {
 }
 
 fn collect_jsonl_paths(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !crate::agent_home_roots::record_path_allowed(root) { return Ok(()); }
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -680,6 +693,7 @@ fn collect_jsonl_paths(root: &Path, output: &mut Vec<PathBuf>) -> Result<(), Str
     for entry in entries {
         let entry = entry.map_err(|error| format!("read transcript entry: {error}"))?;
         let path = entry.path();
+        if !crate::agent_home_roots::record_path_allowed(&path) { continue; }
         let file_type = entry
             .file_type()
             .map_err(|error| format!("read transcript file type: {error}"))?;
@@ -1562,4 +1576,18 @@ fn path_and_command_classification_stays_mechanical() {
     assert!(!looks_like_path("cargo test --release"));
     assert!(is_command_tool("shell_command"));
     assert!(!is_command_tool("Read"));
+}
+
+#[cfg(all(test, unix))]
+mod fix2b1_link_tests {
+    use super::*;
+    use crate::agent_home_roots::link_tests::{Fixture,LinkMode,MODES,ID};
+    #[test]
+    fn fix2b1_history_material_keeps_the_legacy_global_file_type_walk() {
+        for mode in MODES {
+            let f=Fixture::new(mode);let discovery=discover_codex_sessions_in_roots(&normalize_path(f.cwd),&[f.root]).unwrap();
+            assert_eq!(discovery.sessions.len(),usize::from(mode!=LinkMode::Nested),"{mode:?}");
+            if let Some(source)=discovery.sessions.first() {assert_eq!(source.external_session_id,ID);}
+        }
+    }
 }

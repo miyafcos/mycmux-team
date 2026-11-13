@@ -270,6 +270,28 @@ fn create_session_blocking(
     // and re-emit "agent-restore-downgraded" for sessions that were never
     // being restored in the first place.
     let reattach = state.session_manager.is_alive(&session_id);
+    // Login homes are backend-owned capabilities. Ignore all frontend command,
+    // argv and home choices when a pending login ID is supplied.
+    let incoming_login_id = env_map.get("MYCMUX_CLI_LOGIN_ID").cloned();
+    let login_launch = if !reattach {
+        take_cli_login_launch(&app_handle, &mut env_map, &session_id)?
+    } else { None };
+    if let Some(login) = login_launch.as_ref() {
+        requested_command = login.0.clone(); args = login.1.clone();
+    }
+    // Resolve private account context before restore existence checks. Paths
+    // remain out of env until after sanitize_launch_env.
+    let mut evidence_base = None;
+    let mut account_context = if !reattach && login_launch.is_none() {
+        resolve_launch_account(&mut env_map, &requested_command, &args, |provider, id| {
+            let default_dir = app_handle.path().app_data_dir()
+                .map_err(|_| crate::cli_accounts::account_homes::ERR_HOME_ISOLATION_UNAVAILABLE.to_string())?;
+            let base = crate::test_profile::app_data_dir_from(default_dir);
+            evidence_base = Some(base.clone());
+            resolve_registered_launch_context(&base, provider, id, &session_id,
+                |session| state.session_manager.is_alive(session), crate::cli_accounts::account_homes::global_home)
+        })?
+    } else { None };
     // Production supplies its IPC-issued context. The e2e adapter issues one
     // here so its existing pre-gate race checkpoints remain authoritative.
     let attachment_context = attachment_context(reattach)?;
@@ -315,6 +337,7 @@ fn create_session_blocking(
         }
     }
     if codex_restore && codex_restore::clear_codex_restore_report(&session_id).is_err() {
+        if account_context.is_some() { return Err(crate::cli_accounts::account_homes::ERR_HOME_ISOLATION_UNAVAILABLE.into()); }
         codex_report_unavailable = true;
         codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "downgrade", "report-unavailable");
         for id in std::iter::once(session_id.as_str()).chain(restore_tab_id.as_deref()) { let _ = crate::commands::session_mapping::remove_session_mapping_file(id); }
@@ -330,7 +353,7 @@ fn create_session_blocking(
         normalize_claude_launch_args(&mut args, &env_map);
     }
     if codex_restore && !codex_report_unavailable {
-        let validation = validate_agent_restore_request(cwd.as_deref(), &env_map);
+        let validation = agent_restore::validate_agent_restore_request_with_home(cwd.as_deref(), &env_map, account_context.as_ref());
         let reason = match codex_requested_id.as_deref() {
             None => "missing-id",
             Some(id) if id.trim().is_empty() => "missing-id",
@@ -344,6 +367,7 @@ fn create_session_blocking(
                 codex_restore_diag_line(&session_id, restore_tab_id.as_deref(), None, "guidance", "missing-id")));
         }
         if reason != "exists" {
+            if account_context.is_some() { return Err(crate::cli_accounts::account_homes::ERR_HOME_NOT_READY.into()); }
             codex_downgrade_reason = Some(reason);
             if let Some(fresh) = codex_executable.as_ref().and_then(|exe| exe.fresh_args()) { args = fresh; }
             for id in std::iter::once(session_id.as_str()).chain(restore_tab_id.as_deref()) { let _ = crate::commands::session_mapping::remove_session_mapping_file(id); }
@@ -354,7 +378,7 @@ fn create_session_blocking(
         }
     }
     if !reattach && !codex_restore {
-        let validation = validate_agent_restore_request(cwd.as_deref(), &env_map).and_then(|()| {
+        let validation = agent_restore::validate_agent_restore_request_with_home(cwd.as_deref(), &env_map, account_context.as_ref()).and_then(|()| {
             if env_map.get("MYCMUX_RESUME").is_some_and(|kind| kind == "claude")
                 && (env_map.get("MYCMUX_SESSION_ID").is_none_or(|id| id.trim().is_empty())
                     || cwd.as_deref().is_some_and(|value| !Path::new(value).is_dir()))
@@ -367,6 +391,7 @@ fn create_session_blocking(
         match validation {
             Ok(()) => {}
             Err(err) => {
+                if account_context.is_some() { return Err(crate::cli_accounts::account_homes::ERR_HOME_NOT_READY.into()); }
                 let kind = env_map
                     .get("MYCMUX_RESUME")
                     .as_deref()
@@ -456,6 +481,29 @@ fn create_session_blocking(
         .map(|value| value == "1")
         .unwrap_or(false);
     sanitize_launch_env(&mut env_map);
+    let mut pending_account_evidence = None;
+    inject_claude_launch_account(&mut env_map, &requested_command, reattach, |profile_id| {
+        let default_dir = app_handle.path().app_data_dir()
+            .map_err(|_| crate::cli_accounts::ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+        let base = crate::test_profile::app_data_dir_from(default_dir);
+        let loaded = crate::cli_accounts::launch_tokens::load_for_launch(&base, profile_id)?;
+        if let Some(loaded) = loaded.as_ref() {
+            pending_account_evidence = Some((base, crate::cli_accounts::tab_evidence::TabAccountEvidence::claude(&loaded.status)));
+        }
+        Ok(loaded)
+    }, chrono::Utc::now())?;
+    if let Some(context) = account_context.as_ref() {
+        context.apply_env(&mut env_map);
+        add_account_home_args(context.provider, &requested_command, &mut args)?;
+        if let Some(base) = evidence_base.take() {
+            pending_account_evidence = Some((base, crate::cli_accounts::tab_evidence::TabAccountEvidence::home(context)));
+        }
+    }
+    if let Some((_, _, key, home)) = login_launch.as_ref() {
+        let provider = if *key == "CODEX_HOME" { crate::cli_accounts::CliProvider::Codex } else if *key == "GROK_HOME" { crate::cli_accounts::CliProvider::Grok } else { crate::cli_accounts::CliProvider::Claude };
+        env_map.retain(|name, _| !crate::cli_accounts::account_homes::provider_auth_keys(provider).iter().any(|key| name.eq_ignore_ascii_case(key)));
+        env_map.insert((*key).into(), home.to_string_lossy().into_owned());
+    }
     if let Some(reason) = codex_downgrade_reason { env_map.insert("MYCMUX_CODEX_RESTORE_REASON".into(), reason.into()); }
     if let Some(generation) = codex_generation.as_ref() { env_map.insert("MYCMUX_CODEX_RESTORE_GENERATION".into(), generation.clone()); }
     // Canonical MYCMUX_HTML_OUT (HTML sidetab path) for this pane. sanitize_launch_env
@@ -565,7 +613,7 @@ fn create_session_blocking(
             write_session_mapping_file(&session_id, &request.kind, &request.agent_session_id)?;
         }
     }
-    let command = if let Some(mut fresh_args) = codex_executable.as_ref().filter(|_| !codex_report_unavailable).and_then(|exe| exe.fresh_args()) {
+    let command = if let Some(mut fresh_args) = codex_executable.as_ref().filter(|_| !codex_report_unavailable && account_context.is_none()).and_then(|exe| exe.fresh_args()) {
         let fresh_command = prepare_spawn_command(&requested_command, &mut fresh_args);
         wrap_codex_restore(&command, &mut args, &fresh_command, &fresh_args)
     } else if restore_notice {
@@ -575,7 +623,13 @@ fn create_session_blocking(
     };
     let launch_conversation = requested_conversation(&requested_command, &args, &env_map);
     #[cfg(feature = "e2e")]
-    codex_restore_harness::capture_launch(&session_id, &command, &args, &env_map);
+    {
+        let capture_env = env_map.iter()
+            .filter(|(key, _)| !key.eq_ignore_ascii_case("CLAUDE_CODE_OAUTH_TOKEN"))
+            .filter(|(key, _)| !crate::cli_accounts::account_homes::HOME_ENV_KEYS.iter().any(|name| key.eq_ignore_ascii_case(name)))
+            .map(|(key, value)| (key.clone(), value.clone())).collect();
+        codex_restore_harness::capture_launch(&session_id, &command, &args, &capture_env);
+    }
     invalidate_codex_restore_notice(&app_handle, &session_id);
     let created = state.session_manager.create(
         session_id.clone(),
@@ -595,7 +649,19 @@ fn create_session_blocking(
         &attachment_window,
     );
     if codex_restore && created.is_err() { codex_restore_diag(&session_id, restore_tab_id.as_deref(), codex_requested_id.as_deref(), "spawn-failure", "pty-spawn-failed"); }
+    if let Some(login_id) = incoming_login_id.as_deref().filter(|_| !reattach) {
+        crate::cli_accounts::account_homes::finish_login_launch(login_id, created.is_ok());
+        if created.is_err() { app_handle.state::<crate::cli_accounts::login_watch::LoginRegistry>().request_cancel(login_id); }
+    }
     created?;
+    if let Some(context) = account_context.as_mut() { context.commit(); }
+    if !reattach {
+        if let Some((base, evidence)) = pending_account_evidence {
+            let profile_id = evidence.profile_id.clone();
+            crate::cli_accounts::tab_evidence::remember(&base, &session_id, evidence, |id| state.session_manager.is_alive(id));
+            let _ = app_handle.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile_id }));
+        }
+    }
     if !reattach {
         if let Some(request) = launch_conversation {
             state.session_manager.remember_requested_conversation(&session_id, &request.kind, &request.agent_session_id);
@@ -1085,6 +1151,14 @@ pub(crate) fn resolve_launch_cwd(cwd: Option<&str>) -> Option<String> {
 /// frontend `EPHEMERAL_LAUNCH_ENV_KEYS` set in `SocketListener.tsx`.
 pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
     const ALWAYS_INTERNAL: &[&str] = &[
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_HOME",
+        "GROK_HOME",
+        "CODEX_SQLITE_HOME",
+        "GROK_AUTH_PATH",
+        "GROK_LEADER_SOCKET",
+        "MYCMUX_ACCOUNT_HOME_KIND",
+        "MYCMUX_CLI_LOGIN_ID",
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",
         "__CMUX_LAUNCHER_DONE",
@@ -1160,6 +1234,140 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
             env.remove(*key);
         }
     }
+}
+
+/// Consume Codex/Grok selectors before any filesystem restore validation.
+/// Claude remains on its step-1a token injection path below.
+fn resolve_launch_account<T>(env: &mut HashMap<String, String>, command: &str, args: &[String], lookup: impl FnOnce(crate::cli_accounts::CliProvider, &str) -> Result<Option<T>, String>) -> Result<Option<T>, String> {
+    use crate::cli_accounts::{CliProvider, account_homes, ERR_LAUNCH_ACCOUNT_NOT_FOUND};
+    let Some(id) = env.get("MYCMUX_LAUNCH_ACCOUNT").cloned() else {
+        env.retain(|key, _| !key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT"));
+        return Ok(None);
+    };
+    crate::cli_accounts::launch_tokens::validate_profile_id(&id)?;
+    let lower = command.to_ascii_lowercase();
+    let leaf = command_leaf(&lower);
+    let direct = match leaf {
+        "codex" | "grok" | "claude" | "claude-codex" => Some(leaf),
+        "node" | "bun" => args.first().and_then(|script| {
+            let leaf = script.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
+            match leaf.as_str() { "codex.js" => Some("codex"), "grok.js" => Some("grok"), _ => None }
+        }),
+        _ => None,
+    };
+    let target = env.get("MYCMUX_LAUNCH_TARGET").map(String::as_str).map(|kind| kind.strip_suffix("-resume").unwrap_or(kind));
+    let resume = env.get("MYCMUX_RESUME").or_else(|| env.get("MYCMUX_AGENT_KIND")).map(String::as_str);
+    let kind = target.or(resume).or(direct);
+    let provider = match kind { Some("claude") => CliProvider::Claude, Some("codex") => CliProvider::Codex, Some("grok") => CliProvider::Grok, _ => return Ok(None) };
+    if [target, resume, direct].into_iter().flatten().any(|value| Some(value) != kind) { return Err(ERR_LAUNCH_ACCOUNT_NOT_FOUND.into()); }
+    if direct.is_none() && !args.iter().any(|arg| arg.contains("launcher.sh") || arg.contains("launcher.ps1")) {
+        return Err(account_homes::ERR_HOME_ISOLATION_UNAVAILABLE.into());
+    }
+    if provider != CliProvider::Claude { env.retain(|key, _| !key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")); }
+    lookup(provider, &id)
+}
+
+fn resolve_registered_launch_context(
+    base: &Path, provider: crate::cli_accounts::CliProvider, id: &str, session_id: &str,
+    alive: impl Fn(&str) -> bool, source: impl FnOnce(crate::cli_accounts::CliProvider) -> Result<PathBuf, String>,
+) -> Result<Option<crate::cli_accounts::account_homes::AccountLaunchContext>, String> {
+    let registered = crate::cli_accounts::registered_profile_provider(base, id)
+        .map_err(|_| crate::cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND.to_string())?;
+    if registered != provider { return Err(crate::cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND.into()); }
+    if provider == crate::cli_accounts::CliProvider::Claude { return Ok(None); }
+    let source = source(provider)?;
+    crate::cli_accounts::account_homes::prepare_launch(base, provider, id, session_id, alive, &source).map(Some)
+}
+
+fn add_account_home_args(provider: crate::cli_accounts::CliProvider, command: &str, args: &mut Vec<String>) -> Result<(), String> {
+    use crate::cli_accounts::{CliProvider, account_homes::ERR_HOME_ISOLATION_UNAVAILABLE};
+    let lower = command.to_ascii_lowercase();
+    let prefix = match command_leaf(&lower) {
+        "codex" | "grok" => 0,
+        "node" | "bun" if args.first().is_some_and(|script| script.to_ascii_lowercase().ends_with("codex.js") || script.to_ascii_lowercase().ends_with("grok.js")) => 1,
+        // Launchers add flags immediately before each CLI dispatch themselves.
+        _ => return Ok(()),
+    };
+    let mut index = prefix;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" { break; }
+        if ["--remote", "--leader", "--leader-socket", "--auth-path"].iter().any(|key| arg == key || arg.starts_with(&format!("{key}="))) {
+            return Err(ERR_HOME_ISOLATION_UNAVAILABLE.into());
+        }
+        let assignment = if matches!(arg.as_str(), "-c" | "--config") {
+            index += 1;
+            Some(args.get(index).ok_or_else(|| ERR_HOME_ISOLATION_UNAVAILABLE.to_string())?.as_str())
+        } else { arg.strip_prefix("--config=").or_else(|| arg.strip_prefix("-c").filter(|value| !value.is_empty())) };
+        if let Some(assignment) = assignment {
+            let (key, value) = assignment.split_once('=').ok_or_else(|| ERR_HOME_ISOLATION_UNAVAILABLE.to_string())?;
+            // Codex accepts bare strings as option values (e.g. effort=max).
+            // Parse the key alone so those existing model/effort values stay intact.
+            let key_source = format!("{key}=true");
+            let document = toml_edit::Document::parse(&key_source).map_err(|_| ERR_HOME_ISOLATION_UNAVAILABLE.to_string())?;
+            let file_store = value.trim() == "file" || toml_edit::Document::parse(assignment).ok()
+                .and_then(|doc| doc.get("cli_auth_credentials_store").and_then(|item| item.as_str()).map(str::to_string)).as_deref() == Some("file");
+            if document.get("sqlite_home").is_some() || document.get("log_dir").is_some()
+                || (document.get("cli_auth_credentials_store").is_some() && !file_store)
+                || document.get("profiles").is_some() {
+                return Err(ERR_HOME_ISOLATION_UNAVAILABLE.into());
+            }
+        }
+        index += 1;
+    }
+    let flags: &[&str] = if provider == CliProvider::Codex { &["--no-daemon", "-c", "cli_auth_credentials_store=\"file\""] } else { &["--no-leader"] };
+    args.splice(prefix..prefix, flags.iter().map(|s| (*s).to_string()));
+    Ok(())
+}
+
+type CliLoginLaunch = (String, Vec<String>, &'static str, PathBuf);
+fn take_cli_login_launch(app: &AppHandle, env: &mut HashMap<String, String>, session_id: &str) -> Result<Option<CliLoginLaunch>, String> {
+    let login_id = env.remove("MYCMUX_CLI_LOGIN_ID");
+    env.retain(|key, _| !key.eq_ignore_ascii_case("MYCMUX_CLI_LOGIN_ID"));
+    let Some(login_id) = login_id else { return Ok(None); };
+    let default_dir = app.path().app_data_dir().map_err(|_| crate::cli_accounts::account_homes::ERR_HOME_ISOLATION_UNAVAILABLE.to_string())?;
+    let base = crate::test_profile::app_data_dir_from(default_dir);
+    let launch = if crate::cli_accounts::account_homes::login_status(&base, &login_id).is_ok() {
+        crate::cli_accounts::account_homes::claim_login(&base, &login_id, session_id)?
+    } else {
+        let (provider, dir) = app.state::<crate::cli_accounts::login_watch::LoginRegistry>().claim_launch(&login_id, session_id)?;
+        let (command, args, key) = crate::cli_accounts::staging::login_command(provider);
+        (command.into(), args, key, dir)
+    };
+    // A login is an ephemeral plain command, never a resume or account launch.
+    env.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_")
+        && !key.eq_ignore_ascii_case("__CMUX_LAUNCHER_DONE")
+        && !crate::cli_accounts::account_homes::HOME_ENV_KEYS.iter().any(|name| key.eq_ignore_ascii_case(name)));
+    Ok(Some(launch))
+}
+
+/// Consume the account selector once, after frontend/parent secrets were scrubbed.
+/// The lookup is injectable; this function performs no I/O and never logs secrets.
+fn inject_claude_launch_account(
+    env: &mut HashMap<String, String>, command: &str, reattach: bool,
+    lookup: impl FnOnce(&str) -> Result<Option<crate::cli_accounts::launch_tokens::LaunchToken>, String>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    use crate::cli_accounts::{launch_tokens, ERR_LAUNCH_TOKEN_MISSING, ERR_LAUNCH_TOKEN_EXPIRED, ERR_SNAPSHOT_UNAVAILABLE};
+    let profile_id = env.remove("MYCMUX_LAUNCH_ACCOUNT");
+    // A Windows case alias must not escape consumption or reach a child shell.
+    env.retain(|key, _| !key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT"));
+    // Reattaching only replaces the channel of a live PTY; it needs no token.
+    if reattach { return Ok(()); }
+    let Some(profile_id) = profile_id else { return Ok(()) };
+    launch_tokens::validate_profile_id(&profile_id)?;
+    let is_claude = env.get("MYCMUX_LAUNCH_TARGET").is_some_and(|kind| kind == "claude")
+        || env.get("MYCMUX_RESUME").or_else(|| env.get("MYCMUX_AGENT_KIND")).is_some_and(|kind| kind == "claude")
+        || command_leaf(&command.to_ascii_lowercase()) == "claude";
+    if !is_claude { return Ok(()); }
+    let token = lookup(&profile_id).map_err(|error| {
+        if error == crate::cli_accounts::ERR_LAUNCH_TOKEN_OWNER_MISMATCH
+            || error == crate::cli_accounts::ERR_LAUNCH_TOKEN_RECORD_MISMATCH { error } else { ERR_SNAPSHOT_UNAVAILABLE.to_string() }
+    })?
+        .ok_or_else(|| ERR_LAUNCH_TOKEN_MISSING.to_string())?;
+    if token.expires_at <= now { return Err(ERR_LAUNCH_TOKEN_EXPIRED.into()); }
+    env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), token.token);
+    Ok(())
 }
 
 fn write_launch_session_mapping(session_id: &str, env: &HashMap<String, String>) {
@@ -1978,6 +2186,135 @@ mod tests {
         assert!(!e.contains_key("MYCMUX_TAB_ID"));
     }
 
+    fn fake_account_token(now: chrono::DateTime<chrono::Utc>) -> crate::cli_accounts::launch_tokens::LaunchToken {
+        crate::cli_accounts::launch_tokens::LaunchToken {
+            token: format!("sk-ant-oat01-{}", "a".repeat(32)), expires_at: now + chrono::Duration::days(1),
+            status: serde_json::from_value(serde_json::json!({
+                "profile_id":"claude-fixture", "registered_at":"2026-11-11T00:00:00Z",
+                "expires_at":"2027-11-11T00:00:00Z", "owner_check":"unverified", "fingerprint":"0123456789"
+            })).unwrap(),
+        }
+    }
+
+    #[test]
+    fn explicit_claude_account_injection_supports_launcher_restore_and_direct_command() {
+        let now = chrono::Utc::now();
+        for (command, launch) in [
+            ("pwsh", vec![("MYCMUX_LAUNCH_TARGET", "claude")]),
+            ("bash", vec![("MYCMUX_RESUME", "claude"), ("MYCMUX_SESSION_ID", "saved-session")]),
+            ("bash", vec![("MYCMUX_AGENT_KIND", "claude"), ("MYCMUX_SESSION_ID", "saved-session")]),
+            ("C:\\bin\\CLAUDE.EXE", vec![]), ("/usr/local/bin/claude", vec![]),
+        ] {
+            let mut e = env(&launch);
+            e.insert("MYCMUX_LAUNCH_ACCOUNT".into(), "claude-1a2b3c4d".into());
+            e.insert("mycmux_launch_account".into(), "claude-forged".into());
+            sanitize_launch_env(&mut e);
+            inject_claude_launch_account(&mut e, command, false, |id| {
+                assert_eq!(id, "claude-1a2b3c4d"); Ok(Some(fake_account_token(now)))
+            }, now).unwrap();
+            assert_eq!(e["CLAUDE_CODE_OAUTH_TOKEN"], fake_account_token(now).token);
+            assert!(!e.keys().any(|key| key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")));
+        }
+    }
+
+    #[test]
+    fn explicit_claude_account_missing_expired_and_lookup_errors_never_inject_or_expose_secrets() {
+        use crate::cli_accounts::{ERR_LAUNCH_TOKEN_MISSING, ERR_LAUNCH_TOKEN_EXPIRED, ERR_SNAPSHOT_UNAVAILABLE};
+        let now = chrono::Utc::now();
+        for (mode, expected) in [(0, ERR_LAUNCH_TOKEN_MISSING), (1, ERR_LAUNCH_TOKEN_EXPIRED),
+            (2, ERR_SNAPSHOT_UNAVAILABLE)] {
+            let mut e = env(&[("MYCMUX_LAUNCH_TARGET", "claude"), ("MYCMUX_LAUNCH_ACCOUNT", "claude-1a2b3c4d")]);
+            let error = inject_claude_launch_account(&mut e, "bash", false, |_| {
+                if mode == 0 { return Ok(None); }
+                if mode == 2 { return Err(fake_account_token(now).token); }
+                let mut token = fake_account_token(now);
+                token.expires_at = now - chrono::Duration::seconds(1);
+                Ok(Some(token))
+            }, now).unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.contains("sk-ant-"));
+            assert!(!e.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+            assert!(!e.contains_key("MYCMUX_LAUNCH_ACCOUNT"));
+        }
+    }
+
+    fn assert_inject_claude_launch_account_preserves_mismatch(expected: &str) {
+        let now = chrono::Utc::now();
+        let secret = fake_account_token(now).token;
+        let mut e = env(&[("MYCMUX_LAUNCH_TARGET", "claude"),
+            ("MYCMUX_LAUNCH_ACCOUNT", "claude-1a2b3c4d"),
+            ("mycmux_launch_account", "claude-forged")]);
+        e.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), secret.clone());
+        e.insert("claude_code_oauth_token".into(), secret.clone());
+        sanitize_launch_env(&mut e);
+        let error = inject_claude_launch_account(&mut e, "bash", false,
+            |_| Err(expected.to_string()), now).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(!error.contains("sk-ant-"));
+        assert!(!error.contains(&secret));
+        assert!(!e.keys().any(|key| key.eq_ignore_ascii_case("CLAUDE_CODE_OAUTH_TOKEN")));
+        assert!(!e.keys().any(|key| key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")));
+    }
+
+    #[test]
+    fn inject_claude_launch_account_preserves_owner_mismatch() {
+        assert_inject_claude_launch_account_preserves_mismatch(crate::cli_accounts::ERR_LAUNCH_TOKEN_OWNER_MISMATCH);
+    }
+
+    #[test]
+    fn inject_claude_launch_account_preserves_record_mismatch() {
+        assert_inject_claude_launch_account_preserves_mismatch(crate::cli_accounts::ERR_LAUNCH_TOKEN_RECORD_MISMATCH);
+    }
+
+    #[test]
+    fn fixr_r06_reattach_consumes_selector_without_reading_missing_expired_or_failed_store() {
+        let now = chrono::Utc::now();
+        for unavailable in ["missing", "expired", "store error"] {
+            let mut e = env(&[("MYCMUX_LAUNCH_TARGET", "claude"),
+                ("MYCMUX_LAUNCH_ACCOUNT", "claude-1a2b3c4d"),
+                ("mycmux_launch_account", "forged"), ("Mycmux_Launch_Account", "forged")]);
+            inject_claude_launch_account(&mut e, "claude", true,
+                |_| panic!("reattach must not read a {unavailable} token"), now).unwrap();
+            assert!(!e.keys().any(|key| key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")));
+            assert!(!e.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+        }
+    }
+
+    #[test]
+    fn explicit_account_is_consumed_without_lookup_for_other_agents_and_invalid_ids() {
+        let now = chrono::Utc::now();
+        for target in ["codex", "claude-codex", "grok"] {
+            for command in ["bash", target] {
+                let mut e = env(&[("MYCMUX_LAUNCH_TARGET", target), ("MYCMUX_LAUNCH_ACCOUNT", "claude-1a2b3c4d")]);
+                inject_claude_launch_account(&mut e, command, false, |_| panic!("non-Claude lookup"), now).unwrap();
+                assert!(!e.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+                assert!(!e.contains_key("MYCMUX_LAUNCH_ACCOUNT"));
+            }
+        }
+        for id in ["../claude-escape", "claude-../../escape", "", "wrong-prefix"] {
+            let mut e = env(&[("MYCMUX_LAUNCH_TARGET", "claude"), ("MYCMUX_LAUNCH_ACCOUNT", id)]);
+            let error = inject_claude_launch_account(&mut e, "claude", false, |_| panic!("invalid id lookup"), now).unwrap_err();
+            assert_eq!(error, crate::cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND);
+            assert!(!error.contains("sk-ant-"));
+            assert!(!e.contains_key("MYCMUX_LAUNCH_ACCOUNT"));
+        }
+        let mut default_env = env(&[("MYCMUX_LAUNCH_TARGET", "claude"), ("KEEP", "value")]);
+        let before = default_env.clone();
+        inject_claude_launch_account(&mut default_env, "claude", false, |_| panic!("default lookup"), now).unwrap();
+        assert_eq!(default_env, before);
+    }
+
+    #[test]
+    fn sanitize_always_drops_frontend_oauth_token_and_case_aliases() {
+        let fake = fake_account_token(chrono::Utc::now()).token;
+        let mut e = env(&[("CLAUDE_CODE_OAUTH_TOKEN", &fake), ("claude_code_oauth_token", &fake),
+            ("Claude_Code_Oauth_Token", &fake), ("MYCMUX_LAUNCH_TARGET", "claude"),
+            ("MYCMUX_RESUME", "claude"), ("MYCMUX_SESSION_ID", "saved-session")]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.keys().any(|key| key.eq_ignore_ascii_case("CLAUDE_CODE_OAUTH_TOKEN")));
+        assert_eq!(e["MYCMUX_RESUME"], "claude");
+    }
+
     #[test]
     fn sanitize_drops_forged_launch_kind() {
         let mut e = env(&[
@@ -2429,4 +2766,138 @@ mod n3_restore_bindings {
         wrap_codex_restore(command, args, "codex", &["--no-alt-screen".into()])
     }
     include!("../../../tests/helpers/codex_restore_native.rs");
+}
+
+#[cfg(test)]
+mod account_homes_terminal_tests {
+    use super::*;
+    use crate::cli_accounts::{CliProvider, account_homes, ERR_LAUNCH_ACCOUNT_NOT_FOUND};
+    use std::cell::Cell;
+    fn args(values: &[&str]) -> Vec<String> { values.iter().map(|s| (*s).into()).collect() }
+    fn env(kind: &str, account: &str) -> HashMap<String, String> {
+        HashMap::from([("MYCMUX_LAUNCH_TARGET".into(), kind.into()), ("MYCMUX_LAUNCH_ACCOUNT".into(), account.into())])
+    }
+    fn registry_fixture(base: &Path, provider: &str, id: &str) {
+        let text = serde_json::json!({"version":1,"profiles":[{"id":id,"provider":provider,"label":"fixture","identity_key":"fixture-owner","captured_at":"2026-11-11T00:00:00Z"}]});
+        std::fs::write(base.join("cli_accounts.json"), serde_json::to_vec(&text).unwrap()).unwrap();
+    }
+    #[test]
+    fn account_homes_provider_mismatches_fail_before_a_spawn_or_source_lookup() {
+        for (launch, registered, id) in [("codex", "claude", "claude-fixture"), ("grok", "claude", "claude-fixture"), ("claude", "codex", "codex-fixture"), ("codex", "grok", "grok-fixture")] {
+            let base = tempfile::tempdir().unwrap(); registry_fixture(base.path(), registered, id);
+            let spawns = Cell::new(0); let sources = Cell::new(0);
+            let result = resolve_launch_account(&mut env(launch, id), launch, &[], |provider, id|
+                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| { sources.set(sources.get()+1); Ok(base.path().join("fixture-source")) }))
+                .map(|_| spawns.set(spawns.get()+1));
+            assert_eq!(result.unwrap_err(), ERR_LAUNCH_ACCOUNT_NOT_FOUND);
+            assert_eq!(spawns.get(), 0); assert_eq!(sources.get(), 0);
+        }
+    }
+    #[test]
+    fn account_homes_unknown_and_not_ready_launches_do_not_spawn_or_fall_back() {
+        let base = tempfile::tempdir().unwrap();
+        for (id, expected) in [("codex-missing", ERR_LAUNCH_ACCOUNT_NOT_FOUND), ("codex-fixture", account_homes::ERR_HOME_NOT_READY)] {
+            registry_fixture(base.path(), "codex", "codex-fixture");
+            let spawns = Cell::new(0);
+            let result = resolve_launch_account(&mut env("codex", id), "codex", &[], |provider, id|
+                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| Ok(base.path().join("source"))))
+                .map(|_| spawns.set(1));
+            assert_eq!(result.unwrap_err(), expected); assert_eq!(spawns.get(), 0);
+        }
+    }
+    #[test]
+    fn account_homes_resolver_consumes_only_private_selectors_and_preserves_claude() {
+        for kind in ["codex", "grok"] {
+            for (command, argv, resume) in [(kind, vec![], false), ("pwsh", args(&["-File", "launcher.ps1"]), true), ("node", args(&[&format!("/fixture/{kind}.js")]), false)] {
+                let mut selected = env(kind, &format!("{kind}-fixture"));
+                selected.insert("mycmux_launch_account".into(), "forged".into());
+                if resume { selected.insert("MYCMUX_RESUME".into(), kind.into()); selected.insert("MYCMUX_SESSION_ID".into(), "11111111-1111-4111-8111-111111111111".into()); }
+                let result = resolve_launch_account(&mut selected, command, &argv, |provider, id| {
+                    assert_eq!(account_homes::provider_name(provider).unwrap(), kind);
+                    assert_eq!(id, format!("{kind}-fixture")); Ok(Some(provider))
+                }).unwrap();
+                assert!(result.is_some()); assert!(!selected.keys().any(|key| key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")));
+            }
+        }
+        let mut selected = env("claude", "claude-fixture");
+        let result = resolve_launch_account::<()>(&mut selected, "claude", &[], |provider, _| { assert_eq!(provider, CliProvider::Claude); Ok(None) }).unwrap();
+        assert!(result.is_none()); assert!(selected.contains_key("MYCMUX_LAUNCH_ACCOUNT"));
+        inject_claude_launch_account(&mut selected, "claude", false, |_| Ok(Some(crate::cli_accounts::launch_tokens::LaunchToken {
+            token: "fixture-long-lived-token".into(), expires_at: chrono::Utc::now()+chrono::Duration::days(1), status: serde_json::from_value(serde_json::json!({
+                "profile_id":"claude-fixture", "registered_at":"2026-11-11T00:00:00Z",
+                "expires_at":"2027-11-11T00:00:00Z", "owner_check":"unverified", "fingerprint":"0123456789"
+            })).unwrap() })), chrono::Utc::now()).unwrap();
+        assert_eq!(selected.get("CLAUDE_CODE_OAUTH_TOKEN").map(String::as_str), Some("fixture-long-lived-token"));
+        for kind in ["claude-codex", "shell"] {
+            assert!(resolve_launch_account::<()>(&mut env(kind, "claude-fixture"), kind, &[], |_,_| panic!("non-private lookup")).unwrap().is_none());
+        }
+    }
+    #[test]
+    fn account_homes_conflicting_kind_or_invalid_id_cannot_reach_the_lookup() {
+        for kind in ["codex", "grok"] {
+            let mut selected = env(kind, "claude-fixture");
+            selected.insert("MYCMUX_RESUME".into(), "claude".into());
+            assert_eq!(resolve_launch_account::<()>(&mut selected, kind, &[], |_,_| panic!("conflicting kinds")).unwrap_err(), ERR_LAUNCH_ACCOUNT_NOT_FOUND);
+            assert!(resolve_launch_account::<()>(&mut env(kind, "../escape"), kind, &[], |_,_| panic!("invalid id")).is_err());
+        }
+    }
+    #[test]
+    fn account_homes_default_env_and_arguments_only_lose_reserved_keys() {
+        let mut selected = HashMap::from([("KEEP".into(), "kept".into()), ("mycmux_launch_account".into(), "forged".into())]);
+        for key in account_homes::HOME_ENV_KEYS { selected.insert(key.to_string(), "forged".into()); selected.insert(key.to_ascii_lowercase(), "forged".into()); }
+        assert!(resolve_launch_account::<()>(&mut selected, "codex", &[], |_,_| panic!("default must not look up an account")).unwrap().is_none());
+        sanitize_launch_env(&mut selected);
+        assert_eq!(selected, HashMap::from([("KEEP".into(), "kept".into())]));
+    }
+    #[test]
+    fn account_homes_flags_precede_new_resume_and_node_subcommands() {
+        for (provider, command, original, prefix) in [
+            (CliProvider::Codex,"codex",args(&["--model","fixture-model","-c","model_reasoning_effort=max"]),0),
+            (CliProvider::Codex,"C:\\fixture\\CODEX.CMD",args(&["resume","11111111-1111-4111-8111-111111111111"]),0),
+            (CliProvider::Codex,"node",args(&["/fixture/Codex.js","resume","saved"]),1),
+            (CliProvider::Grok,"grok",args(&["--resume","saved","--model","fixture-model"]),0),
+        ] {
+            let mut actual = original.clone(); add_account_home_args(provider,command,&mut actual).unwrap();
+            let flags = if provider == CliProvider::Codex { args(&["--no-daemon","-c","cli_auth_credentials_store=\"file\""]) } else { args(&["--no-leader"]) };
+            assert_eq!(&actual[prefix..prefix+flags.len()], &flags);
+            let mut restored=actual; restored.drain(prefix..prefix+flags.len()); assert_eq!(restored,original);
+        }
+    }
+    #[test]
+    fn account_homes_external_overrides_are_rejected_but_prompt_data_is_unchanged() {
+        for original in [args(&["--remote=fixture"]), args(&["-c","'sqlite_home'='/outside'"]), args(&["--config=log_dir='/outside'"]), args(&["-ccli_auth_credentials_store=keyring"]), args(&["-c","profiles.other.sqlite_home='/outside'"])] {
+            let mut actual=original; assert_eq!(add_account_home_args(CliProvider::Codex,"codex",&mut actual).unwrap_err(), account_homes::ERR_HOME_ISOLATION_UNAVAILABLE);
+        }
+        let mut prompt=args(&["--","--remote=prompt","log_dir=prompt"]);
+        add_account_home_args(CliProvider::Codex,"codex",&mut prompt).unwrap(); assert_eq!(&prompt[3..], &["--","--remote=prompt","log_dir=prompt"]);
+    }
+    #[test]
+    fn account_homes_command_builder_scrubs_parent_aliases_before_backend_injection() {
+        use crate::pty::session::scrub_account_home_parent_env;
+        for kind in [None, Some("codex"), Some("grok"), Some("claude")] {
+            let mut cmd=portable_pty::CommandBuilder::new("fixture-never-executed"); cmd.env_clear(); cmd.env("KEEP","kept");
+            for key in account_homes::HOME_ENV_KEYS { cmd.env(key,"parent-fixture"); cmd.env(key.to_ascii_lowercase(),"parent-fixture"); }
+            let claude_keys = ["CLAUDE_CODE_OAUTH_TOKEN", "claude_code_oauth_token", "Claude_Code_Oauth_Token",
+                "MYCMUX_LAUNCH_ACCOUNT", "mycmux_launch_account", "Mycmux_Launch_Account"];
+            for key in claude_keys { cmd.env(key, "parent-secret-fixture"); }
+            for key in ["OPENAI_API_KEY","openai_api_key","XAI_API_KEY","xai_api_key"] { cmd.env(key,"parent-secret-fixture"); }
+            let extra=kind.map(|kind| if kind == "claude" {
+                HashMap::from([("CLAUDE_CODE_OAUTH_TOKEN".into(), "backend-only-token".into())])
+            } else { HashMap::from([("MYCMUX_ACCOUNT_HOME_KIND".into(),kind.into())]) });
+            scrub_account_home_parent_env(&mut cmd,extra.as_ref());
+            for key in account_homes::HOME_ENV_KEYS { assert!(cmd.get_env(key).is_none()); assert!(cmd.get_env(key.to_ascii_lowercase()).is_none()); }
+            for key in claude_keys { assert!(cmd.get_env(key).is_none()); }
+            assert_eq!(cmd.get_env("KEEP"),Some(std::ffi::OsStr::new("kept")));
+            if kind==Some("codex") { assert!(cmd.get_env("OPENAI_API_KEY").is_none()); assert!(cmd.get_env("openai_api_key").is_none()); }
+            if kind==Some("grok") { assert!(cmd.get_env("XAI_API_KEY").is_none()); assert!(cmd.get_env("xai_api_key").is_none()); }
+            if kind.is_none() { assert!(cmd.get_env("OPENAI_API_KEY").is_some()); assert!(cmd.get_env("XAI_API_KEY").is_some()); }
+            // Match PtySession::spawn: backend-owned extra values are added after scrubbing.
+            for (key, value) in extra.iter().flatten() { cmd.env(key, value); }
+            if kind == Some("claude") {
+                assert_eq!(cmd.get_env("CLAUDE_CODE_OAUTH_TOKEN"), Some(std::ffi::OsStr::new("backend-only-token")));
+                assert_eq!(cmd.iter_full_env_as_str().filter(|(key, _)| key.eq_ignore_ascii_case("CLAUDE_CODE_OAUTH_TOKEN")).count(), 1);
+            } else { assert!(cmd.get_env("CLAUDE_CODE_OAUTH_TOKEN").is_none()); }
+            assert!(!cmd.iter_full_env_as_str().any(|(key, _)| key.eq_ignore_ascii_case("MYCMUX_LAUNCH_ACCOUNT")));
+        }
+    }
 }

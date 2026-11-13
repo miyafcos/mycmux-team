@@ -49,8 +49,11 @@ const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
  */
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const CODEX_LUNA_EFFORTS = CODEX_EFFORTS.filter((effort) => effort !== "ultra");
-/** grok and agy both document three steps. */
-const SHORT_EFFORTS = ["low", "medium", "high"] as const;
+/** Grok Build 1.0.77 models_cache.json, verified 2026-11-12; 4.5 stops at high. */
+const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+const GROK_45_EFFORTS = GROK_EFFORTS.filter((effort) => effort !== "xhigh");
+/** agy 1.5.5 --help, verified 2026-11-12. */
+const AGY_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /**
  * Aliases rather than pinned ids: `claude --model` resolves "opus" to the
@@ -79,15 +82,29 @@ const CODEX_MODELS: readonly ModelChoice[] = [
   { value: "gpt-5.6-luna", label: "Luna (5.6)" },
 ];
 
-/** From `agy models` — the effort is baked into most of these ids. */
+/** From agy 1.5.5 `agy models`, verified 2026-11-12; effort is baked into most ids. */
 const AGY_MODELS: readonly ModelChoice[] = [
-  { value: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
-  { value: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+  { value: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
+  { value: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" },
+  { value: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" },
   { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
   { value: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
   { value: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
-  { value: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
-  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)" },
+  { value: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)" },
+  { value: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)" },
+  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)" },
+  { value: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)" },
+  { value: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)" },
+  { value: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
+];
+
+/** Grok Build 1.0.77 ~/.grok/models_cache.json, verified 2026-11-12. */
+const GROK_MODELS: readonly ModelChoice[] = [
+  { value: "grok-4.7", label: "Grok 4.7" },
+  { value: "grok-4.7-build-fast", label: "Grok 4.7 Fast" },
+  { value: "grok-4.6", label: "Grok 4.6" },
+  { value: "grok-4.5", label: "Grok 4.5" },
 ];
 
 const OMP_MODELS: readonly ModelChoice[] = [
@@ -97,7 +114,11 @@ const OMP_MODELS: readonly ModelChoice[] = [
 ];
 const OMP_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-/** Verified with `cursor-agent models` on 2026-10-15; effort is part of each id. */
+/**
+ * Recheck unavailable on 2026-11-12: cursor-agent 2026.01.28 reported
+ * "No models available for this account"; public docs have names but no CLI ids.
+ * Values remain as verified on 2026-10-15; effort is part of each id.
+ */
 const CURSOR_MODELS: readonly ModelChoice[] = [
   { value: "composer-2.5", label: "Composer 2.5" },
   { value: "grok-4.7-low", label: "Grok 4.7 (Low)" },
@@ -158,10 +179,8 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     kind: "agent",
     cli: "grok",
     agentKind: "grok",
-    // grok takes `-m <MODEL>` but publishes no id list through --help; the
-    // custom field carries whatever the account is entitled to.
-    models: NO_CHOICES,
-    efforts: SHORT_EFFORTS,
+    models: GROK_MODELS,
+    efforts: GROK_EFFORTS,
   },
   // "claude-codex (Open Models)" left the dialog on 2026-09-18: the proxy's
   // dispatcher publishes the cloud open models in the ordinary claude-codex
@@ -175,7 +194,7 @@ export const AGENT_CATALOG: readonly AgentCatalogEntry[] = [
     kind: "agent",
     cli: "agy",
     models: AGY_MODELS,
-    efforts: SHORT_EFFORTS,
+    efforts: AGY_EFFORTS,
   },
   // Hermes picks its provider and model with `hermes model`, so mycmux passes
   // no model / effort flags and the entry carries no `cli` translation arm.
@@ -232,6 +251,9 @@ export function getLaunchEfforts(
   if (entry?.cli === "codex" && ["gpt-6-luna", "gpt-5.6-luna"].includes(model?.trim() ?? "")) {
     return CODEX_LUNA_EFFORTS;
   }
+  if (entry?.cli === "grok" && model?.trim() === "grok-4.5") {
+    return GROK_45_EFFORTS;
+  }
   return entry?.efforts ?? NO_EFFORTS;
 }
 
@@ -245,6 +267,7 @@ export const SHELL_TARGET = "shell";
  * menu, which is what every pane does today when nothing is picked.
  */
 export interface PaneLaunchSpec {
+  account?: string;
   target?: string;
   model?: string;
   effort?: string;
@@ -293,5 +316,10 @@ export function buildLaunchSpecEnv(
   if (model) env.MYCMUX_LAUNCH_MODEL = model;
   const effort = sanitizeLaunchSpecValue(spec?.effort);
   if (effort) env.MYCMUX_LAUNCH_EFFORT = effort;
+  const account = sanitizeLaunchSpecValue(spec?.account);
+  if (["claude", "codex", "grok"].includes(target) && account && /^[A-Za-z0-9_-]{1,64}$/.test(account)
+    && (target === "claude" || account.startsWith(`${target}-`))) {
+    env.MYCMUX_LAUNCH_ACCOUNT = account;
+  }
   return env;
 }

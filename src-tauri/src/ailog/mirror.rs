@@ -259,6 +259,7 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
     };
     let mut state_changed = false;
 
+    let mut seen_sources = std::collections::HashSet::new();
     for (kind, source_root) in &config.sources {
         let mut sources = Vec::new();
         collect_sources(
@@ -267,6 +268,7 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
             (*kind == KIND_GROK).then_some("updates.jsonl"),
         );
         for source in sources {
+            if !seen_sources.insert(source.clone()) { continue; }
             let Ok(before) = source_stamp(&source) else {
                 continue;
             };
@@ -348,37 +350,19 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
 }
 
 fn default_sources() -> Vec<(&'static str, PathBuf)> {
-    [
+    let mut sources: Vec<_> = [
         (KIND_CLAUDE, crate::ailog::claude_root()),
         (KIND_CLAUDE_CODEX, crate::ailog::claude_codex_root()),
-        (KIND_CODEX, crate::ailog::codex_root()),
-        (KIND_GROK, crate::ailog::grok_root()),
-    ]
-    .into_iter()
-    .filter_map(|(kind, root)| root.map(|root| (kind, root)))
-    .collect()
+    ].into_iter().filter_map(|(kind, root)| root.map(|root| (kind, root))).collect();
+    for kind in [KIND_CODEX, KIND_GROK] {
+        sources.extend(crate::agent_home_roots::all(crate::agent_home_roots::provider(kind).unwrap())
+            .into_iter().map(|root| (kind, root.path)));
+    }
+    sources
 }
 
 fn collect_sources(root: &Path, output: &mut Vec<PathBuf>, file_name: Option<&str>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        match entry.file_type() {
-            Ok(file_type) if file_type.is_dir() => collect_sources(&path, output, file_name),
-            Ok(file_type) if file_type.is_file() => {
-                if path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-                    && file_name.map_or(true, |name| {
-                        path.file_name().and_then(|value| value.to_str()) == Some(name)
-                    })
-                {
-                    output.push(path);
-                }
-            }
-            _ => {}
-        }
-    }
+    crate::agent_home_roots::collect_files(root, output, file_name);
 }
 
 pub(crate) fn mirror_destination(
@@ -396,7 +380,7 @@ pub(crate) fn mirror_destination(
     let file_name = relative
         .file_name()
         .ok_or_else(|| format!("ailog mirror source has no file name: {}", source.display()))?;
-    let mut destination = tier_root.join(kind).join(relative);
+    let mut destination = crate::agent_home_roots::mirror_root(kind, source_root, tier_root).join(relative);
     let mut gzip_name = file_name.to_os_string();
     gzip_name.push(".gz");
     destination.set_file_name(gzip_name);

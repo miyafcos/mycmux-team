@@ -409,12 +409,14 @@ pub(super) fn visit_codex_sessions_dir(
     excluded_session_ids: &HashSet<String>,
     best: &mut Option<(String, std::time::SystemTime)>,
 ) {
+    if !crate::agent_home_roots::record_path_allowed(dir) { return; }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
+        if !crate::agent_home_roots::record_path_allowed(&path) { continue; }
         if path.is_dir() {
             if is_codex_date_dir_before_min(&path, min_created) {
                 continue;
@@ -510,6 +512,7 @@ pub(super) fn is_codex_date_dir_before_min(
 }
 
 pub(super) fn detect_codex_session_id(
+    session_id: &str,
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
@@ -517,20 +520,15 @@ pub(super) fn detect_codex_session_id(
     if crate::test_profile::is_active() {
         return None;
     }
-    let home = dirs::home_dir()?;
-    let sessions_dir = home.join(".codex").join("sessions");
-    if !sessions_dir.exists() {
-        return None;
-    }
+    let roots = crate::agent_home_roots::for_session(crate::cli_accounts::CliProvider::Codex, session_id).ok()?;
+    detect_codex_in_roots(&roots, cwd, min_created, excluded_session_ids)
+}
+
+fn detect_codex_in_roots(roots: &[crate::agent_home_roots::RecordRoot], cwd: &str,
+    min_created: Option<std::time::SystemTime>, excluded_session_ids: &HashSet<String>) -> Option<String> {
     let cwd_key = normalize_cwd_key(cwd);
-    let mut best: Option<(String, std::time::SystemTime)> = None;
-    visit_codex_sessions_dir(
-        &sessions_dir,
-        &cwd_key,
-        min_created,
-        excluded_session_ids,
-        &mut best,
-    );
+    let mut best = None;
+    for root in roots { visit_codex_sessions_dir(&root.path, &cwd_key, min_created, excluded_session_ids, &mut best); }
     best.map(|(id, _)| id)
 }
 
@@ -727,5 +725,35 @@ mod activity_tests {
         assert!(transcript_is_silent(Some(observation.0), quiet));
         tracker.retain_recent(quiet + AGENT_TRANSCRIPT_SILENCE_GRACE * 3);
         assert!(tracker.observed.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod account_home_monitor_tests {
+    use super::*;
+    use crate::{agent_home_roots::{self,Origin,RecordRoot}, cli_accounts::{account_homes,CliProvider}};
+    #[test]
+    fn same_cwd_never_crosses_the_pty_home_in_either_direction() {
+        let dir=tempfile::tempdir().unwrap();let global=vec![RecordRoot {origin:Origin::Global,path:dir.path().join("global/sessions")}];
+        for (name,id) in [("global","global-id"),("A","home-A-id"),("B","home-B-id")] {
+            let root=dir.path().join(name).join("sessions");std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join(format!("rollout-{id}.jsonl")),serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":"C:/same/cwd","source":"cli"}}).to_string()).unwrap();
+        }
+        let selected=agent_home_roots::select_session_roots(CliProvider::Codex,global.clone(),true,||Ok(Some(account_homes::test_context(CliProvider::Codex,dir.path().join("A"))))).unwrap();
+        assert_eq!(detect_codex_in_roots(&selected,"C:/same/cwd",None,&HashSet::new()).as_deref(),Some("home-A-id"));
+        assert_eq!(detect_codex_in_roots(&global,"C:/same/cwd",None,&HashSet::new()).as_deref(),Some("global-id"));
+        assert!(detect_codex_in_roots(&selected,"C:/same/cwd",None,&HashSet::from(["home-A-id".into()])).is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod fix2b1_link_tests {
+    use super::*;
+    use crate::agent_home_roots::link_tests::{Fixture,MODES,ID};
+    #[test]
+    fn fix2b1_monitor_cwd_follows_global_root_ancestor_and_nested_directory_links() {
+        for mode in MODES {
+            let f=Fixture::new(mode);assert_eq!(detect_codex_in_roots(&[f.root],f.cwd,None,&HashSet::new()).as_deref(),Some(ID),"{mode:?}");
+        }
     }
 }

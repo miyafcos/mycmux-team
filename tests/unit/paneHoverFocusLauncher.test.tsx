@@ -52,7 +52,7 @@ describe("launcher hover and approved popover protection", () => {
   });
   it("I12 typed model stays protected and explicit launcher keyboard operations retain focus", async () => {
     await mountLauncher(); await aim(); await advance();
-    const specButton = [...list().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label")?.startsWith("Grok"));
+    const specButton = [...list().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label")?.startsWith("Hermes"));
     expect(specButton).toBeDefined();
     await act(async () => { specButton!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); specButton!.click(); });
     const model = host.querySelector<HTMLInputElement>(`[data-launcher-spec] input[aria-label='${launcherStrings.modelLabel}']`)!;

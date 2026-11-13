@@ -25,6 +25,7 @@ impl LookupFailure {
 
 fn visit(root: &Path, depth: usize, remaining: &mut usize, deadline: Instant, files: &mut Vec<PathBuf>) -> Result<(), LookupFailure> {
     if *remaining == 0 || Instant::now() >= deadline { return Err(LookupFailure::Budget); }
+    if !crate::agent_home_roots::record_path_allowed(root) { return Ok(()); }
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if depth == 0 && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -35,7 +36,7 @@ fn visit(root: &Path, depth: usize, remaining: &mut usize, deadline: Instant, fi
         *remaining -= 1;
         let entry = entry.map_err(|_| LookupFailure::Incomplete)?;
         let kind = entry.file_type().map_err(|_| LookupFailure::Incomplete)?;
-        if kind.is_symlink() { continue; }
+        if kind.is_symlink() || !crate::agent_home_roots::record_path_allowed(&entry.path()) { continue; }
         if kind.is_dir() {
             if depth >= 3 { return Err(LookupFailure::Budget); }
             visit(&entry.path(), depth + 1, remaining, deadline, files)?;
@@ -96,16 +97,18 @@ pub(super) fn locate_in(root: &Path, request: &TitleRequest, lookup: &CodexLooku
 pub(super) fn locate(request: &TitleRequest, lookup: &CodexLookup, deadline: Instant) -> Result<Option<(PathBuf, String)>, LookupFailure> {
     if let Some(id) = lookup.session_id.as_deref().filter(|id| valid_session(id)) {
         let mut exact = request.clone(); exact.agent_session_id = Some(id.to_owned());
-        return Ok(codex::locate(&exact).map(|path| (path, id.to_owned())));
+        return codex::locate_result(&exact).map(|found| found.map(|path| (path, id.to_owned()))).map_err(|error| if error == crate::agent_home_roots::AMBIGUOUS { LookupFailure::Contended } else { LookupFailure::Incomplete });
     }
     if lookup.contended { return Err(LookupFailure::Contended); }
-    let root = crate::ailog::codex_root().ok_or(LookupFailure::Incomplete)?;
+    let roots = crate::agent_home_roots::for_tab(crate::cli_accounts::CliProvider::Codex, &request.tab_id).map_err(|_| LookupFailure::Incomplete)?;
     let stamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(lookup.started_at)
         .map_err(|_| LookupFailure::Incomplete)?).ok_or(LookupFailure::Incomplete)?;
     let mut found = None; let mut remaining = 2048;
-    for delta in -1..=1 {
-        let day = stamp.date_naive() + chrono::Duration::days(delta);
-        scan_in(&root.join(day.format("%Y/%m/%d").to_string()), request, lookup, deadline, &mut remaining, &mut found)?;
+    for root in roots {
+        for delta in -1..=1 {
+            let day = stamp.date_naive() + chrono::Duration::days(delta);
+            scan_in(&root.path.join(day.format("%Y/%m/%d").to_string()), request, lookup, deadline, &mut remaining, &mut found)?;
+        }
     }
     // This path never upgrades a CWD/time candidate to an owned conversation.
     owned(found, lookup)
@@ -213,3 +216,19 @@ mod tests {
 #[cfg(test)]
 #[path = "naming_fix2_tests.rs"]
 mod fix2_tests;
+
+#[cfg(all(test, unix))]
+mod fix2b1_link_tests {
+    use super::*;
+    use crate::agent_home_roots::link_tests::{Fixture,LinkMode,MODES,ID};
+    #[test]
+    fn fix2b1_agent_titles_naming_scan_preserves_global_root_and_nested_link_policy() {
+        for mode in MODES {
+            let f=Fixture::new(mode);
+            let request=TitleRequest {tab_id:"fixture".into(),agent_kind:"codex".into(),agent_session_id:Some(ID.into()),cwd:f.cwd.into()};
+            let lookup=CodexLookup {session_id:Some(ID.into()),started_at:f.started_at,excluded_ids:Vec::new(),contended:false};
+            let found=locate_in(&f.root.path,&request,&lookup,Instant::now()+std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(found.is_some(),mode!=LinkMode::Nested,"{mode:?}");
+        }
+    }
+}

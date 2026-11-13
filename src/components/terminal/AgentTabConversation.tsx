@@ -13,10 +13,11 @@ import "../dashboard/DashboardView.css";
 import "./AgentTabConversation.css";
 
 /** Reuse the dashboard model and composer without mounting the dashboard. */
-export function AgentTabConversation({ sessionId, tabId, agentKind, visible, active, inputRef, focusRequest, onTerminal, onEscape, onVisible }: {
+export function AgentTabConversation({ sessionId, tabId, agentKind, visible, active, inputRef, focusRequest, composerFocusRequest, onTerminal, onEscape, onVisible, onFallbackHeight }: {
   sessionId: string; tabId: string; agentKind: string; visible: boolean; active: boolean;
-  inputRef: RefObject<HTMLTextAreaElement | null>; focusRequest?: number;
-  onTerminal: () => void; onEscape: () => void; onVisible: (visible: boolean) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>; focusRequest?: number; composerFocusRequest?: number;
+  onTerminal: () => void; onEscape: () => void; onVisible: (visible: boolean, focusedInside?: boolean) => void;
+  onFallbackHeight?: (height: number) => void;
 }) {
   const dashboardOpen = useDashboardViewStore(s => s.open);
   const [documentVisible, setDocumentVisible] = useState(!document.hidden);
@@ -56,6 +57,6 @@ export function AgentTabConversation({ sessionId, tabId, agentKind, visible, act
   const card = cards.find(candidate => candidate.tab.id === tabId && candidate.tab.sessionId === sessionId) ?? null;
   return <><span hidden ref={anchor} />{surface && live ? createPortal(<TerminalTranscriptPanel
     sessionId={sessionId} tabId={tabId} agentKind={agentKind} visible={visible} focusRequest={focusRequest} onClose={onTerminal}
-    fullTab={{ card, cards, active, inputRef, onEscape, onVisible, top: surfaceTop }}
+    fullTab={{ card, cards, active, inputRef, composerFocusRequest, onEscape, onVisible, onFallbackHeight, top: surfaceTop }}
   />, surface) : null}</>;
 }

@@ -41,7 +41,7 @@ describe("tool output display tidying", () => {
   });
 
   it.each(interior)("T-4 preserves one or two interior replacements: %j", text => {
-    expect(tidyToolOutput(text)).toEqual({ text, lossy: false });
+    expect(tidyToolOutput(text)).toEqual({ text, lossy: true });
   });
 
   it.each(unreadable)("T-5 flags a recorded cp932 line without changing it: %j", text => {
@@ -58,12 +58,17 @@ describe("tool output display tidying", () => {
   });
 
   it.each(allReplacement)("T-7 handles a replacement-only line: %j", text => {
-    expect(tidyToolOutput(text)).toEqual(text.length <= 3
+    expect(tidyToolOutput(text)).toEqual(text.length === 1
       ? { text: "…", lossy: false }
       : { text, lossy: true });
-    expect(tidyToolOutput(text + "\r\n")).toEqual(text.length <= 3
+    expect(tidyToolOutput(text + "\r\n")).toEqual(text.length === 1
       ? { text: "…\r\n", lossy: false }
       : { text: text + "\r\n", lossy: true });
+  });
+
+  it.each([1, 2, 3])("C1b-B15 flags a short damaged final character run of %i", count => {
+    const text = `OK ${R.repeat(count + 1)}`;
+    expect(tidyToolOutput(text)).toEqual({ text, lossy: true });
   });
 
   it.each(longEdges)("T-8 preserves an edge run longer than three: %j", text => {
@@ -73,7 +78,7 @@ describe("tool output display tidying", () => {
   it("A-4/A-7 preserves spaces, carriage returns, other characters and NUL", () => {
     expect(tidyToolOutput(`\0😀\t${tails[0]}\r\n`)).toEqual({ text: "\0😀\tダッシュボー…\r\n", lossy: false });
     for (const text of [` ${R} `, `\t${R}\t`, `a\0${R}b`, `abc${R}\r\r\n`]) {
-      expect(tidyToolOutput(text)).toEqual({ text, lossy: false });
+      expect(tidyToolOutput(text)).toEqual({ text, lossy: true });
     }
     const text = `a${R}b${R}c${R}d\0`;
     expect(tidyToolOutput(text)).toEqual({ text, lossy: true });

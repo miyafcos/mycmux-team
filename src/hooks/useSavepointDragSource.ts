@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { joinSavepointFull, joinSavepointSummary } from "../lib/ipc";
+import { cliAccountSessionErrorMessage } from "../lib/cliAccounts";
 import {
   prepareSavepointDropOpen,
   resolveSavepointPaneDropIntent,
@@ -219,7 +220,7 @@ async function commitSavepointDrop(
   } catch (error) {
     console.error("[mycmux] failed to use dropped savepoint", error);
     useToastStore.getState().pushToast(
-      onlineStrings.dragDropErrorPrefix + String(error),
+      cliAccountSessionErrorMessage(error) ?? onlineStrings.dragDropErrorPrefix + String(error),
       "error",
     );
   } finally {

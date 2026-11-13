@@ -347,3 +347,45 @@ def test_sync_roundtrip_and_stale_destination_refusal(tmp_path):
     result = run("scripts/sync_claude_skills.py", "--to-live", "--home", tmp_path)
     assert result.returncode == 1 and "stale destination" in result.stderr
     assert extra.read_bytes() == b"do not remove\n"
+
+
+
+def test_guard_example_uses_private_substitutions_and_portable_paths(tmp_path, monkeypatch):
+    live = tmp_path / "live-oracmux"
+    guard = live / "scripts/guard.json"
+    guard.parent.mkdir(parents=True)
+    sample_owner = "\u30b5\u30f3\u30d7\u30eb\u4f01\u753b"
+    rules = tmp_path / "sample-substitutions.txt"
+    rules.write_text(sample_owner + "\tExample user\n", encoding="utf-8")
+    monkeypatch.setattr(sync, "PRIVATE_SUBSTITUTIONS", rules)
+    personal_home = "C:/" + "/".join(("Users", "miyaz", "example"))
+    original = {"_comment": sample_owner + "; home=" + personal_home,
+                "deny_roots": ["/private-example"], "enabled": True,
+                "nested": {"limit": 3}}
+    guard.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+
+    incoming = sync.live_view(live, "oracmux")
+
+    assert set(incoming) == {"scripts/guard.example.json"}
+    data = incoming["scripts/guard.example.json"]
+    assert json.loads(data) == {**original, "_comment": "Example user; home=~/example", "deny_roots": []}
+    assert sample_owner not in data.decode("utf-8")
+    assert data.endswith(b"\n") and b"\r" not in data
+    assert not data.startswith(b"\xef\xbb\xbf") and b"\xef\xbf\xbd" not in data
+
+
+@pytest.mark.parametrize("separator", ["/", "\\", "\\\\"], ids=["slash", "backslash", "escaped-backslash"])
+def test_guard_example_refuses_remaining_personal_paths(tmp_path, monkeypatch, separator):
+    live = tmp_path / "live-oracmux"
+    guard = live / "scripts/guard.json"
+    guard.parent.mkdir(parents=True)
+    sample_owner = "\u30b5\u30f3\u30d7\u30eb\u4f01\u753b"
+    rules = tmp_path / "sample-substitutions.txt"
+    rules.write_text(sample_owner + "\tExample user\n", encoding="utf-8")
+    monkeypatch.setattr(sync, "PRIVATE_SUBSTITUTIONS", rules)
+    personal_path = "D:" + separator + separator.join(("Users", "miyaz", "example"))
+    guard.write_text(json.dumps({"_comment": sample_owner + ": " + personal_path,
+                                "deny_roots": ["/private-example"]}, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"personal path remains: oracmux/scripts/guard\.example\.json"):
+        sync.live_view(live, "oracmux")

@@ -13,9 +13,16 @@ fn authorize(owner: &str, request: &Descriptor) -> Result<(), String> {
         None => Err("unlinked".into()),
     }
 }
-fn root(kind: &str) -> Result<std::path::PathBuf, String> {
+fn root(kind: &str, id: &str, pty: &str) -> Result<std::path::PathBuf, String> {
+    if let Some(provider) = crate::agent_home_roots::provider(kind) {
+        if !crate::test_profile::is_active() {
+            let roots = if pty.is_empty() { crate::agent_home_roots::all(provider) } else { crate::agent_home_roots::for_session(provider, pty)? };
+            return crate::agent_home_roots::find_unique(&roots, provider, id)?
+                .map(|(root,_)| root.path).ok_or("recordMissing".into());
+        }
+    }
     let root = if crate::test_profile::is_active() { crate::test_profile::agent_projects_dir(kind) } else {
-        match kind { "claude" => crate::ailog::claude_root(), "claude-codex" => crate::ailog::claude_codex_root(), "codex" => crate::ailog::codex_root(), _ => None }
+        match kind { "claude" => crate::ailog::claude_root(), "claude-codex" => crate::ailog::claude_codex_root(), _ => None }
     };
     root.ok_or("recordMissing".into())
 }
@@ -26,7 +33,7 @@ pub async fn open_transcript_history(window: Window, request: Descriptor) -> Res
     crate::util::task::run_blocking("open_transcript_history", move || {
         if app.get_window(&owner).is_none() { return Err("cursorExpired".into()); }
         authorize(&owner, &request)?;
-        let result = archive::open(&owner, request.clone(), root(&request.expected_agent_kind)?)?;
+        let result = archive::open(&owner, request.clone(), root(&request.expected_agent_kind, &request.expected_agent_session_id, &request.pty_session_id)?)?;
         if app.get_window(&owner).is_none() { archive::close(&owner, &result.reader_id); return Err("cursorExpired".into()); }
         if let Err(error) = authorize(&owner, &request) { archive::close(&owner, &result.reader_id); return Err(error); }
         Ok(result)

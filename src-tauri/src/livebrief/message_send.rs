@@ -404,6 +404,24 @@ mod tests {
     }
 
     #[test]
+    fn c1b_codex_marker_only_user_messages_can_confirm_a_send() {
+        for text in ["# Codex CLI\nExplain this heading", "# AGENTS.md instructions\nExplain the format",
+            "<plan_mode> explain this tag"] {
+            for event_form in [false, true] {
+                let (mut snapshot, fence) = picture();
+                let record = if event_form {
+                    serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":text}})
+                } else {
+                    serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}})
+                };
+                snapshot.events.extend(snapshot.adapter.decode_record(&record.to_string(),
+                    ByteRange { start: 100, end: 200 }, 2).unwrap());
+                assert!(matching_input(&snapshot, &fence, text).is_some(), "{text}");
+            }
+        }
+    }
+
+    #[test]
     fn repeated_text_needs_a_new_user_occurrence_after_the_fence() {
         let (mut snapshot, fence) = picture();
         snapshot.events.push_back(user("old", 1, 10, "repeat"));

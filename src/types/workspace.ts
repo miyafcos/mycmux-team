@@ -59,6 +59,8 @@ export interface PaneTab {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
   agentSessionId?: string;
+  /** Explicit Claude account for this session; never inherited by a new tab. */
+  agentAccountId?: string;
   /** Duplicate restore identity retained for manual recovery; never auto-resumed. */
   suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;

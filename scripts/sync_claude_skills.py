@@ -168,7 +168,8 @@ def portable(name: str, rel: str, data: bytes) -> tuple[str, bytes]:
     if name == "oracmux" and rel == "scripts/guard.json":
         cfg = json.loads(text)
         cfg["deny_roots"] = []
-        return "scripts/guard.example.json", json_bytes(cfg)
+        rel = "scripts/guard.example.json"
+        text = json_bytes(cfg).decode("utf-8")
     if rel.endswith(".py"):
         if name == "session-dispatch" and rel in ("scripts/dispatch_send.py", "scripts/dispatch_watch.py"):
             key = "AGENT_CLI" if rel.endswith("dispatch_send.py") else "CLOSE_CLI"

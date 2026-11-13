@@ -187,8 +187,10 @@ def test_dot_relative_seat_uses_cwd(tmp_path, monkeypatch, relative):
 @pytest.mark.parametrize('multi', [False, True])
 def test_free_text_escalation_card_passes_real_ops_entry_gate(tmp_path, multi):
     """The card 012 now raises must pass the real ops entry validator (ops_common + ask_validation.json)."""
-    spec = importlib.util.spec_from_file_location(
-        'ops_common', Path.home() / '.claude' / 'ops' / 'ops_common.py')
+    ops_path = Path.home() / '.claude' / 'ops' / 'ops_common.py'
+    if not ops_path.is_file():
+        pytest.skip('ops_common.py is not installed; the real ops entry gate requires it')
+    spec = importlib.util.spec_from_file_location('ops_common', ops_path)
     ops = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ops)
     check = '[ ] ' if multi else ''
