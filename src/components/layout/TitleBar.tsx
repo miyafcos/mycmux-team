@@ -9,6 +9,8 @@ import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AgentDesignButton } from "../agentDesign/AgentDesignButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
+import { UpdateButton } from "./UpdateButton";
+import { FeedbackButton } from "../feedback/FeedbackButton";
 import { onlineStrings } from "../online/onlineStrings";
 import { titleBarStrings } from "./titleBarStrings";
 import { WindowControls } from "./WindowControls";
@@ -283,6 +285,7 @@ export default function TitleBar({
         />
         <AgentDesignButton />
         <DashboardButton />
+        <FeedbackButton />
         {/* The inbox entry stays hidden until a sender is wired up; inbox.post toasts still open reports. */}
         <div style={{ position: "relative" }}>
           <button
@@ -314,6 +317,7 @@ export default function TitleBar({
             />
           )}
         </div>
+        <UpdateButton testProfile={testProfile} />
         {/* macOS provides native window controls (traffic lights) via the
             Overlay title bar, so the custom ones are Windows/Linux only */}
         {!IS_MAC && <WindowControls />}

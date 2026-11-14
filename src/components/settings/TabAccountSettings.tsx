@@ -5,6 +5,8 @@ import { getCliLaunchTokens, listCliAccountHomes, removeCliLaunchToken, recheckC
 import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { launcherStrings } from "../workspace/launcherStrings";
+import { ClaudeSetupTokenFlow } from "./ClaudeSetupTokenFlow";
+import { isSetupTokenActive, useClaudeSetupTokenStore } from "../../stores/claudeSetupTokenStore";
 import { accountRecheckNotice, tokenOwnerLabels, type AccountRecheckNotice } from "../layout/tabAccountStrings";
 
 interface Registrations {
@@ -66,6 +68,7 @@ export function TabAccountSettings({ profile }: { profile: CliAccountProfile }) 
 function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
   const { tokens, tokenReadFailed, refresh } = useContext(RegistrationContext);
   const status = tokens.find(token => token.profile_id === profile.id);
+  const setupBusy = useClaudeSetupTokenStore(state => isSetupTokenActive(state.event) || state.pendingProfileId !== null);
   const providerBusy = useCliAccountStore(state => state.busyByProvider.claude !== null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -85,7 +88,7 @@ function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
 
   const save = async () => {
     const input = inputRef.current;
-    if (busyRef.current || providerBusy || !input?.value) return;
+    if (busyRef.current || providerBusy || setupBusy || !input?.value) return;
     busyRef.current = true;
     setBusy(true);
     setNotice(null);
@@ -107,7 +110,7 @@ function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
   };
 
   const recheck = async () => {
-    if (busyRef.current || providerBusy) return;
+    if (busyRef.current || providerBusy || setupBusy) return;
     busyRef.current = true;
     setBusy(true);
     setNotice(null);
@@ -127,7 +130,7 @@ function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
   };
 
   const remove = async () => {
-    if (busyRef.current || providerBusy) return;
+    if (busyRef.current || providerBusy || setupBusy) return;
     closeEditor();
     busyRef.current = true;
     setBusy(true);
@@ -154,11 +157,14 @@ function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
     {status?.owner_check === "unverified" && <div role="note" style={{ color: "var(--cmux-usage-warn)" }}>
       このトークンのアカウントを確かめられませんでした。ブラウザで別のアカウントにログインしていなかったか確かめてください
     </div>}
+    <ClaudeSetupTokenFlow profile={profile} surface="settings" registered={!!status && Date.parse(status.expires_at) > Date.now()}
+      disabled={busy || providerBusy || editing} onSaved={refresh} />
     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-      <button type="button" style={buttonStyle} disabled={busy || providerBusy} onClick={() => { setNotice(null); setEditing(true); }}>登録</button>
-      {status && <button type="button" style={buttonStyle} disabled={busy || providerBusy} onClick={() => void recheck()}>確かめ直す</button>}
-      {status && <button type="button" style={buttonStyle} disabled={busy || providerBusy} onClick={() => void remove()}>外す</button>}
+      {status && <button type="button" style={buttonStyle} disabled={busy || providerBusy || setupBusy} onClick={() => void recheck()}>確かめ直す</button>}
+      {status && <button type="button" style={buttonStyle} disabled={busy || providerBusy || setupBusy} onClick={() => void remove()}>外す</button>}
     </div>
+    <details><summary style={{ cursor: "pointer" }}>詳しく</summary>
+      <button type="button" style={buttonStyle} disabled={busy || providerBusy || setupBusy} onClick={() => { setNotice(null); setEditing(true); }}>登録</button>
     {editing && <form onSubmit={event => { event.preventDefault(); void save(); }} style={{ display: "grid", gap: 4 }}>
       <p style={{ margin: 0 }}>
         mycmux の外のターミナル (Windows ターミナル・macOS のターミナルなど) で <code>claude setup-token</code> を実行し、このアカウントでブラウザのログインを済ませて、表示されたトークンを貼り付けてください。mycmux のタブで実行すると、トークンがタブの履歴に残ります
@@ -168,10 +174,11 @@ function ClaudeTokenSettings({ profile }: { profile: CliAccountProfile }) {
         style={{ minWidth: 0, width: "100%", boxSizing: "border-box", border: "1px solid var(--cmux-border)", borderRadius: 3,
           background: "var(--cmux-bg)", color: "var(--cmux-text)", fontSize: "inherit", padding: 4 }} />
       <div style={{ display: "flex", gap: 4 }}>
-        <button type="submit" disabled={busy || providerBusy} style={buttonStyle}>{busy ? "保存中…" : "保存"}</button>
+        <button type="submit" disabled={busy || providerBusy || setupBusy} style={buttonStyle}>{busy ? "保存中…" : "保存"}</button>
         <button type="button" style={buttonStyle} onClick={closeEditor}>取消</button>
       </div>
     </form>}
+    </details>
     <p style={{ margin: 0 }}>{launcherStrings.accountClaudeLimitations}</p>
     {notice && <div role={notice.role} style={{ color: notice.color }}>{notice.message}</div>}
   </section>;
@@ -217,7 +224,7 @@ function AccountHomeSettings({ profile }: { profile: CliAccountProfile }) {
     {homeReadFailed && <div role="alert">タブ用の登録を読み取れませんでした。もう一度設定を開いてください。</div>}
     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
       <button type="button" style={buttonStyle} disabled={busy || providerBusy} onClick={login}>
-        {home?.state === "ready" || home?.state === "needs_login" ? "再ログイン" : "タブ用にログイン"}
+        {home?.state === "ready" || home?.state === "needs_login" ? "再ログイン" : launcherStrings.accountUseInTab}
       </button>
       {home && <button type="button" style={buttonStyle} disabled={busy || providerBusy} onClick={() => void remove()}>タブ用の登録を外す</button>}
     </div>

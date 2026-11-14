@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.0.0" }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("../../src/components/feedback/FeedbackDestinationSection", () => ({
+  FeedbackDestinationSection: () => null,
+}));
 vi.mock("../../src/lib/forcedAutoUpdater", () => ({ runUpdateCheck: mocks.runUpdateCheck }));
 import { AppInfoTab } from "../../src/components/settings/tabs/AppInfoTab";
 import { setWindowRole } from "../../src/lib/windowContext";

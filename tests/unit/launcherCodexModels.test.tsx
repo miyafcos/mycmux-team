@@ -103,7 +103,7 @@ describe("workspace setup Codex choices", () => {
     function Setup() {
       const [spec, setSpec] = useState<PaneLaunchSpec>({ target: "codex", model: "gpt-6-sol", effort: "ultra" });
       current = spec;
-      return <AgentSelector slotIndex={0} value={spec} onChange={setSpec} />;
+      return <AgentSelector workspaceInstanceId={1} slotIndex={0} value={spec} onChange={setSpec} />;
     }
     await act(async () => root.render(<Setup />));
     const ids = [...host.querySelectorAll("datalist option")].map((option) => option.getAttribute("value"));

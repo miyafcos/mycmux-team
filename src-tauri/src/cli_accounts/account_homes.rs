@@ -114,14 +114,12 @@ fn regular_file(path: &Path) -> Result<(), String> {
             #[cfg(windows)]
             {
                 use std::os::windows::io::AsRawHandle;
-                #[link(name = "kernel32")]
-                extern "system" { fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, information: *mut u32) -> i32; }
-                // BY_HANDLE_FILE_INFORMATION consists of thirteen DWORDs; the
-                // eleventh is nNumberOfLinks. No additional Windows features.
+                use crate::util::windows_file_information::{FileInformation, GetFileInformationByHandle};
+                // Use the same BY_HANDLE_FILE_INFORMATION layout as archive identities.
                 let file = fs::File::open(path).map_err(invalid)?;
-                let mut information = [0u32; 13];
+                let mut information = FileInformation::default();
                 let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
-                if ok == 0 || information[10] != 1 { return Err(ERR_HOME_PATH_INVALID.into()); }
+                if ok == 0 || information.links != 1 { return Err(ERR_HOME_PATH_INVALID.into()); }
             }
             Ok(())
         }

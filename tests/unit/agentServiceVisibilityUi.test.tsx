@@ -70,10 +70,10 @@ describe("launcher and setup service choices", () => {
   });
   it("T6 removes hidden setup options but retains the selected hidden service", async () => {
     useSettingsStore.setState({ agentServiceVisibility: { hermes: false, omp: false } });
-    await render(<AgentSelector slotIndex={0} value={{ target: "claude" }} onChange={vi.fn()} />);
+    await render(<AgentSelector workspaceInstanceId={1} slotIndex={0} value={{ target: "claude" }} onChange={vi.fn()} />);
     expect(host.querySelector('option[value="hermes"]')).toBeNull();
     expect(host.querySelector('option[value="omp"]')).toBeNull();
-    await render(<AgentSelector slotIndex={0} value={{ target: "hermes" }} onChange={vi.fn()} />);
+    await render(<AgentSelector workspaceInstanceId={1} slotIndex={0} value={{ target: "hermes" }} onChange={vi.fn()} />);
     expect(host.querySelector('option[value="hermes"]')).not.toBeNull();
     expect(host.querySelector('option[value="omp"]')).toBeNull();
     expect((host.querySelector("select") as HTMLSelectElement).value).toBe("hermes");

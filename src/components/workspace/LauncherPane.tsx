@@ -317,6 +317,9 @@ export default function LauncherPane({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [account, setAccount] = useState("");
+  const [accountCursor, setAccountCursor] = useState("");
+  const [accountRegistrationActive, setAccountRegistrationActive] = useState(false);
+  const accountRegistrationInteracted = useRef(false);
   const launchAccounts = useLaunchAccounts(specTarget);
   const [cursor, setCursor] = useState(0);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
@@ -608,6 +611,8 @@ export default function LauncherPane({
     setModel("");
     setEffort("");
     setAccount("");
+    setAccountCursor("");
+    accountRegistrationInteracted.current = false;
   }, [serviceVisible]);
 
   const closeSpec = () => {
@@ -616,6 +621,7 @@ export default function LauncherPane({
   };
 
   const launchSpec = () => {
+    if (accountRegistrationActive) return;
     if (account && !launchAccounts.choices.some(choice => choice.id === account && choice.available)) return;
     if (specTarget) launchAgent(specTarget, { model, effort, account });
   };
@@ -653,7 +659,10 @@ export default function LauncherPane({
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
         if (specRow === "account") {
-          setAccount(current => cycleChoice(current, launchAccounts.choices.filter(choice => choice.available).map(choice => choice.id), step));
+          const next = cycleChoice(accountCursor, launchAccounts.choices.map(choice => choice.id), step);
+          setAccountCursor(next);
+          if (!next || launchAccounts.choices.some(choice => choice.id === next && choice.available)) setAccount(next);
+          if (!accountRegistrationActive) accountRegistrationInteracted.current = false;
         } else if (specRow === "model" && specModels.length > 0) {
           chooseModel(cycleChoice(model, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
@@ -661,6 +670,14 @@ export default function LauncherPane({
         }
       } else if (event.key === "Enter") {
         event.preventDefault();
+        if (accountRegistrationActive || accountRegistrationInteracted.current) return;
+        if (specRow === "account" && launchAccounts.choices.some(choice => choice.id === accountCursor && !choice.available)) {
+          const choice = [...(paneRef.current?.querySelectorAll<HTMLElement>("[data-launch-account-choice]") ?? [])]
+            .find(node => node.dataset.launchAccountChoice === accountCursor);
+          const register = choice?.querySelector<HTMLButtonElement>("[data-claude-setup-token] button:not(:disabled), [data-launch-account-register]:not(:disabled)");
+          if (register) { accountRegistrationInteracted.current = true; register.click(); }
+          return;
+        }
         launchSpec();
       } else if (event.key === "Escape") {
         event.preventDefault();
@@ -721,7 +738,7 @@ export default function LauncherPane({
       const typingElsewhere = active
         && active !== inputRef.current
         && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
-      if (typingElsewhere) return;
+      if (typingElsewhere && !(event.key === "Escape" && paneRef.current?.contains(active) && active.closest("[data-claude-setup-token]"))) return;
       keyHandlerRef.current(event);
     };
     document.addEventListener("keydown", handler);
@@ -1045,7 +1062,12 @@ export default function LauncherPane({
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
             {specEntry.label}
           </div>
-          <LaunchAccountRow accounts={launchAccounts} value={account} onChange={id => { setAccount(id); setSpecRow("account"); }} highlighted={isActive && specRow === "account"} onMouseDown={keepFocus} />
+          <LaunchAccountRow key={specTarget} accounts={launchAccounts} surface="launcher" ownerKey={`launcher:${tabId}`} value={account} cursorId={accountCursor}
+            onChange={id => { setAccount(id); setAccountCursor(id); setSpecRow("account"); accountRegistrationInteracted.current = false; }}
+            onRegistrationStart={() => { accountRegistrationInteracted.current = true; }}
+            onRegistrationActivityChange={active => { setAccountRegistrationActive(active); if (!active) accountRegistrationInteracted.current = false; }}
+            onRegistrationEnd={saved => { accountRegistrationInteracted.current = false; if (saved) inputRef.current?.focus(); }}
+            highlighted={isActive && specRow === "account"} onMouseDown={keepFocus} />
           <div style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
           {specModels.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>

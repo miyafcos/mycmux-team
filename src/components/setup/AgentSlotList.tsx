@@ -3,6 +3,7 @@ import type { PaneLaunchSpec } from "../../lib/agentCatalog";
 import { setupStrings } from "./setupStrings";
 
 interface AgentSlotListProps {
+  workspaceInstanceId: number;
   paneCount: number;
   specs: Record<number, PaneLaunchSpec>;
   onChange: (specs: Record<number, PaneLaunchSpec>) => void;
@@ -10,7 +11,7 @@ interface AgentSlotListProps {
 
 const EMPTY_SPEC: PaneLaunchSpec = {};
 
-export default function AgentSlotList({ paneCount, specs, onChange }: AgentSlotListProps) {
+export default function AgentSlotList({ workspaceInstanceId, paneCount, specs, onChange }: AgentSlotListProps) {
   return (
     <div>
       <div
@@ -27,6 +28,7 @@ export default function AgentSlotList({ paneCount, specs, onChange }: AgentSlotL
         {Array.from({ length: paneCount }, (_, i) => (
           <AgentSelector
             key={i}
+            workspaceInstanceId={workspaceInstanceId}
             slotIndex={i}
             value={specs[i] ?? EMPTY_SPEC}
             onChange={(spec) => onChange({ ...specs, [i]: spec })}

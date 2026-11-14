@@ -22,9 +22,7 @@ use crate::AppState;
 
 pub(crate) use agent_restore::can_restore_agent_session;
 use agent_session_guard::{owner_conversation, requested_conversation, Conversation, LaunchClaim, Owner};
-use agent_restore::{
-    ensure_claude_project_trusted, last_claude_effort, validate_agent_restore_request,
-};
+use agent_restore::{ensure_claude_project_trusted, last_claude_effort};
 
 #[derive(serde::Serialize)]
 pub struct TerminalConfigPayload {

@@ -48,6 +48,7 @@ mod dispatch;
 #[cfg(feature = "e2e")]
 mod e2e;
 mod events;
+mod feedback;
 mod history;
 mod livebrief;
 mod launcher_dirs;
@@ -489,6 +490,11 @@ app_commands![
             commands::webpane::webpane_downloads,
             commands::webpane::webpane_dialogs,
             commands::webpane_native::webpane_screenshot,
+            feedback::commands::feedback_status,
+            feedback::commands::feedback_save_destination,
+            feedback::commands::feedback_remove_destination,
+            feedback::commands::feedback_capture_main,
+            feedback::commands::feedback_send,
             commands::webpane_native::webpane_input_trusted,
             commands::webpane_native::webpane_set_file_input,
             commands::wallpapers::get_wallpaper_cache_state,
@@ -585,6 +591,10 @@ app_commands![
             commands::ailog::ailog_get_usd_jpy_rate,
             commands::ailog::ailog_set_usd_jpy_rate,
             commands::cli_accounts::list_cli_accounts,
+            commands::cli_accounts::start_claude_setup_token,
+            commands::cli_accounts::submit_claude_setup_code,
+            commands::cli_accounts::cancel_claude_setup_token,
+            commands::cli_accounts::get_claude_setup_token_state,
             commands::cli_accounts::get_cli_launch_tokens,
             commands::cli_accounts::set_cli_launch_token,
             commands::cli_accounts::recheck_cli_launch_token,
@@ -759,6 +769,7 @@ pub fn run() {
         .manage(commands::quit::QuitCoordinator::new())
         .manage(settings_flush::PreferenceWrites::default())
         .manage(usage::UsageState::new())
+        .manage(std::sync::Arc::new(cli_accounts::setup_token::SetupTokenRegistry::default()))
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(app_handler())
         .setup(|#[allow(unused)] app| {

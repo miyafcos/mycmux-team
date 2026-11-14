@@ -1,6 +1,6 @@
 {
   "pack_version": "1.0.0",
-  "generated_at": "2026-11-12T05:59:00.029619+00:00",
+  "generated_at": "2026-11-14T06:10:26.393941+00:00",
   "cli": {
     "path": "scripts/mycmux_agent_cli.py",
     "sha256": "ee51c46e4eb5d171840d7959c9d5750145d04b5a5109cd80ac39347fa20c7096",
@@ -70,7 +70,7 @@
         "scripts/tests/fixtures/screens/trust.txt": "ad6c204548fb148904f044668cb50a962ef8d1af2bfc107e78fca76ba129fd96",
         "scripts/tests/fixtures/screens/unknown.txt": "87e1b4a8079c0ef80c3163904cff2b0bd15cbe9c50854031c4575f2894e1486b",
         "scripts/tests/fixtures/screens/whats_new.txt": "ed2da4922ae7156f4e44edd83e73bed7168148af2ab54cd0ee74470f88d307ef",
-        "scripts/tests/test_ask_inject.py": "9ddf0c731237b720ec8aef5f34951585c36966f65dc7f601e4d856e2982c2aba",
+        "scripts/tests/test_ask_inject.py": "511d89626194d0b4c3ff4930c14dd76899d05d9cf3d1875bc2a56b023a98bd56",
         "scripts/tests/test_ask_inject_addressing.py": "fb59cbf59155fce39ad9106abbc8de0879a3de093aadb69c5fc96255725c282d",
         "scripts/tests/test_ask_inject_unknown.py": "674afc871861ece8c489011222672228b6f97e6886f2f33b5c56feaea1bcb9e3",
         "scripts/tests/test_dispatch_child_guard.py": "4091aa4c2a08ca35e09aecb021380167c512cf98d0aed5d36082a7488bc9084e",

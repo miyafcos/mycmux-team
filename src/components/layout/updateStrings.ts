@@ -1,0 +1,17 @@
+export const updateStrings = {
+  available: (version: string) => `v${version} に更新できます`,
+  heading: "mycmux を更新",
+  versions: (currentVersion: string, version: string) => `v${currentVersion} → v${version}`,
+  warning: "更新すると mycmux を再起動します。タブは開き直されますが、動いている作業は止まります。",
+  install: "更新して再起動",
+  later: "あとで",
+  downloading: (version: string) => `v${version} を取得しています…`,
+  installError: "更新できませんでした。時間をおいてもう一度押してください。",
+  checking: "更新を確認中...",
+  latest: "最新版です",
+  checkError: "更新の確認に失敗しました",
+  restarting: (version: string) => `v${version} をインストールしました。再起動します...`,
+  developmentSkipped: "開発中のため自動更新をスキップしました",
+  unavailable: "このウィンドウでは更新を確認できません",
+  recentlyChecked: "直近で確認済みです",
+};

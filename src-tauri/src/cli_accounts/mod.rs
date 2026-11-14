@@ -7,6 +7,7 @@ pub(crate) mod json_splice;
 pub(crate) mod live_sync;
 pub(crate) mod login_watch;
 pub(crate) mod launch_tokens;
+pub(crate) mod setup_token;
 pub(crate) mod tab_evidence;
 pub(crate) mod account_homes;
 mod registry;

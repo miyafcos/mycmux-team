@@ -218,8 +218,8 @@ describe("S-2 token removal", () => {
 describe("S-3 Codex/Grok tab logins", () => {
   it.each(["codex", "grok"] as const)("%s renders all home states, owner checks, and the matching login action", async provider => {
     for (const [state, label, action] of [
-      [null, "未作成", "タブ用にログイン"], ["created", "ログイン待ち", "タブ用にログイン"],
-      ["awaiting_login", "ログイン待ち", "タブ用にログイン"], ["ready", "使える", "再ログイン"],
+      [null, "未作成", "タブでも使う"], ["created", "ログイン待ち", "タブでも使う"],
+      ["awaiting_login", "ログイン待ち", "タブでも使う"], ["ready", "使える", "再ログイン"],
       ["needs_login", "再ログインが必要", "再ログイン"],
     ] as const) {
       await act(async () => root.render(null));

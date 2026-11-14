@@ -15,6 +15,7 @@ import { useLaunchModels } from "../../lib/claudeCodexModels";
 import { LaunchAccountRow, useLaunchAccounts } from "../workspace/LaunchAccountRow";
 
 interface AgentSelectorProps {
+  workspaceInstanceId: number;
   slotIndex: number;
   value: PaneLaunchSpec;
   onChange: (spec: PaneLaunchSpec) => void;
@@ -45,7 +46,7 @@ const optionStyle: CSSProperties = {
  * picking one here is the same thing as picking it from the launcher — the
  * choice travels as MYCMUX_LAUNCH_TARGET and the launcher does the spawning.
  */
-export default function AgentSelector({ slotIndex, value, onChange }: AgentSelectorProps) {
+export default function AgentSelector({ workspaceInstanceId, slotIndex, value, onChange }: AgentSelectorProps) {
   const serviceVisible = useAgentServiceVisibility();
   const modelListId = useId();
   const entry = getCatalogEntry(value.target);
@@ -91,7 +92,7 @@ export default function AgentSelector({ slotIndex, value, onChange }: AgentSelec
           ))}
         </select>
 
-        <LaunchAccountRow accounts={launchAccounts} value={value.account ?? ""} onChange={account => onChange({ ...value, account })} />
+        <LaunchAccountRow accounts={launchAccounts} surface="new-workspace" ownerKey={`new-workspace:${workspaceInstanceId}:${slotIndex}`} value={value.account ?? ""} onChange={account => onChange({ ...value, account })} />
 
         {entry && (
           <div style={{ display: "flex", gap: 4 }}>

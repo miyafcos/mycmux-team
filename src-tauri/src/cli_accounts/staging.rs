@@ -294,7 +294,7 @@ pub fn sweep_stale_staging(base: &Path, max_age: Duration) {
     sweep_stale_staging_with_credentials(base, max_age, &NativeCredentials);
 }
 
-fn sweep_stale_staging_with_credentials(
+pub(super) fn sweep_stale_staging_with_credentials(
     base: &Path,
     max_age: Duration,
     credentials: &dyn StagingCredentials,

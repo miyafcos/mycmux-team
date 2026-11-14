@@ -25,6 +25,8 @@ interface WorkspaceSetupProps {
   onCancel: () => void;
 }
 
+let nextWorkspaceInstanceId = 0;
+
 const mono = "var(--cmux-font-mono)";
 
 const fieldLabelStyle: CSSProperties = {
@@ -60,6 +62,7 @@ const buttonStyle: CSSProperties = {
 };
 
 export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: WorkspaceSetupProps) {
+  const [workspaceInstanceId] = useState(() => ++nextWorkspaceInstanceId);
   const [name, setName] = useState("");
   const [gridId, setGridId] = useState<GridTemplateId>("1x1");
   const [cwd, setCwd] = useState(defaultCwd ?? "");
@@ -162,6 +165,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
 
         <GridPicker selected={gridId} onSelect={setGridId} />
         <AgentSlotList
+          workspaceInstanceId={workspaceInstanceId}
           paneCount={template.paneCount}
           specs={paneSpecs}
           onChange={setPaneSpecs}

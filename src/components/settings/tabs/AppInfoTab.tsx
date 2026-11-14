@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useToastStore } from "../../../stores/toastStore";
 import { runUpdateCheck, type UpdatePhase } from "../../../lib/forcedAutoUpdater";
+import { useUpdateAvailabilityStore } from "../../../stores/updateAvailabilityStore";
+import { UpdateConfirmation } from "../../layout/UpdateConfirmation";
+import { FeedbackDestinationSection } from "../../feedback/FeedbackDestinationSection";
 import { hasWindowRole, useWindowRole } from "../../../lib/windowContext";
 import { invoke } from "@tauri-apps/api/core";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 import bundledFontLicense from "../../../assets/fonts/OFL.txt?raw";
 
-type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
+type UpdateStatus = "idle" | "checking" | "latest" | "available" | "downloading" | "ready" | "error";
 
 function toSettingsUpdateStatus(phase: UpdatePhase): UpdateStatus {
   return phase === "skipped" ? "latest" : phase;
@@ -16,6 +19,7 @@ function toSettingsUpdateStatus(phase: UpdatePhase): UpdateStatus {
 // Ported from SettingsMenu.tsx: current version display + manual update check.
 export function AppInfoTab() {
   const hasRole = useWindowRole();
+  const installing = useUpdateAvailabilityStore((state) => state.state === "installing");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
   const [currentVersion, setCurrentVersion] = useState<string>("読み込み中…");
@@ -47,7 +51,6 @@ export function AppInfoTab() {
     if (!hasWindowRole() || testProfile !== null) return;
     await runUpdateCheck({
       source: "manual",
-      force: true,
       onStatus: (status) => {
         setUpdateStatus(toSettingsUpdateStatus(status.phase));
         setUpdateMsg(status.message);
@@ -58,7 +61,7 @@ export function AppInfoTab() {
     });
   };
 
-  const checking = updateStatus === "checking" || updateStatus === "downloading";
+  const checking = updateStatus === "checking" || installing;
   // Multi-window (Phase 3a): the updater relaunches the whole process after
   // installing, so it follows the reactive, exclusive window role.
   const canCheckForUpdates = hasRole && testProfile === null;
@@ -100,6 +103,14 @@ export function AppInfoTab() {
           {updateMsg}
         </div>
       )}
+
+      {canCheckForUpdates && (
+        <div style={{ marginTop: 12 }}>
+          <UpdateConfirmation />
+        </div>
+      )}
+
+      <FeedbackDestinationSection />
 
       <section style={{ marginTop: 20 }}>
         <div style={sectionHeadingStyle}>同梱フォントのライセンス</div>

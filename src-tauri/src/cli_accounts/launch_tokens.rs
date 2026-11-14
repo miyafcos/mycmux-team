@@ -9,6 +9,7 @@ use super::{atomic::write_atomic, registry, snapshot, token_owner::{LaunchOwnerC
     ERR_SNAPSHOT_UNAVAILABLE};
 
 const FILE: &str = "cli_account_launch_tokens.json";
+#[cfg(not(windows))]
 const SERVICE: &str = "com.miyazaki.mycmux.cli-launch-token";
 
 pub trait LaunchTokenStore {
@@ -151,6 +152,7 @@ fn token_fingerprint(token: &str) -> String {
 }
 
 /// The caller supplies the owner lookup; tests never contact the provider.
+#[cfg(test)]
 pub fn save(
     base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str, token: &str,
     check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,

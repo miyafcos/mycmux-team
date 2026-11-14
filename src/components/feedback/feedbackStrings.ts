@@ -1,0 +1,74 @@
+export const feedbackCategories = [
+  { value: "bug", label: "不具合" }, { value: "wording", label: "用語・表示の文言" },
+  { value: "usability", label: "使い勝手" }, { value: "feature", label: "新しい機能" },
+] as const;
+export const feedbackFeatures = [
+  { value: "tabs", label: "タブ" }, { value: "launcher", label: "ランチャー" },
+  { value: "dashboard", label: "ダッシュボード" }, { value: "conversation", label: "会話の表示" },
+  { value: "skills", label: "スキル" }, { value: "accounts", label: "アカウント" },
+  { value: "settings", label: "設定" }, { value: "updates", label: "更新" }, { value: "other", label: "その他" },
+] as const;
+export const feedbackUrgencies = [
+  { value: "stopped", label: "仕事が止まっている" }, { value: "soon", label: "できれば" }, { value: "idea", label: "思いつき" },
+] as const;
+export const feedbackStrings = {
+  open: "改善の要望を送る",
+  screenshots: "スクショ",
+  reviewImages: "取引先の情報が写っていないか確かめてから送ってください。",
+  addImage: "画像を足す",
+  remove: "外す",
+  close: "閉じる",
+  preview: (number: number) => `スクショ ${number} を大きく見る`,
+  imageAlt: (number: number) => `スクショ ${number}`,
+  previewTitle: "スクショを確認",
+  imageLimit: "画像は3枚までです。",
+  imageTooLarge: "画像を2MiB以内にできませんでした。",
+  captureFailed: "画面を撮れませんでした",
+  captureUnsupported: "この OS では撮れません",
+  category: "種類",
+  feature: "どの機能か",
+  problem: "困っていること",
+  want: "こうしてほしい",
+  urgency: "急ぎ度",
+  sender: "送った人",
+  optional: "任意",
+  choose: "選んでください",
+  missing: (labels: readonly string[]) => `入力してください: ${labels.join("、")}`,
+  tooLong: "文字数の上限を超えています。",
+  attached: "一緒に送る物: mycmux の版・OS・送る時刻",
+  send: "送る",
+  sending: "送信中…",
+  cancel: "取消",
+  sent: "送りました",
+  destinationHeading: "改善の要望の送り先",
+  configured: "設定済み",
+  unconfigured: "未設定",
+  checking: "送り先を確かめています…",
+  statusFailed: "送り先を確かめられませんでした。",
+  configure: "設定する",
+  token: "Slack の鍵",
+  destination: "届け先",
+  save: "保存",
+  saving: "保存中…",
+  confirmRemove: "改善の要望の送り先を外しますか。",
+  removeDestination: "送り先を外す",
+  back: "戻る",
+  errors: {
+    auth: "送り先の鍵が使えません。設定の『改善の要望の送り先』を確かめてください。",
+    destination: "届け先に送れませんでした。送り先の設定を確かめてください。",
+    rateLimited: "混み合っています。少し時間をおいて送ってください。",
+    network: "送れませんでした。ネットにつながっているか確かめてください。",
+    other: "送れませんでした。",
+    dailyLimit: "今日はこれ以上送れません。",
+    notConfigured: "送り先が設定されていません。設定 → アプリ情報の『改善の要望の送り先』で設定してください。",
+    invalidInput: "必須項目と文字数を確かめてください。",
+    invalidDestination: "鍵と届け先の形を確かめてください。",
+    storage: "設定を保存・確認できませんでした。もう一度お試しください。",
+    invalidImage: "画像を読み込めませんでした。別の画像を選んでください。",
+  },
+} as const;
+
+export function feedbackErrorMessage(error: unknown): string {
+  return typeof error === "string" && Object.values(feedbackStrings.errors).some(message => message === error)
+    ? error : feedbackStrings.errors.other;
+}

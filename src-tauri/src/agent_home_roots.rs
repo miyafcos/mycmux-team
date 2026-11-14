@@ -179,6 +179,7 @@ pub fn origin_for_root(kind: &str, root: &Path) -> Origin {
     parsed.unwrap_or(Origin::Global)
 }
 /// Recognize live and mirrored account records without probing credentials or the filesystem.
+#[cfg(all(test, unix))]
 pub fn account_record_path(path: &Path) -> bool { account_record_boundary(path).is_some() }
 fn account_record_boundary(path: &Path) -> Option<&Path> {
     path.ancestors().find_map(|root| {

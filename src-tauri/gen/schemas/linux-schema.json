@@ -723,6 +723,12 @@
           "markdownDescription": "Enables the attention_set_tracked command without any pre-configured scope."
         },
         {
+          "description": "Enables the auto_name_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-auto-name-diagnostics",
+          "markdownDescription": "Enables the auto_name_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Enables the auto_name_materials command without any pre-configured scope.",
           "type": "string",
           "const": "allow-auto-name-materials",
@@ -745,6 +751,12 @@
           "type": "string",
           "const": "allow-begin-cli-login",
           "markdownDescription": "Enables the begin_cli_login command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_claude_setup_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-claude-setup-token",
+          "markdownDescription": "Enables the cancel_claude_setup_token command without any pre-configured scope."
         },
         {
           "description": "Enables the cancel_cli_login command without any pre-configured scope.",
@@ -855,6 +867,12 @@
           "markdownDescription": "Enables the delete_online_savepoint command without any pre-configured scope."
         },
         {
+          "description": "Enables the detect_agent_services command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-detect-agent-services",
+          "markdownDescription": "Enables the detect_agent_services command without any pre-configured scope."
+        },
+        {
           "description": "Enables the discard_session_scrollback command without any pre-configured scope.",
           "type": "string",
           "const": "allow-discard-session-scrollback",
@@ -945,6 +963,36 @@
           "markdownDescription": "Enables the export_savepoint_transfer command without any pre-configured scope."
         },
         {
+          "description": "Enables the feedback_capture_main command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-feedback-capture-main",
+          "markdownDescription": "Enables the feedback_capture_main command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the feedback_remove_destination command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-feedback-remove-destination",
+          "markdownDescription": "Enables the feedback_remove_destination command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the feedback_save_destination command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-feedback-save-destination",
+          "markdownDescription": "Enables the feedback_save_destination command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the feedback_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-feedback-send",
+          "markdownDescription": "Enables the feedback_send command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the feedback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-feedback-status",
+          "markdownDescription": "Enables the feedback_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the fetch_pet_gallery command without any pre-configured scope.",
           "type": "string",
           "const": "allow-fetch-pet-gallery",
@@ -991,6 +1039,12 @@
           "type": "string",
           "const": "allow-get-available-memory-mib",
           "markdownDescription": "Enables the get_available_memory_mib command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_claude_setup_token_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-claude-setup-token-state",
+          "markdownDescription": "Enables the get_claude_setup_token_state command without any pre-configured scope."
         },
         {
           "description": "Enables the get_cli_account_home_login command without any pre-configured scope.",
@@ -1413,6 +1467,12 @@
           "markdownDescription": "Enables the perf_timeline_read command without any pre-configured scope."
         },
         {
+          "description": "Enables the prepare_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-prepare-pane-message",
+          "markdownDescription": "Enables the prepare_pane_message command without any pre-configured scope."
+        },
+        {
           "description": "Enables the preview_artifact_uri_for_session_v2 command without any pre-configured scope.",
           "type": "string",
           "const": "allow-preview-artifact-uri-for-session-v2",
@@ -1737,10 +1797,22 @@
           "markdownDescription": "Enables the socket_response command without any pre-configured scope."
         },
         {
+          "description": "Enables the start_claude_setup_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-claude-setup-token",
+          "markdownDescription": "Enables the start_claude_setup_token command without any pre-configured scope."
+        },
+        {
           "description": "Enables the stop_pane_leftover_process command without any pre-configured scope.",
           "type": "string",
           "const": "allow-stop-pane-leftover-process",
           "markdownDescription": "Enables the stop_pane_leftover_process command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the submit_claude_setup_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-submit-claude-setup-code",
+          "markdownDescription": "Enables the submit_claude_setup_code command without any pre-configured scope."
         },
         {
           "description": "Enables the subscribe_live_briefs command without any pre-configured scope.",
@@ -1959,6 +2031,12 @@
           "markdownDescription": "Enables the use_reset_ticket command without any pre-configured scope."
         },
         {
+          "description": "Enables the verify_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-verify-pane-message",
+          "markdownDescription": "Enables the verify_pane_message command without any pre-configured scope."
+        },
+        {
           "description": "Enables the watch_window_drag command without any pre-configured scope.",
           "type": "string",
           "const": "allow-watch-window-drag",
@@ -2167,6 +2245,12 @@
           "type": "string",
           "const": "allow-workorder-spawn-result",
           "markdownDescription": "Enables the workorder_spawn_result command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-pane-message",
+          "markdownDescription": "Enables the write_pane_message command without any pre-configured scope."
         },
         {
           "description": "Enables the write_to_session command without any pre-configured scope.",
@@ -2511,6 +2595,12 @@
           "markdownDescription": "Denies the attention_set_tracked command without any pre-configured scope."
         },
         {
+          "description": "Denies the auto_name_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-auto-name-diagnostics",
+          "markdownDescription": "Denies the auto_name_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Denies the auto_name_materials command without any pre-configured scope.",
           "type": "string",
           "const": "deny-auto-name-materials",
@@ -2533,6 +2623,12 @@
           "type": "string",
           "const": "deny-begin-cli-login",
           "markdownDescription": "Denies the begin_cli_login command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_claude_setup_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-claude-setup-token",
+          "markdownDescription": "Denies the cancel_claude_setup_token command without any pre-configured scope."
         },
         {
           "description": "Denies the cancel_cli_login command without any pre-configured scope.",
@@ -2643,6 +2739,12 @@
           "markdownDescription": "Denies the delete_online_savepoint command without any pre-configured scope."
         },
         {
+          "description": "Denies the detect_agent_services command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-detect-agent-services",
+          "markdownDescription": "Denies the detect_agent_services command without any pre-configured scope."
+        },
+        {
           "description": "Denies the discard_session_scrollback command without any pre-configured scope.",
           "type": "string",
           "const": "deny-discard-session-scrollback",
@@ -2733,6 +2835,36 @@
           "markdownDescription": "Denies the export_savepoint_transfer command without any pre-configured scope."
         },
         {
+          "description": "Denies the feedback_capture_main command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-capture-main",
+          "markdownDescription": "Denies the feedback_capture_main command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback_remove_destination command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-remove-destination",
+          "markdownDescription": "Denies the feedback_remove_destination command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback_save_destination command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-save-destination",
+          "markdownDescription": "Denies the feedback_save_destination command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-send",
+          "markdownDescription": "Denies the feedback_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-feedback-status",
+          "markdownDescription": "Denies the feedback_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the fetch_pet_gallery command without any pre-configured scope.",
           "type": "string",
           "const": "deny-fetch-pet-gallery",
@@ -2779,6 +2911,12 @@
           "type": "string",
           "const": "deny-get-available-memory-mib",
           "markdownDescription": "Denies the get_available_memory_mib command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_claude_setup_token_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-claude-setup-token-state",
+          "markdownDescription": "Denies the get_claude_setup_token_state command without any pre-configured scope."
         },
         {
           "description": "Denies the get_cli_account_home_login command without any pre-configured scope.",
@@ -3201,6 +3339,12 @@
           "markdownDescription": "Denies the perf_timeline_read command without any pre-configured scope."
         },
         {
+          "description": "Denies the prepare_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-prepare-pane-message",
+          "markdownDescription": "Denies the prepare_pane_message command without any pre-configured scope."
+        },
+        {
           "description": "Denies the preview_artifact_uri_for_session_v2 command without any pre-configured scope.",
           "type": "string",
           "const": "deny-preview-artifact-uri-for-session-v2",
@@ -3525,10 +3669,22 @@
           "markdownDescription": "Denies the socket_response command without any pre-configured scope."
         },
         {
+          "description": "Denies the start_claude_setup_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-claude-setup-token",
+          "markdownDescription": "Denies the start_claude_setup_token command without any pre-configured scope."
+        },
+        {
           "description": "Denies the stop_pane_leftover_process command without any pre-configured scope.",
           "type": "string",
           "const": "deny-stop-pane-leftover-process",
           "markdownDescription": "Denies the stop_pane_leftover_process command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the submit_claude_setup_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-submit-claude-setup-code",
+          "markdownDescription": "Denies the submit_claude_setup_code command without any pre-configured scope."
         },
         {
           "description": "Denies the subscribe_live_briefs command without any pre-configured scope.",
@@ -3747,6 +3903,12 @@
           "markdownDescription": "Denies the use_reset_ticket command without any pre-configured scope."
         },
         {
+          "description": "Denies the verify_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-verify-pane-message",
+          "markdownDescription": "Denies the verify_pane_message command without any pre-configured scope."
+        },
+        {
           "description": "Denies the watch_window_drag command without any pre-configured scope.",
           "type": "string",
           "const": "deny-watch-window-drag",
@@ -3955,6 +4117,12 @@
           "type": "string",
           "const": "deny-workorder-spawn-result",
           "markdownDescription": "Denies the workorder_spawn_result command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_pane_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-pane-message",
+          "markdownDescription": "Denies the write_pane_message command without any pre-configured scope."
         },
         {
           "description": "Denies the write_to_session command without any pre-configured scope.",

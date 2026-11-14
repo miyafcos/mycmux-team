@@ -1286,8 +1286,8 @@ fn bootstrap_transcript_seeded(
         path: path.to_path_buf(),
         file_identity,
         stream_generation: 1,
-        // Absolute end of what was actually read, which can exceed the stat'd
-        // length if the transcript grew between the stat and the read.
+        // Absolute end of the bounded bootstrap bytes. Appends after the stat
+        // are left for the next tail read.
         read_offset: base_offset.saturating_add(bytes.len() as u64),
         committed_offset: parsed.committed_end,
         pending_bytes: parsed.pending_bytes,
@@ -1365,7 +1365,11 @@ fn read_bootstrap_window_limited(
     max_bytes: u64,
 ) -> Result<(Vec<u8>, u64), String> {
     if file_len <= max_bytes {
-        let bytes = std::fs::read(path).map_err(|error| format!("read transcript: {error}"))?;
+        let file = File::open(path).map_err(|error| format!("open transcript: {error}"))?;
+        let mut bytes = Vec::new();
+        file.take(file_len)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("read transcript: {error}"))?;
         return Ok((bytes, 0));
     }
     let window_start = file_len.saturating_sub(max_bytes);
@@ -1677,6 +1681,25 @@ pub async fn send_intervention(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn bootstrap_small_window_stops_at_statted_length_after_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bootstrap.jsonl");
+        let initial = b"first fixture line\n";
+        std::fs::write(&path, initial).unwrap();
+        let file_len = std::fs::metadata(&path).unwrap().len();
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"appended fixture line\n").unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > file_len);
+        let (bytes, base_offset) = read_bootstrap_window_limited(&path, file_len, 1024).unwrap();
+        assert!(bytes.len() as u64 <= file_len);
+        assert_eq!(bytes, initial);
+        assert_eq!(base_offset, 0);
+        let (bytes, base_offset) = read_bootstrap_window_limited(&path, 0, 1024).unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(base_offset, 0);
+    }
     #[test]
     fn refresh_panic_releases_the_flag_and_a_subsequent_refresh_finishes() {
         use super::*;

@@ -11,6 +11,7 @@ export const tokenOwnerLabels: Record<CliLaunchTokenStatus["owner_check"], strin
 
 
 export const tabAccountPanelTitle = "このタブのアカウント";
+export const tabAccountEvidenceUnavailable = "確認の状態を読み取れませんでした。前に確かめた結果は表示していません。";
 export function evidenceTime(value: string, now = new Date()): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "不明";
@@ -86,3 +87,38 @@ export function accountRecheckNotice(outcome: AccountRecheckOutcome): AccountRec
 }
 
 export const accountRecheckFailure = "確かめられませんでした: サーバーにつながりませんでした。少し待ってから、もう一度押してください。";
+
+export const setupTokenStrings = {
+  useInTab: "タブでも使う",
+  registerAgain: "登録し直す",
+  confirm: (name: string) => `ブラウザで ${name} にログインしているか確かめてから承認してください。承認は 1 年に 1 回です。`,
+  begin: "始める",
+  dismiss: "取消",
+  cancel: "中止",
+  starting: "準備しています…",
+  waiting: "ブラウザで承認してください",
+  fallback: "ブラウザが開かないときはこの URL を開いてください",
+  openUrl: "URL を開く",
+  urlFailed: "URL を開けませんでした。表示された URL をブラウザで開いてください。",
+  codePrompt: "コードが表示されたときだけ、ここに貼ってください",
+  codeLabel: "承認コード",
+  sendCode: "コードを送る",
+  codeSent: "コードを送りました。ブラウザの承認が終わるまでお待ちください。",
+  checking: "持ち主を確かめています…",
+  saved: "登録しました。このアカウントをタブで使えます。",
+  busyElsewhere: "ほかのアカウントを登録しています。終わってから始めてください。",
+  failures: {
+    capture_failed: "取り込めませんでした。「詳しく」の貼り付け登録を使うか、もう一度始めてください。",
+    cli_error: "承認を続けられませんでした。ブラウザのログインを確かめ、もう一度始めてください。",
+    launch_failed: "Claude Code を起動できませんでした。インストールを確かめ、もう一度始めてください。",
+    output_limit: "出力が上限を超えました。「詳しく」の貼り付け登録を使ってください。",
+    save_failed: "保存できませんでした。もう一度始めるか、「詳しく」の貼り付け登録を使ってください。",
+    owner_mismatch: "アカウントが一致しません。ブラウザで選んだアカウントにログインし直して、やり直してください。",
+    timeout: "時間切れになりました。ブラウザのログインを確かめ、もう一度始めてください。",
+    cancelled: "中止しました。もう一度始めることができます。",
+    start_failed: "始められませんでした。ほかの登録が終わったことと Claude Code のインストールを確かめ、もう一度始めてください。",
+    invalid_code: "表示された # を含むコードを、空白や改行を入れずに貼ってください。",
+    code_failed: "コードを送れませんでした。登録の状態を確かめ、もう一度始めてください。",
+    cancel_failed: "中止を確かめられませんでした。登録の状態を確かめてください。",
+  },
+} as const;

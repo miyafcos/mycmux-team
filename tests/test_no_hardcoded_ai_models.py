@@ -54,7 +54,11 @@ def test_ai_command_building_is_centralized() -> None:
             # This parser does not construct an AI command or select a model. Limit
             # this exception to this file and this single option token.
             is_codex_restore_argv_parse = relative == "commands/terminal/codex_restore.rs" and token == '"--model"'
-            assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse or is_codex_restore_argv_parse, f"{path}: centralized AI command token {token}"
+            # Account registration runs `claude setup-token` in a background PTY. It
+            # reuses the shared Windows executable resolver and passes no model, so it
+            # is not an internal AI call. Limit this exception to this file and this token.
+            is_setup_token_launch = relative == "cli_accounts/setup_token.rs" and token == 'prepare_spawn_command("claude"'
+            assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse or is_codex_restore_argv_parse or is_setup_token_launch, f"{path}: centralized AI command token {token}"
 
 
 def sql_model_literals(source: str) -> list[str]:

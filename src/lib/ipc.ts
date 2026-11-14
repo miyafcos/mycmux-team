@@ -1863,6 +1863,32 @@ export async function recheckTabAccount(sessionId: string): Promise<TabAccountEv
   return invoke<TabAccountEvidence | null>("recheck_tab_account", { sessionId });
 }
 
+
+/** Only public progress; the hidden PTY and its secret output stay native. */
+export interface ClaudeSetupTokenEvent {
+  login_id: string;
+  profile_id: string;
+  state: "starting" | "waiting_browser" | "code_available" | "checking_owner" | "saved" | "mismatch" | "failed" | "cancelled" | "timeout";
+  url?: string;
+  reason?: string;
+  status?: CliLaunchTokenStatus;
+}
+export async function startClaudeSetupToken(profileId: string): Promise<ClaudeSetupTokenEvent> {
+  return invoke<ClaudeSetupTokenEvent>("start_claude_setup_token", { profileId });
+}
+export async function submitClaudeSetupCode(loginId: string, code: string): Promise<void> {
+  return invoke<void>("submit_claude_setup_code", { loginId, code });
+}
+export async function cancelClaudeSetupToken(loginId: string): Promise<void> {
+  return invoke<void>("cancel_claude_setup_token", { loginId });
+}
+export async function getClaudeSetupTokenState(): Promise<ClaudeSetupTokenEvent | null> {
+  return invoke<ClaudeSetupTokenEvent | null>("get_claude_setup_token_state");
+}
+export function onClaudeSetupToken(callback: (event: ClaudeSetupTokenEvent) => void): Promise<() => void> {
+  return listen<ClaudeSetupTokenEvent>("claude-setup-token", event => callback(event.payload));
+}
+
 export async function getCliLaunchTokens(): Promise<CliLaunchTokenStatus[]> {
   return invoke<CliLaunchTokenStatus[]>("get_cli_launch_tokens");
 }
@@ -2136,3 +2162,13 @@ export async function launcherDirsRegisterCandidate(sectionId: string, path: str
 export async function launcherRecordDirMru(path: string): Promise<void> {
   return invoke<void>("launcher_record_dir_mru", { path });
 }
+
+export interface FeedbackDestinationStatus { configured: boolean }
+export interface FeedbackImage { mime: "image/png" | "image/jpeg"; data: string }
+export interface FeedbackRequest {
+  category: string; feature: string; problem: string; want: string; urgency: string; sender: string;
+  images: FeedbackImage[];
+}
+export {
+  getFeedbackDestinationStatus, saveFeedbackDestination, removeFeedbackDestination, captureFeedbackMain, sendFeedback,
+} from "../components/feedback/feedbackApi";

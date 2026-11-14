@@ -47,6 +47,63 @@ pub async fn list_cli_accounts(app: AppHandle) -> Result<CliAccountsSnapshot, St
     cli_accounts::list_resolved(&app_data_dir(&app)?)
 }
 
+
+#[tauri::command(async)]
+pub async fn start_claude_setup_token(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle, profile_id: String,
+) -> Result<cli_accounts::setup_token::SetupTokenEvent, String> {
+    let base = app_data_dir(&app).map_err(|_| cli_accounts::ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let checked_base = base.clone();
+    let checked_id = profile_id.clone();
+    let provider = tauri::async_runtime::spawn_blocking(move || cli_accounts::registered_profile_provider(&checked_base, &checked_id))
+        .await.map_err(|_| cli_accounts::ERR_ACCOUNTS_UNAVAILABLE.to_string())??;
+    if provider != CliProvider::Claude { return Err(cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND.into()); }
+    let live = cli_accounts::claude::ClaudePaths::resolve()?;
+    let registry = app.state::<Arc<cli_accounts::setup_token::SetupTokenRegistry>>().inner().clone();
+    let (initial, control) = registry.begin(&profile_id)?;
+    let _ = app.emit("claude-setup-token", &initial);
+    let result = initial.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let login_path = crate::commands::shell::login_shell_path(&app);
+        #[cfg(not(target_os = "macos"))]
+        let login_path = None;
+        cli_accounts::setup_token::run_attempt(&registry, initial, control, &base, &live,
+            cli_accounts::setup_token::native_command(login_path), cli_accounts::setup_token::RunOptions::default(),
+            &cli_accounts::launch_tokens::OsLaunchTokenStore::new(&base),
+            |value| tauri::async_runtime::block_on(cli_accounts::token_owner::fetch_claude_launch_owner(value)),
+            cli_accounts::staging::cleanup_staging,
+            |event| {
+                if event.status.is_some() {
+                    let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": event.profile_id }));
+                }
+                let _ = app.emit("claude-setup-token", event);
+            });
+    });
+    Ok(result)
+}
+
+#[tauri::command(async)]
+pub async fn submit_claude_setup_code(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle, login_id: String, code: String,
+) -> Result<(), String> {
+    app.state::<Arc<cli_accounts::setup_token::SetupTokenRegistry>>().submit_code(&login_id, code)
+}
+
+#[tauri::command(async)]
+pub async fn cancel_claude_setup_token(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle, login_id: String,
+) -> Result<(), String> {
+    app.state::<Arc<cli_accounts::setup_token::SetupTokenRegistry>>().cancel(&login_id)
+}
+
+#[tauri::command(async)]
+pub async fn get_claude_setup_token_state(
+    _trusted: crate::ipc_caller::TrustedAppCaller, app: AppHandle,
+) -> Result<Option<cli_accounts::setup_token::SetupTokenEvent>, String> {
+    app.state::<Arc<cli_accounts::setup_token::SetupTokenRegistry>>().current()
+}
+
 #[tauri::command(async)]
 pub async fn get_cli_launch_tokens(app: AppHandle) -> Result<Vec<cli_accounts::launch_tokens::LaunchTokenStatus>, String> {
     let base = app_data_dir(&app).map_err(|_| cli_accounts::ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
@@ -191,12 +248,15 @@ async fn switch_cli_account_inner(app: AppHandle, provider: CliProvider, profile
 pub async fn remove_cli_account(app: AppHandle, profile_id: String) -> Result<(), String> {
     let base = app_data_dir(&app)?;
     let manager = app.state::<crate::AppState>().session_manager.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let removed_profile_id = profile_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let provider = cli_accounts::registered_profile_provider(&base, &profile_id)?;
         if provider == CliProvider::Claude { return cli_accounts::remove_resolved(&base, &profile_id); }
         cli_accounts::account_homes::unregister_and(&base, provider, &profile_id, |id| manager.is_alive(id),
             || cli_accounts::remove_resolved(&base, &profile_id))
-    }).await.map_err(|_| cli_accounts::ERR_REMOVE_FAILED.to_string())?
+    }).await.map_err(|_| cli_accounts::ERR_REMOVE_FAILED.to_string());
+    let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": removed_profile_id }));
+    result?
 }
 
 #[tauri::command(async)]

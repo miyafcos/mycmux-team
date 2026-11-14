@@ -775,6 +775,8 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
         let worker_app = app.clone();
         match crate::shutdown::Cleanup::start(crate::shutdown::SHUTDOWN_BUDGET, move |deadline| {
             let state = worker_app.state::<AppState>();
+            let setup_tokens = worker_app.state::<Arc<crate::cli_accounts::setup_token::SetupTokenRegistry>>();
+            setup_tokens.close_for_exit();
             #[cfg(target_os = "macos")]
             crate::settings_flush::flush_at_exit(&worker_app, deadline);
             crate::commands::quit::fill_in_unsaved_workspaces(&worker_app, deadline);
@@ -787,6 +789,11 @@ pub fn handle_app_run_event(app: &AppHandle, event: tauri::RunEvent) {
             }
             if std::time::Instant::now() < deadline { state.session_manager.kill_all(); }
             if std::time::Instant::now() < deadline { state.hook_service.revoke_all(); }
+            if std::time::Instant::now() < deadline {
+                if setup_tokens.wait_idle(deadline) == crate::cli_accounts::setup_token::SetupShutdown::TimedOut {
+                    crate::diag_warn!("shutdown", "setup-token shutdown timed out");
+                }
+            }
         }) {
             Ok(cleanup) => { let _ = CLEANUP.set(cleanup); }
             Err(error) => crate::watchdog::log_with_memory(format!("[shutdown] {error}")),

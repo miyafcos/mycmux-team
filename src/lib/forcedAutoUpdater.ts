@@ -1,7 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { updateStrings } from "../components/layout/updateStrings";
+import { useUpdateAvailabilityStore } from "../stores/updateAvailabilityStore";
+import { hasWindowRole } from "./windowContext";
 
-export type UpdatePhase = "idle" | "checking" | "latest" | "downloading" | "ready" | "error" | "skipped";
+export type UpdatePhase = "idle" | "checking" | "latest" | "available" | "downloading" | "ready" | "error" | "skipped";
 export type UpdateSource = "manual" | "startup" | "interval" | "resume" | "online";
 
 export interface UpdateStatusSnapshot {
@@ -23,107 +27,140 @@ export interface UpdateCheckResult {
 
 interface RunUpdateCheckOptions {
   source?: UpdateSource;
-  force?: boolean;
   onStatus?: (status: UpdateStatusSnapshot) => void;
 }
 
-const MIN_AUTO_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
-const AUTO_UPDATE_FAILURE_BACKOFF_MS = 2 * 60 * 1_000;
-
-let currentStatus: UpdateStatusSnapshot = {
-  phase: "idle",
-  message: "",
-  updatedAt: Date.now(),
-};
+const MIN_AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
+let currentStatus: UpdateStatusSnapshot = { phase: "idle", message: "", updatedAt: Date.now() };
 let currentTask: Promise<UpdateCheckResult> | null = null;
-let lastAutoCheckAt = 0;
-let lastAutoFailureAt = 0;
-
+let currentTaskSource: UpdateSource | null = null;
+let installTask: Promise<UpdateCheckResult> | null = null;
+let availableUpdate: Update | null = null;
+const installedUpdates = new WeakSet<Update>();
+let lastAutoCheckAt: number | null = null;
 const statusListeners = new Set<(status: UpdateStatusSnapshot) => void>();
 
-function subscribeUpdateStatus(listener: (status: UpdateStatusSnapshot) => void): () => void {
-  statusListeners.add(listener);
-  listener(currentStatus);
-  return () => statusListeners.delete(listener);
-}
-
 function setStatus(status: Omit<UpdateStatusSnapshot, "updatedAt">): void {
-  currentStatus = {
-    ...status,
-    updatedAt: Date.now(),
-  };
-  for (const listener of statusListeners) {
-    listener(currentStatus);
-  }
+  currentStatus = { ...status, updatedAt: Date.now() };
+  for (const listener of statusListeners) listener(currentStatus);
 }
 
-function shouldSkipAutoCheck(now: number, force: boolean): boolean {
-  if (force) return false;
-  if (lastAutoCheckAt && now - lastAutoCheckAt < MIN_AUTO_CHECK_INTERVAL_MS) return true;
-  if (lastAutoFailureAt && now - lastAutoFailureAt < AUTO_UPDATE_FAILURE_BACKOFF_MS) return true;
-  return false;
-}
-
-function resultFromSkipped(source: UpdateSource, message: string): UpdateCheckResult {
+function skipped(source: UpdateSource, message: string): UpdateCheckResult {
   setStatus({ phase: "skipped", source, message });
   return { phase: "skipped", updateInstalled: false, skipped: true };
 }
 
-async function executeUpdateCheck(source: UpdateSource): Promise<UpdateCheckResult> {
-  const automatic = source !== "manual";
-  if (automatic) {
-    lastAutoCheckAt = Date.now();
+async function canUseUpdater(): Promise<boolean> {
+  if (!hasWindowRole()) return false;
+  try {
+    const profile = await invoke<string | null>("get_test_profile");
+    return profile === null && hasWindowRole();
+  } catch {
+    return false;
   }
+}
 
-  setStatus({ phase: "checking", source, message: "更新を確認中..." });
+function releaseUpdate(update: Update | null): void {
+  if (update) void update.close().catch(() => {});
+}
+
+async function executeAvailabilityCheck(source: UpdateSource): Promise<UpdateCheckResult> {
+  const automatic = source !== "manual";
+  if (automatic && import.meta.env.DEV) return skipped(source, updateStrings.developmentSkipped);
+  if (!await canUseUpdater()) return skipped(source, updateStrings.unavailable);
+  const now = Date.now();
+  const throttled = source === "online" || source === "resume";
+  if (throttled && lastAutoCheckAt !== null && now - lastAutoCheckAt < MIN_AUTO_CHECK_INTERVAL_MS) {
+    return skipped(source, updateStrings.recentlyChecked);
+  }
+  const previousAutoCheckAt = lastAutoCheckAt;
+  if (automatic) lastAutoCheckAt = now;
+  setStatus({ phase: "checking", source, message: updateStrings.checking });
 
   try {
     const update = await check();
+    if (!hasWindowRole()) {
+      releaseUpdate(update);
+      return skipped(source, updateStrings.unavailable);
+    }
+    releaseUpdate(availableUpdate);
+    availableUpdate = update;
     if (!update) {
-      setStatus({ phase: "latest", source, message: "最新版です" });
+      useUpdateAvailabilityStore.setState({ state: "none", version: "", currentVersion: "", message: "" });
+      setStatus({ phase: "latest", source, message: updateStrings.latest });
       return { phase: "latest", updateInstalled: false };
     }
-
     const version = String(update.version);
-    setStatus({ phase: "downloading", source, version, message: `v${version} を取得・インストール中...` });
-    await update.downloadAndInstall();
-    setStatus({ phase: "ready", source, version, message: `v${version} をインストールしました。再起動します...` });
-    await relaunch();
-    return { phase: "ready", updateInstalled: true, version };
+    useUpdateAvailabilityStore.setState({
+      state: "available", version, currentVersion: String(update.currentVersion), message: "",
+    });
+    setStatus({ phase: "available", source, version, message: "" });
+    return { phase: "available", updateInstalled: false, version };
   } catch (error) {
-    if (automatic) {
-      lastAutoFailureAt = Date.now();
-    }
-    console.warn("[updater] Update check/install failed:", error);
-    setStatus({ phase: "error", source, message: "更新に失敗しました", error });
+    if (automatic) lastAutoCheckAt = previousAutoCheckAt;
+    console.warn("[updater] Update check failed", error);
+    // Automatic failures leave display data untouched and retry on schedule.
+    setStatus({ phase: "error", source, message: updateStrings.checkError, error });
     return { phase: "error", updateInstalled: false, error };
   }
 }
 
-export async function runUpdateCheck(options: RunUpdateCheckOptions = {}): Promise<UpdateCheckResult> {
+export async function checkForUpdateAvailability(options: RunUpdateCheckOptions = {}): Promise<UpdateCheckResult> {
   const source = options.source ?? "manual";
-  const automatic = source !== "manual";
-  const unsubscribe = options.onStatus ? subscribeUpdateStatus(options.onStatus) : undefined;
-
+  if (installTask) return await installTask;
+  if (source === "manual" && currentTask && currentTaskSource !== "manual") {
+    // Manual checks always make their own unthrottled request after automatic work.
+    if (currentStatus.phase === "checking") options.onStatus?.(currentStatus);
+    await currentTask;
+    if (installTask) return await installTask;
+  }
+  const listener = options.onStatus;
+  if (listener) statusListeners.add(listener);
   try {
-    if (currentTask) {
-      return await currentTask;
+    if (!currentTask) {
+      currentTaskSource = source;
+      currentTask = executeAvailabilityCheck(source).finally(() => {
+        currentTask = null;
+        currentTaskSource = null;
+      });
+    } else if (listener && currentStatus.phase === "checking") {
+      listener(currentStatus);
     }
-
-    if (automatic && import.meta.env.DEV) {
-      return resultFromSkipped(source, "開発中のため自動更新をスキップしました");
-    }
-
-    const now = Date.now();
-    if (automatic && shouldSkipAutoCheck(now, options.force === true)) {
-      return resultFromSkipped(source, "直近で確認済みです");
-    }
-
-    currentTask = executeUpdateCheck(source).finally(() => {
-      currentTask = null;
-    });
     return await currentTask;
   } finally {
-    unsubscribe?.();
+    if (listener) statusListeners.delete(listener);
   }
+}
+
+// Keep the existing settings entry point, now limited to discovery.
+export function runUpdateCheck(options: RunUpdateCheckOptions = {}): Promise<UpdateCheckResult> {
+  return checkForUpdateAvailability(options);
+}
+
+export async function installAvailableUpdate(): Promise<UpdateCheckResult> {
+  if (installTask) return await installTask;
+  installTask = (async (): Promise<UpdateCheckResult> => {
+    // An overlapping discovery must finish before its retained handle is used.
+    await currentTask;
+    const update = availableUpdate;
+    if (!update || !await canUseUpdater()) return skipped("manual", updateStrings.unavailable);
+    const version = String(update.version);
+    useUpdateAvailabilityStore.setState({ state: "installing", message: "" });
+    setStatus({ phase: "downloading", source: "manual", version, message: updateStrings.downloading(version) });
+    try {
+      if (!installedUpdates.has(update)) {
+        await update.downloadAndInstall();
+        installedUpdates.add(update);
+      }
+      setStatus({ phase: "ready", source: "manual", version, message: updateStrings.restarting(version) });
+      await relaunch();
+      return { phase: "ready", updateInstalled: true, version };
+    } catch (error) {
+      console.warn("[updater] Update installation or restart failed", error);
+      useUpdateAvailabilityStore.setState({ state: "error", message: updateStrings.installError });
+      setStatus({ phase: "error", source: "manual", version, message: updateStrings.installError, error });
+      return { phase: "error", updateInstalled: false, version, error };
+    }
+  })().finally(() => { installTask = null; });
+  return await installTask;
 }

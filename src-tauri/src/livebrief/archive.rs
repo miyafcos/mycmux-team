@@ -688,9 +688,7 @@ pub(super) fn file_identity(file: &File) -> Result<String, String> { use std::os
 #[cfg(windows)]
 pub(super) fn file_identity(file: &File) -> Result<String, String> {
     use std::os::windows::io::AsRawHandle;
-    #[repr(C)] #[derive(Default)] struct FileTime { low: u32, high: u32 }
-    #[repr(C)] #[derive(Default)] struct Info { attributes: u32, creation: FileTime, access: FileTime, write: FileTime, volume: u32, size_high: u32, size_low: u32, links: u32, index_high: u32, index_low: u32 }
-    #[link(name="kernel32")] extern "system" { fn GetFileInformationByHandle(handle: *mut std::ffi::c_void, info: *mut Info) -> i32; }
+    use crate::util::windows_file_information::{FileInformation as Info, GetFileInformationByHandle};
     let mut info = Info::default();
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 { return Err("permissionDenied".into()); }
     Ok(format!("{}:{}:{}",info.volume,info.index_high,info.index_low))

@@ -85,12 +85,12 @@ describe("per-tab account launcher", () => {
     expect(accountRow().textContent).not.toContain(target === "claude" ? "codex ready" : "claude ready");
   });
   it.each(["claude-codex", "agy", "hermes", "omp", "cursor"])("L-1 does not offer accounts for %s", async target => {
-    await act(async () => root.render(<AgentSelector slotIndex={0} value={{ target }} onChange={vi.fn()} />));
+    await act(async () => root.render(<AgentSelector workspaceInstanceId={1} slotIndex={0} value={{ target }} onChange={vi.fn()} />));
     expect(accountRow()).toBeNull();
     expect(mocks.list).not.toHaveBeenCalled();
   });
   it("L-1 never puts accounts on Web choices", async () => {
-    await act(async () => root.render(<AgentSelector slotIndex={0} value={{ target: "web-chatgpt" }} onChange={vi.fn()} />));
+    await act(async () => root.render(<AgentSelector workspaceInstanceId={1} slotIndex={0} value={{ target: "web-chatgpt" }} onChange={vi.fn()} />));
     expect(accountRow()).toBeNull();
     expect(mocks.list).not.toHaveBeenCalled();
   });
@@ -123,12 +123,13 @@ describe("per-tab account launcher", () => {
     await click(S.launchButton);
     expect(env()).toEqual({ MYCMUX_LAUNCH_TARGET: "codex" });
   });
-  it.each(["claude", "codex", "grok"])("L-4 selects %s by keyboard, skipping unavailable chips, then launches with Enter", async target => {
+  it.each(["claude", "codex", "grok"])("L-4 visits unavailable %s chips without selecting them, then launches the selected account with Enter", async target => {
     await open(target);
     await key("ArrowRight");
     expect(button(target + " ready", accountRow()).getAttribute("aria-pressed")).toBe("true");
     await key("ArrowRight");
-    expect(button(S.specDefault, accountRow()).getAttribute("aria-pressed")).toBe("true");
+    expect(button(target + " missing", accountRow()).getAttribute("aria-current")).toBe("true");
+    expect(button(target + " ready", accountRow()).getAttribute("aria-pressed")).toBe("true");
     await key("ArrowLeft");
     await key("ArrowDown");
     await key("ArrowDown");
@@ -194,7 +195,7 @@ describe("setup shares the account row", () => {
     function Setup() {
       const [spec, setSpec] = useState<PaneLaunchSpec>({ target });
       current = spec;
-      return <AgentSelector slotIndex={0} value={spec} onChange={setSpec} />;
+      return <AgentSelector workspaceInstanceId={1} slotIndex={0} value={spec} onChange={setSpec} />;
     }
     await act(async () => root.render(<Setup />));
     await click(target + " ready", accountRow());
