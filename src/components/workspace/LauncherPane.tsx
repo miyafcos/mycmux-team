@@ -268,6 +268,7 @@ const specLabel: CSSProperties = {
   color: "var(--cmux-text-tertiary)",
 };
 
+
 const specControl: CSSProperties = {
   backgroundColor: "transparent",
   color: "var(--cmux-text)",
@@ -315,6 +316,8 @@ export default function LauncherPane({
   const [specTarget, setSpecTarget] = useState<string | null>(null);
   const [specRow, setSpecRow] = useState<SpecRow>("model");
   const [model, setModel] = useState("");
+  const [specOpening, setSpecOpening] = useState(0);
+  const [manualModel, setManualModel] = useState(false);
   const [effort, setEffort] = useState("");
   const [account, setAccount] = useState("");
   const [accountCursor, setAccountCursor] = useState("");
@@ -327,6 +330,13 @@ export default function LauncherPane({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const terminalLaunchStartedRef = useRef(false);
   const modelInputRef = useRef<HTMLInputElement | null>(null);
+  const accountCursorChipRef = useRef<HTMLButtonElement | null>(null);
+  const selectedModelChipRef = useRef<HTMLButtonElement | null>(null);
+  const selectedEffortChipRef = useRef<HTMLButtonElement | null>(null);
+  const accountLabelRef = useRef<HTMLDivElement | null>(null);
+  const modelLabelRef = useRef<HTMLDivElement | null>(null);
+  const effortLabelRef = useRef<HTMLDivElement | null>(null);
+  const unavailableChoicesRef = useRef<HTMLDivElement | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
   const hoverListRef = useRef<HTMLDivElement | null>(null);
   const hoverFocusGuardRef = useRef<(() => boolean) | null>(null);
@@ -338,18 +348,50 @@ export default function LauncherPane({
       && tab.type === "launcher" && isRestorableTab(tab);
   });
   const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
-  // claude-codex's chips are its installed models.json, re-read on each open.
-  const specModels = useLaunchModels(specEntry);
-  const specEfforts = getLaunchEfforts(specEntry, model);
+  const specModels = useLaunchModels(specEntry, specOpening);
+  const specTypesModel = manualModel || specModels.length === 0;
+  const modelUnavailable = specEntry?.cli === "codex" && model !== "" && !specTypesModel
+    && !specModels.some((choice) => choice.value === model);
+  const specEfforts = getLaunchEfforts(specEntry, model, specModels);
+  const effortUnavailable = specEntry?.cli === "codex" && effort !== "" && !specEfforts.includes(effort);
+  const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
+  const hasUnavailableChoices = modelUnavailable || effortUnavailable;
+  const specLaunchBlocked = hasUnavailableChoices || (manualModel && modelRejected);
+  // Leave an effort row for clearing a selection even if the current model has no effort choices.
+  const rowEfforts = effortUnavailable && specEfforts.length === 0 ? [effort] : specEfforts;
+  const specRows = specRowsFor({ models: specModels, efforts: rowEfforts }, isLaunchAccountTarget(specTarget));
   const chooseModel = (next: string) => {
     setSpecRow("model");
     setModel(next);
     // A supported effort can survive a model change; an unsupported one
     // returns to the CLI default rather than failing when the pane starts.
-    if (effort && !getLaunchEfforts(specEntry, next).includes(effort)) setEffort("");
+    if (effort && !getLaunchEfforts(specEntry, next, specModels).includes(effort)) setEffort("");
   };
-  // No list means the model is typed; focus follows that, not the list itself.
-  const specTypesModel = specModels.length === 0;
+  const selectModelChip = (next: string) => {
+    setManualModel(false);
+    chooseModel(next);
+  };
+  const openManualModel = () => {
+    if (manualModel) {
+      modelInputRef.current?.focus();
+      return;
+    }
+    setManualModel(true);
+    chooseModel("");
+  };
+  useEffect(() => {
+    let selection: HTMLElement | null = null;
+    if (specRow === "account") selection = accountCursorChipRef.current ?? accountLabelRef.current;
+    else if (specRow === "model") selection = (specTypesModel ? modelInputRef.current : selectedModelChipRef.current) ?? modelLabelRef.current;
+    else if (specRow === "effort") selection = selectedEffortChipRef.current ?? effortLabelRef.current;
+    selection?.scrollIntoView?.({ block: "nearest" });
+  }, [accountCursor, effort, launchAccounts.choices, model, specModels, specRow, specTypesModel]);
+  useEffect(() => {
+    if (hasUnavailableChoices) unavailableChoicesRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [hasUnavailableChoices]);
+  useEffect(() => {
+    if (specRow === "effort" && rowEfforts.length === 0) setSpecRow("model");
+  }, [specRow, rowEfforts.length]);
 
   const serviceVisible = useAgentServiceVisibility();
   useEffect(() => { if (specTarget && !serviceVisible(specTarget)) setSpecTarget(null); }, [specTarget, serviceVisible]);
@@ -607,7 +649,9 @@ export default function LauncherPane({
     const entry = getCatalogEntry(target);
     if (!entry || entry.kind !== "agent" || !serviceVisible(target)) return;
     setSpecTarget(target);
+    setSpecOpening((opening) => opening + 1);
     setSpecRow(specRowsFor(entry, isLaunchAccountTarget(target))[0]);
+    setManualModel(false);
     setModel("");
     setEffort("");
     setAccount("");
@@ -621,9 +665,18 @@ export default function LauncherPane({
   };
 
   const launchSpec = () => {
-    if (accountRegistrationActive) return;
+    if (accountRegistrationActive || specLaunchBlocked) return;
     if (account && !launchAccounts.choices.some(choice => choice.id === account && choice.available)) return;
     if (specTarget) launchAgent(specTarget, { model, effort, account });
+  };
+
+  const onManualModelKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key !== "F2" || !isActive || !specEntry || specModels.length === 0
+      || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+      || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openManualModel();
   };
 
   const onModelKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -633,10 +686,12 @@ export default function LauncherPane({
     // Focus can change below; do not let the document listener handle this key again.
     event.stopPropagation();
     if (event.key === "Enter") launchSpec();
-    else if (event.key === "Escape") closeSpec();
-    else {
+    else if (event.key === "Escape") {
+      if (manualModel) selectModelChip("");
+      else closeSpec();
+    } else {
       const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
-      const next = moveSpecRow(specRowsFor(specEntry, isLaunchAccountTarget(specTarget)), "model", step);
+      const next = moveSpecRow(specRows, "model", step);
       setSpecRow(next);
       if (next !== "model") inputRef.current?.focus();
     }
@@ -654,7 +709,7 @@ export default function LauncherPane({
       if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Tab") {
         event.preventDefault();
         const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
-        setSpecRow((current) => moveSpecRow(specRowsFor(specEntry, isLaunchAccountTarget(specTarget)), current, step));
+        setSpecRow((current) => moveSpecRow(specRows, current, step));
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
@@ -664,7 +719,7 @@ export default function LauncherPane({
           if (!next || launchAccounts.choices.some(choice => choice.id === next && choice.available)) setAccount(next);
           if (!accountRegistrationActive) accountRegistrationInteracted.current = false;
         } else if (specRow === "model" && specModels.length > 0) {
-          chooseModel(cycleChoice(model, specModels.map((choice) => choice.value), step));
+          selectModelChip(cycleChoice(model, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
           setEffort((current) => cycleChoice(current, specEfforts, step));
         }
@@ -874,8 +929,6 @@ export default function LauncherPane({
     </div>
   ) : null;
 
-  const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
-
   let offset = 0;
   const body: React.ReactNode[] = [];
   if (trimmed) {
@@ -1019,6 +1072,7 @@ export default function LauncherPane({
         <input
           ref={inputRef}
           value={query}
+          onKeyDown={onManualModelKeyDown}
           onChange={(event) => setQuery(event.target.value)}
           onPaste={(event) => {
             const pasted = event.clipboardData.getData("text");
@@ -1050,7 +1104,8 @@ export default function LauncherPane({
         <div
           data-launcher-spec="true"
           style={{
-            flex: "0 0 auto",
+            flex: "0 1 auto",
+            minHeight: 0,
             padding: "8px 10px",
             borderBottom: "1px solid var(--cmux-border-hairline)",
             display: "flex",
@@ -1059,83 +1114,117 @@ export default function LauncherPane({
             background: "var(--cmux-popover)",
           }}
         >
-          <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+          <div style={{ flex: "0 0 auto", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
             {specEntry.label}
           </div>
-          <LaunchAccountRow key={specTarget} accounts={launchAccounts} surface="launcher" ownerKey={`launcher:${tabId}`} value={account} cursorId={accountCursor}
-            onChange={id => { setAccount(id); setAccountCursor(id); setSpecRow("account"); accountRegistrationInteracted.current = false; }}
-            onRegistrationStart={() => { accountRegistrationInteracted.current = true; }}
-            onRegistrationActivityChange={active => { setAccountRegistrationActive(active); if (!active) accountRegistrationInteracted.current = false; }}
-            onRegistrationEnd={saved => { accountRegistrationInteracted.current = false; if (saved) inputRef.current?.focus(); }}
-            highlighted={isActive && specRow === "account"} onMouseDown={keepFocus} />
-          <div style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
-          {specModels.length > 0 ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              <button
-                type="button"
-                onMouseDown={keepFocus}
-                onClick={() => chooseModel("")}
-                style={{ ...specChip, ...(model === "" ? specChipOn : null) }}
-              >
-                {S.specDefault}
-              </button>
-              {specModels.map((choice) => (
+          <div
+            data-launcher-spec-options="true"
+            style={{ flex: "0 1 auto", minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 5, overflowY: "auto" }}
+          >
+            {hasUnavailableChoices && (
+              <div ref={unavailableChoicesRef} role="status" style={{ ...specLabel, color: "var(--cmux-red)", overflowWrap: "anywhere" }}>
+                {modelUnavailable && <div>{S.modelUnavailable(model)}</div>}
+                {effortUnavailable && <div>{S.effortUnavailable(effort)}</div>}
+              </div>
+            )}
+            <LaunchAccountRow key={specTarget} accounts={launchAccounts} surface="launcher" ownerKey={`launcher:${tabId}`} value={account} cursorId={accountCursor}
+              onChange={id => { setAccount(id); setAccountCursor(id); setSpecRow("account"); accountRegistrationInteracted.current = false; }}
+              onRegistrationStart={() => { accountRegistrationInteracted.current = true; }}
+              onRegistrationActivityChange={active => { setAccountRegistrationActive(active); if (!active) accountRegistrationInteracted.current = false; }}
+              onRegistrationEnd={saved => { accountRegistrationInteracted.current = false; if (saved) inputRef.current?.focus(); }}
+              highlighted={isActive && specRow === "account"} cursorChipRef={accountCursorChipRef} labelRef={accountLabelRef} onMouseDown={keepFocus} />
+            <div ref={modelLabelRef} style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
+            {specModels.length > 0 && (
+              <div onKeyDown={onManualModelKeyDown} style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 104, overflowY: "auto" }}>
                 <button
-                  key={choice.value}
+                  ref={!manualModel && model === "" ? selectedModelChipRef : undefined}
                   type="button"
                   onMouseDown={keepFocus}
-                  title={choice.value}
-                  onClick={() => chooseModel(choice.value)}
-                  style={{ ...specChip, ...(model === choice.value ? specChipOn : null) }}
-                >
-                  {choice.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            // Agents without a published model list (such as Hermes) use typed values.
-            // sanitizeLaunchSpecValue still guards what reaches the CLI.
-            <input
-              ref={modelInputRef}
-              value={model}
-              onFocus={() => setSpecRow("model")}
-              onKeyDown={onModelKeyDown}
-              onChange={(event) => chooseModel(event.target.value)}
-              placeholder={S.modelDefault}
-              aria-label={S.modelLabel}
-              spellCheck={false}
-              style={{ ...specControl, borderColor: modelRejected ? "var(--cmux-red)" : "var(--cmux-border)" }}
-            />
-          )}
-          {specEfforts.length > 0 && (
-            <>
-              <div style={{ ...specLabel, ...(isActive && specRow === "effort" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.effortLabel}</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                <button
-                  type="button"
-                  onMouseDown={keepFocus}
-                  onClick={() => { setEffort(""); setSpecRow("effort"); }}
-                  style={{ ...specChip, ...(effort === "" ? specChipOn : null) }}
+                  onClick={() => selectModelChip("")}
+                  style={{ ...specChip, ...(!manualModel && model === "" ? specChipOn : null) }}
                 >
                   {S.specDefault}
                 </button>
-                {specEfforts.map((value) => (
+                {specModels.map((choice) => (
                   <button
-                    key={value}
+                    ref={!manualModel && model === choice.value ? selectedModelChipRef : undefined}
+                    key={choice.value}
                     type="button"
                     onMouseDown={keepFocus}
-                    onClick={() => { setEffort(value); setSpecRow("effort"); }}
-                    style={{ ...specChip, ...(effort === value ? specChipOn : null) }}
+                    title={choice.value}
+                    onClick={() => selectModelChip(choice.value)}
+                    style={{ ...specChip, ...(!manualModel && model === choice.value ? specChipOn : null) }}
                   >
-                    {value}
+                    {choice.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onMouseDown={keepFocus}
+                  onClick={openManualModel}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openManualModel();
+                    }
+                  }}
+                  aria-pressed={manualModel}
+                  style={{ ...specChip, ...(manualModel ? specChipOn : null) }}
+                >
+                  {S.modelManual}
+                </button>
               </div>
-            </>
-          )}
-          <div style={{ display: "flex", gap: 5 }}>
+            )}
+            {specTypesModel && (
+              <input
+                ref={modelInputRef}
+                value={model}
+                onFocus={() => setSpecRow("model")}
+                onKeyDown={onModelKeyDown}
+                onChange={(event) => chooseModel(event.target.value)}
+                placeholder={S.modelDefault}
+                aria-label={S.modelLabel}
+                aria-invalid={modelRejected || undefined}
+                spellCheck={false}
+                style={{ ...specControl, borderColor: modelRejected ? "var(--cmux-red)" : "var(--cmux-border)" }}
+              />
+            )}
+            {rowEfforts.length > 0 && (
+              <>
+                <div ref={effortLabelRef} style={{ ...specLabel, ...(isActive && specRow === "effort" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.effortLabel}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  <button
+                    type="button"
+                    onMouseDown={keepFocus}
+                    onClick={() => { setEffort(""); setSpecRow("effort"); }}
+                    ref={effort === "" ? selectedEffortChipRef : undefined}
+                    style={{ ...specChip, ...(effort === "" ? specChipOn : null) }}
+                  >
+                    {S.specDefault}
+                  </button>
+                  {specEfforts.map((value) => (
+                    <button
+                      ref={effort === value ? selectedEffortChipRef : undefined}
+                      key={value}
+                      type="button"
+                      onMouseDown={keepFocus}
+                      onClick={() => { setEffort(value); setSpecRow("effort"); }}
+                      style={{ ...specChip, ...(effort === value ? specChipOn : null) }}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{S.specKeyHint(specModels.length > 0)}</div>
+          </div>
+          <div style={{ display: "flex", flex: "0 0 auto", gap: 5 }}>
             <button
               type="button"
+              disabled={specLaunchBlocked}
               onMouseDown={keepFocus}
               onClick={launchSpec}
               style={{ ...specControl, cursor: "pointer", borderColor: "var(--cmux-accent)", color: "var(--cmux-accent)", width: "auto", flex: 1, ...(isActive && specRow === "launch" ? { backgroundColor: "var(--cmux-selected)" } : null) }}
@@ -1151,14 +1240,13 @@ export default function LauncherPane({
               {S.cancel}
             </button>
           </div>
-          <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{S.specKeyHint}</div>
         </div>
       )}
 
       {commandErrorText && <div role="alert" style={{ padding: "6px 10px", color: "var(--cmux-red)", fontSize: "var(--cmux-font-size-xs)" }}>{commandErrorText}</div>}
 
       <div ref={hoverListRef} data-pane-hover-focus-surface={hoverFocusEnabled ? "launcher" : undefined}
-        style={{ flex: "1 1 auto", overflowY: "auto", padding: "2px 0 10px" }}>{body}</div>
+        style={{ flex: "1 1 0", overflowY: "auto", padding: "2px 0 10px" }}>{body}</div>
 
       <div
         style={{

@@ -579,6 +579,9 @@ fn create_session_blocking(
             env_map.insert("PATH".to_string(), path.to_string());
         }
     }
+    if !reattach {
+        codex_restore::disable_startup_update_check(&requested_command, &mut args);
+    }
     let command = prepare_spawn_command(&requested_command, &mut args);
     if let Some(kind) = launch_kind_for_agent(&requested_command, &args) {
         env_map.insert("MYCMUX_LAUNCH_KIND".to_string(), kind.to_string());
@@ -612,6 +615,7 @@ fn create_session_blocking(
         }
     }
     let command = if let Some(mut fresh_args) = codex_executable.as_ref().filter(|_| !codex_report_unavailable && account_context.is_none()).and_then(|exe| exe.fresh_args()) {
+        codex_restore::disable_startup_update_check(&requested_command, &mut fresh_args);
         let fresh_command = prepare_spawn_command(&requested_command, &mut fresh_args);
         wrap_codex_restore(&command, &mut args, &fresh_command, &fresh_args)
     } else if restore_notice {

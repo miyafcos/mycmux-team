@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import type { CliAccountProfile, CliProvider, ProfileUsage } from "../../src/lib/ipc";
+import type { CliAccountProfile, SwitchableCliProvider, ProfileUsage } from "../../src/lib/ipc";
 
 // The whole chain on the real stores, with only the Tauri boundary mocked: an
 // automatic switch waits in the real mutation queue behind another provider's
@@ -61,12 +61,12 @@ import { useAccountAutoSwitchStore } from "../../src/stores/accountAutoSwitchSto
 import { useCliAccountStore } from "../../src/stores/cliAccountStore";
 import { useUsageStore } from "../../src/stores/usageStore";
 
-function profile(id: string, provider: CliProvider = "claude"): CliAccountProfile {
+function profile(id: string, provider: SwitchableCliProvider = "claude"): CliAccountProfile {
   return { id, provider, label: id, email: null, identity_key: id, plan: null, org_name: null,
     captured_at: "2026-09-01T00:00:00Z", last_switched_at: null, needs_relogin: false };
 }
 
-function usage(id: string, pct: number, active = false, provider: CliProvider = "claude"): ProfileUsage {
+function usage(id: string, pct: number, active = false, provider: SwitchableCliProvider = "claude"): ProfileUsage {
   const resets_at = new Date(Date.now() + 3 * 3_600_000).toISOString();
   return { profile_id: id, provider, label: id, email: null, plan: null, registered: true, is_active: active,
     needs_relogin: false, state: "ok", five_hour: { pct, resets_at }, seven_day: { pct: 10, resets_at },

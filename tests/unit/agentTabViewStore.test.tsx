@@ -7,19 +7,19 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}), e
 beforeEach(() => { localStorage.clear(); vi.resetModules(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe("agent tab settings and bounded per-tab choices", () => {
-  it("defaults to conversation, persists both choices and resets missing data on rehydrate", async () => {
+  it("defaults to the terminal, persists both choices and resets missing data on rehydrate", async () => {
     const { useSettingsStore: store } = await import("../../src/stores/settingsStore");
-    expect(store.getState().agentTabContent).toBe("conversation");
-    for (const value of ["terminal", "conversation"] as const) {
+    expect(store.getState().agentTabContent).toBe("terminal");
+    for (const value of ["conversation", "terminal"] as const) {
       store.getState().setAgentTabContent(value);
       expect(JSON.parse(localStorage.getItem("mycmux-settings")!).state.agentTabContent).toBe(value);
       await store.persist.rehydrate();
       expect(store.getState().agentTabContent).toBe(value);
     }
-    store.getState().setAgentTabContent("terminal");
+    store.getState().setAgentTabContent("conversation");
     localStorage.setItem("mycmux-settings", JSON.stringify({ version: 7, state: {} }));
     await store.persist.rehydrate();
-    expect(store.getState().agentTabContent).toBe("conversation");
+    expect(store.getState().agentTabContent).toBe("terminal");
   });
   it.each([null, 1, true, {}, [], "unknown", "Conversation", "terminal", "conversation"])("normalizes persisted and setter value %j", async value => {
     localStorage.setItem("mycmux-settings", JSON.stringify({ version: 7, state: { agentTabContent: value } }));

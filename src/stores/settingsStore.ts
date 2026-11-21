@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { normalizePresendProvider, type PresendReadingProvider } from "../lib/presendReading";
 import { normalizeAgentTabContent, type AgentTabContent } from "./agentTabViewStore";
 import { applyAutomaticStoreUpdate, syncedPersist, updateSyncedPersistedField } from "./syncedPersist";
 import {
@@ -109,6 +110,8 @@ interface SettingsState {
   dispatchStallMinutes: number;
   dispatchWatchdogNotify: boolean;
   paneComposerEnabled: boolean;
+  presendReadingEnabled: boolean;
+  presendReadingProvider: PresendReadingProvider;
   paneFocusMode: PaneFocusMode;
   /** Persisted magnifier routing preference; retain the original storage key. */
   showTerminalHistoryButton: boolean;
@@ -161,6 +164,8 @@ interface SettingsState {
   setDispatchStallMinutes: (v: number) => void;
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
+  setPresendReadingEnabled: (v: boolean) => void;
+  setPresendReadingProvider: (v: PresendReadingProvider) => void;
   setPaneFocusMode: (v: PaneFocusMode) => void;
   setShowTerminalHistoryButton: (v: boolean) => void;
   setConversationHistoryMode: (v: ConversationHistoryMode) => void;
@@ -215,10 +220,12 @@ export const useSettingsStore = create<SettingsState>()(
       dispatchStallMinutes: 45,
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
+      presendReadingEnabled: false,
+      presendReadingProvider: "claude",
       paneFocusMode: "click",
       showTerminalHistoryButton: true,
       conversationHistoryMode: DEFAULT_CONVERSATION_HISTORY_MODE,
-      agentTabContent: "conversation",
+      agentTabContent: "terminal",
       terminalProgressDiagnosticsEnabled: false,
       declaredLaunchEnabled: false,
       codexAppServerExperimentEnabled: false,
@@ -266,6 +273,8 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
+      setPresendReadingEnabled: (v) => set({ presendReadingEnabled: v === true }),
+      setPresendReadingProvider: (v) => set({ presendReadingProvider: normalizePresendProvider(v) }),
       setPaneFocusMode: (v) => set({ paneFocusMode: normalizePaneFocusMode(v) }),
       setShowTerminalHistoryButton: (v) => set({ showTerminalHistoryButton: v }),
       setConversationHistoryMode: (v) => set({ conversationHistoryMode: normalizeConversationHistoryMode(v) }),
@@ -300,7 +309,9 @@ export const useSettingsStore = create<SettingsState>()(
         const merged = { ...current, ...(persisted as Partial<SettingsState> | undefined) };
         merged.conversationHistoryMode = normalizeConversationHistoryMode((persisted as Partial<SettingsState> | undefined)?.conversationHistoryMode);
         const savedAgentTabContent = (persisted as Partial<SettingsState> | undefined)?.agentTabContent;
-        merged.agentTabContent = savedAgentTabContent === undefined ? "conversation" : normalizeAgentTabContent(savedAgentTabContent);
+        merged.agentTabContent = savedAgentTabContent === undefined ? "terminal" : normalizeAgentTabContent(savedAgentTabContent);
+        merged.presendReadingEnabled = merged.presendReadingEnabled === true;
+        merged.presendReadingProvider = normalizePresendProvider(merged.presendReadingProvider);
         merged.agentServiceVisibility = normalizeAgentServiceVisibility(merged.agentServiceVisibility);
         merged.paneFocusMode = normalizePaneFocusMode((persisted as Partial<SettingsState> | undefined)?.paneFocusMode);
         merged.dormancyPressureSettings = normalizeDormancyPressureSettings(merged.dormancyPressureSettings ?? {});

@@ -1,4 +1,7 @@
+import { isComposerPaneTall } from "../../lib/paneComposerVisibility";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { closePaneOperation } from "../../lib/paneCloseOperation";
+import { isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import {
   memo,
   useCallback,
@@ -22,6 +25,7 @@ import { hasTearoutSessionAttachment, useTearoutAttachmentRevision, isTearoutSes
 import { recordPerf } from "../../lib/perfTimeline";
 import PaneTabBar from "./PaneTabBar";
 import { terminalPaneStrings } from "./terminalPaneStrings";
+import { repaintDisplayFromMenu } from "../terminal/manualTerminalDisplay";
 import XTermWrapper, { hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
 import { displayedPaneShortcutSource } from "./webPaneShortcuts";
@@ -137,10 +141,6 @@ function truncatePaneActionError(message: string, max = 96): string {
 }
 
 const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
-/** Below this the pane is too short to spend two lines on an input box. */
-const COMPOSER_MIN_PANE_HEIGHT = 200;
-/** Hysteresis, so a pane resting on the boundary cannot flicker the composer. */
-const COMPOSER_RESTORE_PANE_HEIGHT = 224;
 
 type PaneActivationOptions = {
   focusTerminal?: boolean;
@@ -298,6 +298,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   // A composer costs the pane two lines, which is a bad trade once the pane is
   // short enough that the terminal itself is the scarce thing.
   const composerEnabled = useSettingsStore((state) => state.paneComposerEnabled);
+  const readingEnabled = useSettingsStore(state => state.presendReadingEnabled);
+  const aiEnabled = useAiSettingsStore(state => state.aiEnabled);
+  const readingVisible = readingEnabled && aiEnabled;
   const [paneIsTall, setPaneIsTall] = useState(true);
   const showComposer = composerEnabled && paneIsTall;
   const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
@@ -334,13 +337,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (!root || !composerEnabled) return;
     const observer = new ResizeObserver(([entry]) => {
       const height = entry?.contentRect.height ?? 0;
-      setPaneIsTall((wasTall) => (wasTall
-        ? height >= COMPOSER_MIN_PANE_HEIGHT
-        : height >= COMPOSER_RESTORE_PANE_HEIGHT));
+      setPaneIsTall(wasTall => isComposerPaneTall(height, wasTall, readingVisible));
     });
     observer.observe(root);
     return () => observer.disconnect();
-  }, [composerEnabled]);
+  }, [composerEnabled, readingVisible]);
 
   // so reloads still fire after the browser tab is activated and the terminal
   // sessionId is no longer activeTab.sessionId.
@@ -597,6 +598,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [selectNonTerminalPane, workspaceId, pane.id]);
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
+    if (isPreparingLayoutQuit()) return;
     addTabToPane(workspaceId, pane.id, agentId, type);
     focusController.focusPaneSoon(pane.id);
   }, [workspaceId, pane.id, addTabToPane]);
@@ -608,6 +610,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id]);
 
   const handleSelectTab = useCallback((tabId: string) => {
+    if (isPreparingLayoutQuit()) return;
     recordPerf("pane.select.click", tabId);
     const revision = useUiStore.getState().focusRevision;
     setActivePaneTab(workspaceId, pane.id, tabId);
@@ -628,6 +631,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });
     }
   }, [workspaceId, pane.id, setActivePaneTab]);
+
+  const handleRepaintDisplay = (tab: PaneTab): void => {
+    repaintDisplayFromMenu(tab.sessionId, isPaneVisible && activeTab?.id === tab.id
+      && isTerminalTab(tab) && !isDeclaredTab(tab) && !isTearoutSessionDormant(tab.sessionId));
+  };
 
   const handleZoomToggle = useCallback(() => {
     const currentZoomed = useUiStore.getState().zoomedPaneId;
@@ -885,6 +893,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
+        onRepaintDisplay={handleRepaintDisplay}
         hasTerminalBuffer={hasTerminalBuffer}
       />
       {previewActionError && (

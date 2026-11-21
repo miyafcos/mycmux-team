@@ -13,6 +13,7 @@ import {
   type SplitInsertHint,
 } from "../lib/layoutMetrics";
 import { normalizeWorkspaceColor } from "../lib/workspaceColors";
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 import {
   PersistentLayoutValidationError,
   persistentLayoutEquals,
@@ -582,6 +583,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   reorderWorkspaces: (fromIndex, toIndex) => {
+    if (isPreparingLayoutQuit()) return;
     commitLayoutMutation(set, (state) => {
       if (fromIndex === toIndex) return state;
       const next = [...state.workspaces];
@@ -598,6 +600,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     columnDividerPins,
     rowDividerPinsPerCol,
   ) => {
+    if (isPreparingLayoutQuit()) return;
     commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;

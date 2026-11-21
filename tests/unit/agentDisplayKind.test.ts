@@ -1,9 +1,25 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   COMMAND_DISPLAY_KINDS,
   LAUNCH_TARGET_DISPLAY_KINDS,
+  isPtyDetectableAgentKind,
   resolveDisplayAgentKind,
 } from "../../src/lib/agentDisplayKind";
+
+it("matches the PTY monitor's detectable display kinds", () => {
+  const rust = readFileSync(new URL("../../src-tauri/src/pty/monitor/detection.rs", import.meta.url), "utf8");
+  const typescript = readFileSync(new URL("../../src/lib/agentDisplayKind.ts", import.meta.url), "utf8");
+  const rustMatch = rust.match(/impl DetectedAgentKind\s*\{\s*pub\(crate\) fn display_kind\([^)]*\)[^{]*\{\s*match self\s*\{([^}]+)\}/);
+  const displayKindType = typescript.match(/export type DisplayAgentKind\s*=\s*([^;]+);/);
+  expect(rustMatch).not.toBeNull();
+  expect(displayKindType).not.toBeNull();
+
+  const rustKinds = [...rustMatch![1].matchAll(/=>\s*"([^"]+)"/g)].map(([, kind]) => kind);
+  const displayKinds = [...displayKindType![1].matchAll(/["']([^"']+)["']/g)].map(([, kind]) => kind);
+  expect(rustKinds.length).toBeGreaterThan(0);
+  expect(new Set(displayKinds.filter(isPtyDetectableAgentKind))).toEqual(new Set(rustKinds));
+});
 
 describe("resolveDisplayAgentKind", () => {
   it("maps agy commands to the Antigravity display kind", () => {

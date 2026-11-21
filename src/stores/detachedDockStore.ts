@@ -5,6 +5,7 @@ import { useWorkspaceListStore } from "./workspaceListStore";
 import { paneHeaderInsertionIndex, resolvePaneHeaderTarget, resolvePaneDropZone } from "../lib/paneHandoff";
 import type { DetachedReturnTarget } from "../lib/detachedPane";
 import { WINDOW_REGISTRY_CHANGED_EVENT } from "../lib/ipc";
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 
 export const DETACHED_DOCK_REQUEST_EVENT = "mycmux://detached-dock-request";
 
@@ -157,7 +158,7 @@ export function listenForDetachedDock(): () => void {
       useDetachedDockStore.getState().setTarget(target);
       if (payload.phase !== "end") return;
       clear();
-      if (!target) return;
+      if (!target || isPreparingLayoutQuit()) return;
       // Record placement before the source publishes and releases its workspace.
       const placement: DetachedReturnTarget = target.kind === "tab-index"
         ? { ...target, kind: "pane" } : target;

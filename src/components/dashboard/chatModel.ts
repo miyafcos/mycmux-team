@@ -1,5 +1,27 @@
+import { shallow } from "zustand/shallow";
 import { printableText } from "../../stores/recentInputStore";
 import type { SemanticEventEnvelope } from "../../lib/livebrief";
+
+export function sameTranscriptEvents(
+  previous: readonly SemanticEventEnvelope[],
+  next: readonly SemanticEventEnvelope[],
+): boolean {
+  return previous === next || (previous.length === next.length && previous.every((event, index) => {
+    const other = next[index];
+    return event === other || (
+      event.eventId === other.eventId
+      && event.sourceRevision === other.sourceRevision
+      && event.occurredAt === other.occurredAt
+      && event.sourceByteStart === other.sourceByteStart
+      && event.sourceByteEnd === other.sourceByteEnd
+      && (shallow(event.kind, other.kind) || (
+        event.kind.type === "question"
+        && other.kind.type === "question"
+        && JSON.stringify(event.kind) === JSON.stringify(other.kind)
+      ))
+    );
+  }));
+}
 
 export interface ChatMessage {
   id: string;
@@ -114,18 +136,22 @@ export function userTurnsFromRows(rows: readonly ChatTranscriptRow[]): ChatMessa
   ));
 }
 
-/** 0-based index of the current user turn. Empty input returns -1. */
+/** Picks the current turn from tops ordered by the vertical layout. */
 export function userTurnIndexFromTops(
-  tops: readonly number[],
+  turnCount: number,
   containerTop: number,
   followingBottom: boolean,
+  topAt: (index: number) => number,
 ): number {
-  if (!tops.length) return -1;
-  if (followingBottom) return tops.length - 1;
-  let index = 0;
-  for (let i = 0; i < tops.length; i += 1) {
-    if (tops[i] <= containerTop) index = i;
-    else break;
+  if (!turnCount) return -1;
+  if (followingBottom) return turnCount - 1;
+  // Search for the first turn below the top. The first turn is the fallback.
+  let low = 1;
+  let high = turnCount;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (topAt(middle) <= containerTop) low = middle + 1;
+    else high = middle;
   }
-  return index;
+  return low - 1;
 }

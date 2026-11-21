@@ -128,7 +128,11 @@ describe("shared segment import contract", () => {
     expect(picker).toContain("<BackgroundPresetSegment");
     expect(panel).toContain("<BackgroundPresetSegment");
     expect(picker).not.toContain("solidSurfacesLabel");
-    expect(panel).not.toMatch(/type="checkbox"/);
+    // The scene owns one celebration toggle; surface presets still use the shared segment.
+    const checkboxes = panel.match(/<input\s+type="checkbox"[\s\S]*?\/>/g) ?? [];
+    expect(checkboxes).toHaveLength(1);
+    expect(checkboxes[0]).toContain("checked={background.completionFireworks ?? true}");
+    expect(checkboxes[0]).not.toContain("solidSurfaces");
   });
 });
 

@@ -287,7 +287,32 @@ struct FrontendFlowState {
     closing: bool,
 }
 
+/// Only the PTY forwarder reserves deliveries. Capture its diagnostic sample
+/// while the existing reservation lock is held; a log transition reads it
+/// synchronously on that same forwarder.
+#[derive(Default)]
+struct FrontendDropSample {
+    reason: AtomicUsize,
+}
+
+impl FrontendDropSample {
+    const DETACHED: usize = 0;
+    const STALE_ACK: usize = 1;
+    const HIDDEN_BUDGET: usize = 2;
+    const HIDDEN_INFLIGHT: usize = 3;
+    const REASONS: [&'static str; 4] = ["detached", "stale_ack", "hidden_budget", "hidden_inflight"];
+
+    fn record(&self, reason: usize) {
+        self.reason.store(reason, Ordering::Relaxed);
+    }
+
+    fn fields(&self) -> String {
+        format!("reason={}", Self::REASONS[self.reason.load(Ordering::Relaxed)])
+    }
+}
+
 struct FrontendFlow {
+    diagnostic_drop: FrontendDropSample,
     inner: Mutex<FrontendFlowState>,
     notify: Notify,
 }
@@ -311,6 +336,7 @@ enum FlowSendError {
 impl FrontendFlow {
     fn new(data_channel: Channel<InvokeResponseBody>) -> Self {
         Self {
+            diagnostic_drop: FrontendDropSample::default(),
             inner: Mutex::new(FrontendFlowState {
                 data_channel,
                 generation: 1,
@@ -340,11 +366,14 @@ impl FrontendFlow {
                     return FlowPermit::Closed;
                 }
                 if !st.attached || st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
+                    let cause = if st.attached { FrontendDropSample::STALE_ACK } else { FrontendDropSample::DETACHED };
+                    self.diagnostic_drop.record(cause);
                     st.dropped_since_send = true;
                     return FlowPermit::AutoConsume;
                 }
                 Self::forgive_expired_locked(&mut st);
                 if st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
+                    self.diagnostic_drop.record(FrontendDropSample::STALE_ACK);
                     st.dropped_since_send = true;
                     return FlowPermit::AutoConsume;
                 }
@@ -358,6 +387,9 @@ impl FrontendFlow {
                     // in-flight window both allow it, and drop to AutoConsume the
                     // moment either runs out.
                     if !under_bytes || !under_batches || st.hidden_budget_bytes < bytes {
+                        let cause = if st.hidden_budget_bytes < bytes { FrontendDropSample::HIDDEN_BUDGET }
+                            else { FrontendDropSample::HIDDEN_INFLIGHT };
+                        self.diagnostic_drop.record(cause);
                         st.dropped_since_send = true;
                         return FlowPermit::AutoConsume;
                     }
@@ -908,7 +940,12 @@ impl PtySession {
                 let permit = forwarder_flow.reserve(batch_len).await;
                 record_flow(&forwarder_sid, FlowStage::Reserve, reserve_trace, batch_len);
                 if let Some(transition) = drop_log.transition(matches!(&permit, FlowPermit::AutoConsume), Instant::now()) {
-                    crate::watchdog::log_with_memory(format!("[pty] session={forwarder_sid} {transition}"));
+                    let fields = match &permit {
+                        FlowPermit::AutoConsume => forwarder_flow.diagnostic_drop.fields(),
+                        FlowPermit::Closed => "outcome=closed".to_string(),
+                        FlowPermit::Send { .. } => "outcome=resumed".to_string(),
+                    };
+                    crate::watchdog::log_with_memory(format!("[pty] session={forwarder_sid} {transition} |diag-meta| {fields}"));
                 }
                 match permit {
                     FlowPermit::Closed => break,
@@ -1660,6 +1697,36 @@ mod tests {
             st.attached,
             st.stale_timeouts,
         )
+    }
+
+    #[tokio::test]
+    async fn drop_diagnostics_keep_only_the_reservation_reason() {
+        let flow = FrontendFlow::new(test_channel());
+        for (attached, stale, visible, budget, inflight, reason) in [
+            (false, 0, true, 0, 0, "detached"),
+            (true, FRONTEND_STALE_TIMEOUTS, true, 0, 0, "stale_ack"),
+            (true, 0, false, 0, 0, "hidden_budget"),
+            (true, 0, false, 128, FRONTEND_MAX_INFLIGHT_BYTES, "hidden_inflight"),
+        ] {
+            {
+                let mut st = flow.inner.lock().unwrap();
+                st.attached = attached;
+                st.stale_timeouts = stale;
+                st.visible = visible;
+                st.hidden_budget_bytes = budget;
+                st.inflight_bytes = inflight;
+            }
+            assert_auto_consume(flow.reserve(1).await);
+            assert_eq!(flow.diagnostic_drop.fields(), format!("reason={reason}"));
+        }
+        {
+            let mut st = flow.inner.lock().unwrap();
+            st.visible = true;
+            st.inflight_bytes = 0;
+        }
+        let (_, _, resync) = expect_send_with_resync(flow.reserve(1).await);
+        assert!(resync);
+        assert_eq!(flow.diagnostic_drop.fields(), "reason=hidden_inflight");
     }
 
     #[tokio::test]

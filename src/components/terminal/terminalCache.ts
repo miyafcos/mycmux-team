@@ -52,6 +52,14 @@ export function beginTerminalBufferWrite(sessionId: string, term: Terminal, gene
   return ticket.finish;
 }
 
+export function terminalHeartbeatCounts() {
+  const cached = new Set([...termCache.values()].map(entry => entry.term));
+  const terms = new Set([...liveTerms.values(), ...cached]);
+  let pendingTickets = 0;
+  for (const term of terms) pendingTickets += submittedWrites.get(term)?.size ?? 0;
+  return { liveCount: terms.size - cached.size, cacheCount: cached.size, pendingTickets };
+}
+
 export function cancelTerminalBufferWrites(term: Terminal): void {
   for (const ticket of [...submittedWrites.get(term) ?? []]) ticket.finish(false);
 }
@@ -99,7 +107,7 @@ export function isTerminalBufferWritePending(sessionId: string): boolean {
 export const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 export const terminalWriteCounters = new Map<string, number>();
 export const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();
-export const terminalRawTailBySession = new Map<string, Uint8Array>();
+export const terminalRawTailBySession = new Map<string, TerminalRawTail>();
 export const terminalScrollbackResyncNeeded = new Set<string>();
 export const terminalInitialReplayMarkers = new Map<string, IMarker>();
 
@@ -353,30 +361,56 @@ export function stashDeferredTerminalBatches(
   }
 }
 
+class TerminalRawTail {
+  private buffer?: Uint8Array;
+  private end = 0;
+  private length = 0;
+
+  append(chunk: Uint8Array): void {
+    if (!chunk.length) return;
+    const buffer = this.buffer ??= new Uint8Array(TERMINAL_RAW_TAIL_MAX_BYTES);
+    if (chunk.length >= buffer.length) {
+      buffer.set(chunk.subarray(chunk.length - buffer.length));
+      this.length = buffer.length;
+      this.end = 0;
+      return;
+    }
+    const first = Math.min(chunk.length, buffer.length - this.end);
+    if (first === chunk.length) buffer.set(chunk, this.end);
+    else {
+      buffer.set(chunk.subarray(0, first), this.end);
+      buffer.set(chunk.subarray(first));
+    }
+    this.end = (this.end + chunk.length) % buffer.length;
+    this.length = Math.min(this.length + chunk.length, buffer.length);
+  }
+
+  snapshot(): Uint8Array {
+    const buffer = this.buffer;
+    if (!buffer) return new Uint8Array();
+    if (this.length < buffer.length || this.end === 0) return buffer.slice(0, this.length);
+    const ordered = new Uint8Array(this.length);
+    ordered.set(buffer.subarray(this.end));
+    ordered.set(buffer.subarray(0, this.end), buffer.length - this.end);
+    return ordered;
+  }
+}
+
 export function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void {
   if (chunk.byteLength === 0) return;
   // Do not resurrect the raw tail for a session that was evicted while mounted;
   // its Terminal is about to be disposed and this entry would leak (FE-N1).
   if (isSessionEvictedWhileMounted(sessionId)) return;
-  const previous = terminalRawTailBySession.get(sessionId);
-  const totalLength = (previous?.byteLength ?? 0) + chunk.byteLength;
-  const combined = new Uint8Array(Math.min(totalLength, TERMINAL_RAW_TAIL_MAX_BYTES));
-  let writeOffset = combined.length;
-  const chunkStart = Math.max(0, chunk.byteLength - writeOffset);
-  const chunkSlice = chunk.slice(chunkStart);
-  writeOffset -= chunkSlice.byteLength;
-  combined.set(chunkSlice, writeOffset);
-  if (previous && writeOffset > 0) {
-    const previousStart = Math.max(0, previous.byteLength - writeOffset);
-    combined.set(previous.slice(previousStart), 0);
-  }
-  terminalRawTailBySession.set(sessionId, combined);
+  let tail = terminalRawTailBySession.get(sessionId);
+  if (!tail) terminalRawTailBySession.set(sessionId, tail = new TerminalRawTail());
+  tail.append(chunk);
 }
 
 export function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void {
   if (isSessionEvictedWhileMounted(sessionId)) return;
-  const start = Math.max(0, scrollback.byteLength - TERMINAL_RAW_TAIL_MAX_BYTES);
-  terminalRawTailBySession.set(sessionId, scrollback.slice(start));
+  const tail = new TerminalRawTail();
+  tail.append(scrollback);
+  terminalRawTailBySession.set(sessionId, tail);
 }
 
 export function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number {

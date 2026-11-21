@@ -29,22 +29,22 @@ import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
-import type { CliAccountProfile, CliProvider, ProfileUsage, TabAccountEvidence } from "../../src/lib/ipc";
+import type { CliAccountProfile, SwitchableCliProvider, ProfileUsage, TabAccountEvidence } from "../../src/lib/ipc";
 import type { PaneTab, Workspace } from "../../src/types";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement;
 let root: Root;
 let current: TabAccountEvidence | null;
 const checked = new Date(2026, 10, 12, 9, 30).toISOString();
-const profile = (provider: CliProvider, id = "selected", label = "仕事用"): CliAccountProfile => ({
+const profile = (provider: SwitchableCliProvider, id = "selected", label = "仕事用"): CliAccountProfile => ({
   id, provider, label, email: "fixture@example.test", identity_key: "fixture", plan: null,
   org_name: null, captured_at: "", last_switched_at: null, needs_relogin: false,
 });
-const tab = (provider: CliProvider = "claude", overrides: Partial<PaneTab> = {}): PaneTab => ({
+const tab = (provider: SwitchableCliProvider = "claude", overrides: Partial<PaneTab> = {}): PaneTab => ({
   id: "tab", sessionId: "pty", agentId: provider === "claude" ? "claude-code" : provider,
   agentKind: provider, type: "terminal", agentAccountId: "selected", ...overrides,
 });
-const evidence = (result: TabAccountEvidence["result"] = "verified", provider: CliProvider = "claude"): TabAccountEvidence => ({
+const evidence = (result: TabAccountEvidence["result"] = "verified", provider: SwitchableCliProvider = "claude"): TabAccountEvidence => ({
   provider, profile_id: "selected", method: provider === "claude" ? "claude_launch_token" : "account_home",
   result, checked_at: checked, launched_at: checked, fingerprint: provider === "claude" ? "0123456789" : undefined,
   owner_email: provider === "claude" ? undefined : "owner@example.test", owner_method: provider === "claude" ? "profile" : undefined,

@@ -12,7 +12,7 @@ import {
   type CliLiveLogin,
   type CliOrphanAction,
   type CliOrphanSnapshot,
-  type CliProvider,
+  type SwitchableCliProvider,
   type CliSwitchResult,
 } from "../lib/ipc";
 import { cliAccountMessage } from "../lib/cliAccounts";
@@ -24,7 +24,7 @@ import {
 import { useToastStore } from "./toastStore";
 import { useUsageStore } from "./usageStore";
 
-type BusyByProvider = Record<CliProvider, string | null>;
+type BusyByProvider = Record<SwitchableCliProvider, string | null>;
 
 export type SwitchExecution =
   | { kind: "switched"; result: CliSwitchResult }
@@ -48,11 +48,11 @@ export interface CliAccountStoreState {
   busyByProvider: BusyByProvider;
   lastSwitchResult: CliSwitchResult | null;
   fetch(): Promise<void>;
-  capture(provider: CliProvider, label?: string): Promise<CliAccountProfile | null>;
-  switchTo(provider: CliProvider, profileId: string, shouldSwitch?: () => boolean): Promise<CliSwitchResult | null>;
-  switchToForApi(provider: CliProvider, profileId: string, deadline: number): Promise<SwitchExecution>;
-  remove(provider: CliProvider, profileId: string): Promise<boolean>;
-  rename(provider: CliProvider, profileId: string, label: string): Promise<boolean>;
+  capture(provider: SwitchableCliProvider, label?: string): Promise<CliAccountProfile | null>;
+  switchTo(provider: SwitchableCliProvider, profileId: string, shouldSwitch?: () => boolean): Promise<CliSwitchResult | null>;
+  switchToForApi(provider: SwitchableCliProvider, profileId: string, deadline: number): Promise<SwitchExecution>;
+  remove(provider: SwitchableCliProvider, profileId: string): Promise<boolean>;
+  rename(provider: SwitchableCliProvider, profileId: string, label: string): Promise<boolean>;
   resolveOrphan(orphan: CliOrphanSnapshot, action: CliOrphanAction, label?: string): Promise<boolean>;
   /**
    * Reserve a provider for an isolated CLI login. Logins can take minutes, so
@@ -60,7 +60,7 @@ export interface CliAccountStoreState {
    * switch and capture for the whole wait. They borrow `busyByProvider`
    * instead, which is what actually excludes concurrent work per provider.
    */
-  setLoginBusy(provider: CliProvider, key: string | null): void;
+  setLoginBusy(provider: SwitchableCliProvider, key: string | null): void;
   dismissOperationError(): void;
   dismissSwitchWarnings(): void;
 }
@@ -84,7 +84,7 @@ let switchSeq = 0;
  */
 function scheduleSwitchRevertCheck(
   get: () => CliAccountStoreState,
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   targetIdentityKey: string | null | undefined,
   label: string,
 ): void {
@@ -113,12 +113,12 @@ function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
-  const setBusy = (provider: CliProvider, value: string | null) => {
+  const setBusy = (provider: SwitchableCliProvider, value: string | null) => {
     set((state) => ({ busyByProvider: { ...state.busyByProvider, [provider]: value } }));
   };
 
   const executeSwitch = async (
-    provider: CliProvider, profileId: string,
+    provider: SwitchableCliProvider, profileId: string,
     options: { apiRequest?: boolean; deadline?: number; shouldSwitch?: () => boolean },
   ): Promise<SwitchExecution> => {
     if (get().busyByProvider[provider] !== null) {
@@ -149,7 +149,7 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
       );
       await Promise.all([get().fetch(), options.apiRequest
         ? useUsageStore.getState().fetch(false, "account.switch")
-        : useUsageStore.getState().fetch()]);
+        : useUsageStore.getState().fetch(false, undefined, { afterSwitch: true })]);
       scheduleSwitchRevertCheck(get, provider, result.profile.identity_key, result.profile.label);
       return { kind: "switched", result };
     } catch (error) {
@@ -215,7 +215,7 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
         // Refresh usage too: a capture retitles the row (live:* -> profile id),
         // and leaving the usage list on the old ids for up to one poll interval
         // reads as the panel "losing" the account it just registered.
-        await Promise.all([get().fetch(), useUsageStore.getState().fetch()]);
+        await Promise.all([get().fetch(), useUsageStore.getState().fetch(false, undefined, { afterSwitch: true })]);
         return profile;
       } catch (error) {
         set({ operationError: cliAccountMessage(error) });

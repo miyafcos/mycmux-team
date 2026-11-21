@@ -2,9 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../src/types";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useComposerStore } from "../../src/stores/composerStore";
 import { getClosedPaneCount, popClosedPane } from "../../src/stores/closedPaneStore";
 import { useUiStore } from "../../src/stores/uiStore";
+import { presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
 import { fixture } from "./fixtures/paneClose";
+import { applySweep, scanTabs } from "../../src/components/layout/tabSweep";
+import { handleSocketCommand } from "../../src/components/layout/socketCommands";
+import { toConfig } from "../../src/components/layout/SocketListener";
+import { confirmPtyExit, publishCodexRestoreNoticeEpoch } from "../../src/lib/codexRestoreLifecycle";
 
 const mocks = vi.hoisted(() => ({ kill: vi.fn(), confirm: vi.fn(), evict: vi.fn(), toast: vi.fn(), dismiss: vi.fn() }));
 vi.mock("../../src/lib/ipc", async (original) => ({ ...await original<object>(), killSession: mocks.kill }));
@@ -32,6 +38,43 @@ beforeEach(() => {
   usePaneMetadataStore.setState({ metadata: { "pty-0-0": { cwd: "C:/fixture", processIsShell: false } }, volatileMetadata: {} });
 });
 afterEach(() => vi.useRealTimers());
+
+it("saves dormant Codex siblings when the exited foreground tab is cleaned up", async () => {
+  const layout = fixture(2, 3);
+  const pane = layout.panes[0];
+  pane.tabs = pane.tabs.map((tab) => ({ ...tab, agentId: "codex", agentKind: "codex" }));
+  layout.panes[1].tabs = layout.panes[1].tabs.slice(0, 1);
+  replace(layout);
+  const survivingPane = layout.panes[1].tabs[0].sessionId;
+  publishCodexRestoreNoticeEpoch(pane.tabs[0].sessionId, 901);
+  confirmPtyExit(pane.tabs[0].sessionId, 901);
+
+  const scan = (id?: string) => scanTabs({
+    workspaces: useWorkspaceListStore.getState().workspaces,
+    activeWorkspaceId: layout.id,
+    activeSessionId: pane.tabs[0].sessionId,
+    processMetadata: {
+      [survivingPane]: { session_id: survivingPane, cwd: "C:/fixture", agent_active: true, process_status: "working" },
+    },
+    processMetadataAvailable: true,
+    metadata: {},
+    lastOutputBySession: {},
+    isScreenObserved: () => false,
+    readTail: async () => [],
+    now: 1,
+  }, id === undefined ? undefined : new Set([id]));
+  const planned = await scan();
+  const result = await applySweep({ closeDeadTabIds: planned.dead.map(tab => tab.id) },
+    { scan, command: handleSocketCommand });
+  const written = toConfig(useWorkspaceListStore.getState().getWorkspace(layout.id)!);
+
+  expect(written.panes.map(pane => [pane.pane_id, pane.tabs?.map(tab => tab.tab_id)])).toEqual([
+    ["p0", ["t0-1", "t0-2"]],
+    ["p1", ["t1-0"]],
+  ]);
+  expect(result).toMatchObject({ closed: 1, errors: [] });
+  expect(mocks.kill.mock.calls).toEqual([["pty-0-0"]]);
+});
 
 describe("C1-C3 close transaction", () => {
   it("passes the operation kind and selected preflight tabs to confirmation", async () => {
@@ -75,6 +118,44 @@ describe("C1-C3 close transaction", () => {
   it("CLI remains explicit and never asks", async () => {
     expect(await closePaneOperation(target, "cli")).toMatchObject({ status: "closed" });
     expect(mocks.confirm).not.toHaveBeenCalled(); expect(mocks.kill).toHaveBeenCalledOnce();
+  });
+
+  it("drops pre-send state only after the owning tab closes", async () => {
+    const closedSession = "pty-0-0";
+    const openSession = "pty-1-0";
+    setPresendTabEnabled(closedSession, false);
+    setPresendTabEnabled(openSession, false);
+    mocks.kill.mockRejectedValueOnce(new Error("denied"));
+    expect(await closePaneOperation(target, "cli")).toMatchObject({ status: "failed" });
+    expect(presendTab(closedSession)?.enabled).toBe(false);
+    expect(await closePaneOperation(target, "cli")).toMatchObject({ status: "closed" });
+    expect(presendTab(closedSession)).toBeUndefined();
+    expect(presendTab(openSession)?.enabled).toBe(false);
+  });
+
+  it("clears only the shared draft of a successfully closed PTY", async () => {
+    const composer = useComposerStore.getState();
+    const closedSession = "pty-0-0";
+    const openSession = "pty-1-0";
+    composer.setDraft(closedSession, "draft in the closing tab");
+    composer.setDraft(openSession, "draft in the other tab");
+    const kill = deferred();
+    mocks.kill.mockReturnValueOnce(kill.promise);
+    try {
+      const closing = closePaneOperation(target, "cli");
+      await vi.waitFor(() => expect(mocks.kill).toHaveBeenCalledOnce());
+      expect(useComposerStore.getState().draftBySession[closedSession]).toBe("draft in the closing tab");
+      kill.reject(new Error("denied"));
+      expect(await closing).toMatchObject({ status: "failed" });
+      expect(useComposerStore.getState().draftBySession[closedSession]).toBe("draft in the closing tab");
+
+      expect(await closePaneOperation(target, "cli")).toMatchObject({ status: "closed" });
+      expect(useComposerStore.getState().draftBySession).not.toHaveProperty(closedSession);
+      expect(useComposerStore.getState().draftBySession[openSession]).toBe("draft in the other tab");
+    } finally {
+      composer.clearDraft(closedSession);
+      composer.clearDraft(openSession);
+    }
   });
 
   it("keeps live UI, metadata, cache and history when termination fails, then retries", async () => {

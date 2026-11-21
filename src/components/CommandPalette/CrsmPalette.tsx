@@ -17,6 +17,7 @@ import {
 } from "../../stores/workspaceStore";
 import { paneContainsSession, useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { createWorkspaceAtCwd } from "../../lib/workspaceBootstrap";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { KIND_COLORS } from "../../lib/agentKindColors";
@@ -911,7 +912,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   }, [closing, open]);
 
   async function openSelected(sessionToOpen = selected): Promise<void> {
-    if (!sessionToOpen || !enabledTargets.includes(targetKind)) return;
+    if (isPreparingLayoutQuit() || !sessionToOpen || !enabledTargets.includes(targetKind)) return;
     let workspace = activeWorkspace;
     if (!workspace) {
       // A window with no workspace — what the Dock opens — had nowhere to put
@@ -924,6 +925,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     const anchorPane = workspace.panes.find((pane) => pane.sessionId === activePaneId)
       ?? workspace.panes[0];
     if (!anchorPane) return;
+    const finish = beginLayoutOperation()!;
     setError(null);
 
     try {
@@ -991,6 +993,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      finish();
     }
   }
 

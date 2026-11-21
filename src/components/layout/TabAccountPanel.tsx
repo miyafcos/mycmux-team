@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { X } from "lucide-react";
-import type { CliProvider } from "../../lib/ipc";
+import type { SwitchableCliProvider } from "../../lib/ipc";
 import { recheckTabAccount } from "../../lib/ipc";
 import { formatPct } from "../../lib/accountRows";
 import { resolveTabMark } from "../../lib/tabMark";
@@ -12,7 +12,7 @@ import { useTabAccountEvidence } from "./useTabAccountEvidence";
 import { accountEvidenceColor, accountEvidenceText, accountRecheckNotice, accountUsageText,
   defaultTabAccountText, tabAccountPanelTitle, type AccountRecheckNotice } from "./tabAccountStrings";
 
-export function tabAccountProvider(tab?: PaneTab, liveKind?: string | null): CliProvider | null {
+export function tabAccountProvider(tab?: PaneTab, liveKind?: string | null): SwitchableCliProvider | null {
   if (!tab || (tab.type !== undefined && tab.type !== "terminal")) return null;
   const kind = resolveTabMark(tab, liveKind ?? undefined)?.kind ?? resolveTabMark(tab)?.kind
     ?? (tab.agentId === "claude-code" ? "claude" : tab.agentId);
@@ -22,7 +22,7 @@ const buttonStyle: CSSProperties = {
   font: "inherit", padding: "4px 8px", border: "1px solid var(--cmux-border)",
   borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", background: "var(--cmux-surface)",
 };
-export function TabAccountPanel({ tab, provider, onClose }: { tab: PaneTab; provider: CliProvider; onClose: () => void }) {
+export function TabAccountPanel({ tab, provider, onClose }: { tab: PaneTab; provider: SwitchableCliProvider; onClose: () => void }) {
   const profiles = useCliAccountStore(state => state.profiles);
   const globalId = useCliAccountStore(state => state.active[provider]);
   const profile = profiles.find(profile => profile.id === tab.agentAccountId && profile.provider === provider);

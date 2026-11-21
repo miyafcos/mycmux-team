@@ -1,6 +1,7 @@
 import { createWorkspaceAtCwd, workspaceNameFromCwd } from "./workspaceBootstrap";
 import { previewArtifactUriForSessionV2 } from "./ipc";
 import { isMainWindow } from "./windowContext";
+import { isPreparingLayoutQuit } from "./layoutQuit";
 import { useDashboardViewStore } from "../stores/dashboardViewStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUiStore } from "../stores/uiStore";
@@ -58,7 +59,7 @@ const liveDependencies: OpenPathsDependencies = {
 
 /** Keep the source pane fixed while opening a batch; previews may take focus. */
 export async function openPathsInMainWindow(paths: string[], deps = liveDependencies): Promise<void> {
-  if (!deps.main() || paths.length === 0) return;
+  if (isPreparingLayoutQuit() || !deps.main() || paths.length === 0) return;
   try {
     if (!deps.selection().workspaces.length) deps.createWorkspace(paths[0]);
   } catch (error) {
@@ -70,6 +71,7 @@ export async function openPathsInMainWindow(paths: string[], deps = liveDependen
     try {
       if (!target) throw new Error("No workspace pane is available");
       const info = await deps.preview(target.sessionId, path);
+      if (isPreparingLayoutQuit()) return;
       deps.openPreview(target.workspaceId, target.paneId, info);
       deps.showWorkspace();
     } catch (error) {

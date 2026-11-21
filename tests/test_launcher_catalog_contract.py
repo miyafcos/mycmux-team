@@ -30,22 +30,47 @@ CATALOG = ROOT / "src" / "lib" / "agentCatalog.ts"
 LAUNCHER_PS1 = ROOT / "src-tauri" / "src" / "launcher.ps1"
 LAUNCHER_SH = ROOT / "src-tauri" / "src" / "launcher.sh"
 
-# SPEC-L: verified CLI catalogs on 2026-11-12 (id, exact display label).
+# Fixed model snapshots from the checked CLIs (id, display label).
 REFRESHED_MODELS = {
+    "codex": [
+        ("gpt-6.2-sol", "Sol (6.2)"),
+        ("gpt-6.2-astra", "Astra (6.2)"),
+        ("gpt-6.1-terra", "Terra (6.1)"),
+        ("gpt-6.1-sol", "Sol (6.1)"),
+        ("gpt-6-astra", "Astra (6 flagship)"),
+        ("gpt-6-sol", "Sol (6)"),
+        ("gpt-6-luna", "Luna (6 light)"),
+        ("gpt-5.6-sol", "Sol (5.6)"),
+        ("gpt-5.6-terra", "Terra (5.6)"),
+        ("gpt-5.6-luna", "Luna (5.6)"),
+    ],
     "agy": [
-        ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
+        ("gemini-4-carbon-high", "Gemini 4 Carbon (High)"),
+        ("gemini-4-carbon-low", "Gemini 4 Carbon (Low)"),
         ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
         ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"),
+        ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+        ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+        ("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+        ("gemini-pro-orchestrator", "Orchestrator (Carbon)"),
+        ("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
         ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
         ("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
         ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
-        ("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
-        ("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
-        ("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
-        ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
-        ("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
-        ("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"),
+        ("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"),
         ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+    ],
+    "omp": [
+        ("openai-codex/gpt-5.6-luna", "Luna (5.6)"),
+        ("openai-codex/gpt-5.6-sol", "Sol (5.6)"),
+        ("openai-codex/gpt-5.6-terra", "Terra (5.6)"),
+        ("openai-codex/gpt-6-astra", "Astra (6 flagship)"),
+        ("openai-codex/gpt-6-luna", "Luna (6 light)"),
+        ("openai-codex/gpt-6-sol", "Sol (6)"),
     ],
     "grok": [
         ("grok-4.7", "Grok 4.7"),
@@ -116,14 +141,22 @@ def catalog_entries() -> list[dict[str, str]]:
 
 
 @lru_cache(maxsize=1)
+def catalog_model_pairs() -> dict[str, list[tuple[str, str]]]:
+    return {
+        name: re.findall(r'\{ value: "([^"]*)", label: "([^"]*)" \}', block)
+        for name, block in re.findall(
+            r"const (\w+): readonly ModelChoice\[\] = \[(.*?)\n\];", read(CATALOG), re.S
+        )
+    }
+
+
+@lru_cache(maxsize=1)
 def catalog_choice_lists() -> dict[str, tuple[str, ...]]:
     """The shared model / effort consts, as the values they put on a command line."""
     source = read(CATALOG)
     lists: dict[str, tuple[str, ...]] = {"NO_CHOICES": (), "NO_EFFORTS": ()}
-    for name, block in re.findall(
-        r"const (\w+): readonly ModelChoice\[\] = \[(.*?)\n\];", source, re.S
-    ):
-        lists[name] = tuple(re.findall(r'value: "([^"]+)"', block))
+    for name, choices in catalog_model_pairs().items():
+        lists[name] = tuple(value for value, _ in choices)
     for name, block in re.findall(r"const (\w+) = \[(.*?)\] as const;", source, re.S):
         lists[name] = tuple(re.findall(r'"([^"]+)"', block))
     assert len(lists) > 4, f"AGENT_CATALOG choice lists parsed thin: {sorted(lists)}"
@@ -138,6 +171,7 @@ def catalog_choices_by_target() -> dict[str, dict[str, tuple[str, ...]]]:
             continue
         out[entry["target"]] = {
             "models": lists[entry["models_ref"]],
+            "labels": tuple(label for _, label in catalog_model_pairs().get(entry["models_ref"], [])),
             "efforts": lists[entry["efforts_ref"]],
         }
     assert out, "no agent rows carried model/effort lists"
@@ -277,12 +311,13 @@ def powershell_spec_catalog() -> dict[str, dict[str, list[str]]]:
     harness = r"""
 $src = Get-Content -LiteralPath $env:MYCMUX_LAUNCHER_PS1 -Raw -Encoding utf8
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+$functions = @("New-MycmuxModelChoice", "Get-MycmuxLaunchSpecValue")
 $fn = $ast.FindAll({
   param($n)
-  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "New-MycmuxModelChoice"
+  $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $functions -contains $n.Name
 }, $true)
-if ($fn.Count -ne 1) { throw "New-MycmuxModelChoice not found" }
-Invoke-Expression $fn[0].Extent.Text
+if ($fn.Count -ne $functions.Count) { throw "model choice or validator function not found" }
+foreach ($f in $fn) { Invoke-Expression $f.Extent.Text }
 $want = @(
   "ClaudeModels","CodexModels","AgyModels","GrokModels","OmpModels","CursorModels",
   "ClaudeEfforts","CodexEfforts","AgyEfforts","GrokEfforts","OmpEfforts","LaunchSpecCatalog"
@@ -295,6 +330,11 @@ foreach ($a in $ast.FindAll({
 }
 $out = @{}
 foreach ($key in $LaunchSpecCatalog.Keys) {
+  foreach ($choice in $LaunchSpecCatalog[$key].Models) {
+    if ((Get-MycmuxLaunchSpecValue $choice.Value) -cne $choice.Value) {
+      throw "launcher.ps1 rejects a catalog model: $($choice.Value)"
+    }
+  }
   $out[$key] = @{
     models = @($LaunchSpecCatalog[$key].Models | ForEach-Object { $_.Value })
     labels = @($LaunchSpecCatalog[$key].Models | ForEach-Object { $_.Label })
@@ -325,13 +365,18 @@ def shell_spec_catalog() -> dict[str, dict[str, list[str]]]:
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("bash is not available")
-    functions = extract_named_sh_functions(["__spec_models_for", "__spec_efforts_for"])
+    functions = extract_named_sh_functions(["__spec_models_for", "__spec_efforts_for", "__launch_spec_value"])
     targets = sorted(set(catalog_choices_by_target()) | LAUNCHER_ONLY_SPEC_TARGETS)
     script = [functions]
     for target in targets:
         script.append(
             f'echo "== {target} models"\n'
-            f"__spec_models_for {shlex.quote(target)}\n"
+            "while IFS='|' read -r label value; do\n"
+            '  if [ "$(__launch_spec_value "$value")" != "$value" ]; then\n'
+            '    printf "launcher.sh rejects a catalog model: %s\\n" "$value" >&2; exit 1\n'
+            "  fi\n"
+            "  printf '%s|%s\\n' \"$label\" \"$value\"\n"
+            f"done < <(__spec_models_for {shlex.quote(target)})\n"
             f'echo "== {target} efforts"\n'
             f"__spec_efforts_for {shlex.quote(target)}\n"
         )
@@ -368,43 +413,91 @@ def extract_named_sh_functions(names: list[str]) -> str:
     return "\n\n".join(chunks)
 
 
-def test_the_menu_offers_the_same_models_and_efforts_as_the_dialog() -> None:
-    """Three copies of the list is what caused the drift; this pins them together."""
+def assert_fixed_model_labels_have_no_selection_state(labels: list[str] | tuple[str, ...]) -> None:
+    for label in labels:
+        assert re.search(r"\((?:current|default)\)", label, re.I) is None, label
+
+
+def assert_spec_catalog_matches_gui(name: str, catalog: dict[str, dict[str, list[str]]]) -> None:
     expected = catalog_choices_by_target()
+    assert sorted(set(catalog) - LAUNCHER_ONLY_TARGETS) == sorted(expected), (
+        f"{name} covers a different set of targets"
+    )
+    for choices in catalog.values():
+        assert_fixed_model_labels_have_no_selection_state(choices["labels"])
+    for target, choices in expected.items():
+        assert_fixed_model_labels_have_no_selection_state(choices["labels"])
+        for field in ("models", "labels", "efforts"):
+            assert catalog[target][field] == list(choices[field]), (
+                f"{name} {target} {field} differs from AGENT_CATALOG"
+            )
+
+
+def test_fixed_model_ids_pass_both_shell_value_rules() -> None:
+    powershell = read(LAUNCHER_PS1)
+    bash_source = read(LAUNCHER_SH)
+    reserved = {"__default__", "__type__"} | set(
+        re.findall(r"\b__[a-z][a-z0-9_]*__\b", powershell + "\n" + bash_source, re.I)
+    )
+    powershell_rule = re.search(r"\$trimmed -cnotmatch '([^']+)'", powershell)
+    assert powershell_rule is not None, "PowerShell launch value rule not found"
+
+    # Read the fixed PowerShell rows even on machines that only have Bash.
+    powershell_ids = []
+    for row in re.findall(r"^[ \t]*New-MycmuxModelChoice[ \t]+(.+)$", powershell, re.M):
+        fields = re.fullmatch(r'"[^"]*"[ \t]+"([^"]*)"[ \t]*', row)
+        assert fields is not None, f"expected a literal PowerShell catalog row: {row}"
+        powershell_ids.append(fields[1])
+
+    ids_by_source = {
+        "agentCatalog.ts": [value for choices in catalog_model_pairs().values() for value, _ in choices],
+        "launcher.sh": [value for choices in shell_spec_catalog().values() for value in choices["models"]],
+        "launcher.ps1": powershell_ids,
+    }
+    for source, ids in ids_by_source.items():
+        assert ids, source
+        for value in ids:
+            assert value, f"{source} contains an empty model ID"
+            assert value not in reserved, (source, value)
+            assert re.fullmatch(powershell_rule[1], value), (source, value)
+
+    validator = extract_named_sh_functions(["__launch_spec_value"])
+    script = validator + """
+for value; do
+  if [ "$(__launch_spec_value "$value")" != "$value" ]; then
+    printf 'launcher.sh rejects a catalog model: %s\n' "$value" >&2
+    exit 1
+  fi
+done
+"""
+    bash = shutil.which("bash")
+    assert bash is not None  # shell_spec_catalog already needed Bash.
+    ids = dict.fromkeys(value for values in ids_by_source.values() for value in values)
+    result = subprocess.run(
+        [bash, "-c", script, "catalog-ids", *ids], capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_bash_menu_matches_the_dialog() -> None:
+    assert_spec_catalog_matches_gui("launcher.sh", shell_spec_catalog())
+
+
+def test_the_powershell_menu_matches_the_dialog() -> None:
+    assert_spec_catalog_matches_gui("launcher.ps1", powershell_spec_catalog())
+
+
+def test_the_menu_offers_the_same_models_and_efforts_as_the_dialog() -> None:
     ps1 = powershell_spec_catalog()
     sh = shell_spec_catalog()
-
-    # Launcher-only rows (claude-codex-open) still need a model / effort menu
-    # at the CLI even though the dialog no longer offers them.
-    assert sorted(set(ps1) - LAUNCHER_ONLY_TARGETS) == sorted(expected), (
-        "launcher.ps1 covers a different set of targets"
-    )
-    assert sorted(set(sh) - LAUNCHER_ONLY_TARGETS) == sorted(expected), (
-        "launcher.sh covers a different set of targets"
-    )
-
-    # A launcher-only row has no catalog entry to compare with, but its two
-    # menus must still offer the same thing.
-    for target in sorted(LAUNCHER_ONLY_SPEC_TARGETS):
-        assert ps1[target] == sh[target], f"launcher.ps1 and launcher.sh differ for {target}"
-
-    for target, choices in expected.items():
-        for field in ("models", "efforts"):
-            assert list(ps1[target][field]) == list(choices[field]), (
-                f"launcher.ps1 {target} {field} differs from AGENT_CATALOG"
-            )
-            assert list(sh[target][field]) == list(choices[field]), (
-                f"launcher.sh {target} {field} differs from AGENT_CATALOG"
-            )
+    # This also pins the launcher-only rows, which have no GUI counterpart.
+    assert ps1 == sh
 
 
 @pytest.mark.parametrize("target,expected", REFRESHED_MODELS.items())
 def test_refreshed_cli_model_ids_labels_and_order(target: str, expected: list[tuple[str, str]]) -> None:
     reference = next(entry["models_ref"] for entry in catalog_entries() if entry["target"] == target)
-    block = read(CATALOG).split(f"const {reference}: readonly ModelChoice[] = [", 1)[1].split("\n];", 1)[0]
-    assert re.findall(r'\{ value: "([^"]+)", label: "([^"]+)" \}', block) == expected
-    for catalog in (powershell_spec_catalog(), shell_spec_catalog()):
-        assert list(zip(catalog[target]["models"], catalog[target]["labels"])) == expected
+    assert catalog_model_pairs()[reference] == expected
 
 
 @pytest.mark.parametrize("target,expected", [
@@ -412,8 +505,39 @@ def test_refreshed_cli_model_ids_labels_and_order(target: str, expected: list[tu
     ("agy", ["low", "medium", "high", "xhigh", "max"]),
 ])
 def test_refreshed_cli_effort_steps(target: str, expected: list[str]) -> None:
-    for catalog in (catalog_choices_by_target(), powershell_spec_catalog(), shell_spec_catalog()):
-        assert list(catalog[target]["efforts"]) == expected
+    assert list(catalog_choices_by_target()[target]["efforts"]) == expected
+
+
+def test_cursor_retains_the_base_candidates_and_effort_exceptions() -> None:
+    rows = catalog_choices_by_target()["cursor"]["models"]
+    ids = set(rows)
+    assert 0 < len(rows) <= 25
+    assert len(ids) == len(rows), "the Cursor catalog contains duplicate IDs"
+    assert {
+        "composer-2.5",
+        "grok-4.7-low", "grok-4.7-medium", "grok-4.7-high", "grok-4.7-xhigh",
+        "claude-opus-5-5-high", "claude-opus-5-5-max", "claude-sonnet-5-5-high",
+        "gpt-5.6-sol-high", "gpt-5.6-sol-xhigh", "gemini-3.1-pro",
+    } <= ids
+    for family, steps in {
+        "grok-4.7": {"low", "medium", "high", "xhigh"},
+        "gpt-5.6-sol": {"high", "xhigh"},
+        "gpt-5.6-luna": {"high"},
+    }.items():
+        assert {value for value in ids if value == family or value.startswith(f"{family}-")} == {
+            f"{family}-{step}" for step in steps
+        }
+
+
+def test_fixed_effort_ids_show_the_effort_in_their_labels() -> None:
+    effort_suffixes = {"low", "medium", "high", "xhigh", "max", "ultra"}
+    label_effort = re.compile(r"\b(extra high|xhigh|low|medium|high|max|ultra)\b")
+    for choices in catalog_model_pairs().values():
+        for value, label in choices:
+            suffix = value.rsplit("-", 1)[-1]
+            if suffix in effort_suffixes:
+                displayed = ["xhigh" if step == "extra high" else step for step in label_effort.findall(label.lower())]
+                assert displayed == [suffix], (value, label)
 
 
 def test_the_spec_menu_is_reachable_without_changing_the_existing_keys() -> None:
@@ -455,6 +579,7 @@ PARITY_CASES = [
     ("codex-positional", "codex resume --no-alt-screen --last", "gpt-5.6-sol", "max"),
     ("grok", "grok --no-alt-screen --permission-mode auto", "grok-4.7", "high"),
     ("agy", "agy", "gemini-4-argon-high", "high"),
+    ("agy-hydrogen-xhigh", "agy", "gemini-4-hydrogen-xhigh", "high"),
     ("cursor", "cursor-agent", "composer-2.5", "high"),
     ("cursor-cmd", "C:/Tools/cursor-agent.cmd", "grok-4.7-high", "max"),
     ("cursor-default", "cursor-agent", "", ""),
@@ -483,6 +608,13 @@ PARITY_CASES = [
     # Whitespace only is the same as saying nothing.
     ("blank", CLAUDE_CMD, "   ", ""),
 ]
+
+RETIRED_AGY_MODELS = tuple(
+    f"claude-{family}-5-5-{effort}"
+    for family in ("opus", "sonnet")
+    for effort in ("high", "medium", "low")
+)
+PARITY_CASES.extend((model, "agy", model, "high") for model in RETIRED_AGY_MODELS)
 
 CASE_IDS = [case[0] for case in PARITY_CASES]
 
@@ -612,6 +744,9 @@ def test_a_launch_spec_translates_to_the_flags_each_cli_documents() -> None:
     assert by_id["codex-positional"].endswith("resume --no-alt-screen --last")
     assert "--reasoning-effort high" in by_id["grok"]
     assert by_id["agy"] == "agy --model gemini-4-argon-high --effort high"
+    assert by_id["agy-hydrogen-xhigh"] == "agy --model gemini-4-hydrogen-xhigh --effort high"
+    for model in RETIRED_AGY_MODELS:
+        assert by_id[model] == f"agy --model {model} --effort high"
     assert by_id["omp"] == "omp --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
     assert by_id["omp-astra-max"] == "omp --model openai-codex/gpt-6-astra --thinking max --allow-home"
     assert by_id["omp-exe"] == "C:/Users/me/AppData/Local/omp/omp.exe --model openai-codex/gpt-6-sol --thinking xhigh --allow-home"
@@ -659,37 +794,40 @@ def test_a_model_that_could_be_read_as_a_flag_is_dropped(case_id: str) -> None:
 # that is off by one on one side, which is exactly what a menu gets wrong.
 
 # (id, target, POSIX key bytes, PowerShell key names, typed lines, expected)
-# Codexの行: 1 default、2 Sol 6.1、3 Terra 6.1、4 Astra 6、5 Sol 6、
-# 6 Luna 6、7 Sol 5.6、8 Terra 5.6、9 Luna 5.6、10 type-in。
+# Codex: default, Sol 6.2, Astra 6.2, Terra 6.1, Sol 6.1, Astra 6, Sol 6,
+# Luna 6, Sol 5.6, Terra 5.6, Luna 5.6, type-in (shortcut 0).
 # Efforts: 1 default, 2 low, 3 medium, 4 high, 5 xhigh, 6 max, 7 ultra
 # (Luna has no ultra; its type-in row is 7).
 MENU_CASES = [
-    ("omp-sol-xhigh", "omp", "35", ["3", "5"], [], "openai-codex/gpt-6-sol|xhigh"),
-    ("sol-61-max", "codex", "26", ["2", "6"], [], "gpt-6.1-sol|max"),
-    ("terra-61-max", "codex", "36", ["3", "6"], [], "gpt-6.1-terra|max"),
-    ("terra-61-claude-codex", "claude-codex", "36", ["3", "6"], [], "gpt-6.1-terra|max"),
-    ("digits", "codex", "84", ["8", "4"], [], "gpt-5.6-terra|high"),
+    ("omp-sol-xhigh", "omp", "75", ["7", "5"], [], "openai-codex/gpt-6-sol|xhigh"),
+    ("omp-terra-56", "omp", "46", ["4", "6"], [], "openai-codex/gpt-5.6-terra|max"),
+    ("sol-62-ultra", "codex", "27", ["2", "7"], [], "gpt-6.2-sol|ultra"),
+    ("astra-62-ultra", "codex", "37", ["3", "7"], [], "gpt-6.2-astra|ultra"),
+    ("sol-61-max", "codex", "56", ["5", "6"], [], "gpt-6.1-sol|max"),
+    ("terra-61-max", "codex", "46", ["4", "6"], [], "gpt-6.1-terra|max"),
+    ("terra-61-claude-codex", "claude-codex", "46", ["4", "6"], [], "gpt-6.1-terra|max"),
+    ("digits", "codex", "94", ["9", "4"], [], "gpt-5.6-sol|high"),
     (
         "arrows",
         "codex",
-        "\\x1b[B\\x1b[B\\x1b[B\\x1b[B\\x1b[B\\n\\x1b[B\\n",
-        ["down", "down", "down", "down", "down", "enter", "down", "enter"],
+        "\\x1b[B" * 7 + "\\n\\x1b[B\\n",
+        ["down"] * 7 + ["enter", "down", "enter"],
         [],
         "gpt-6-luna|low",
     ),
-    # The flagship row sits right under the default; the last effort row is ultra.
-    ("astra-ultra", "codex", "47", ["4", "7"], [], "gpt-6-astra|ultra"),
-    ("sol-ultra", "codex", "57", ["5", "7"], [], "gpt-6-sol|ultra"),
-    ("luna-max", "codex", "66", ["6", "6"], [], "gpt-6-luna|max"),
-    ("legacy-luna-max", "codex", "96", ["9", "6"], [], "gpt-5.6-luna|max"),
-    # Up from default selects type-in, then max: no hidden ultra row for Luna.
-    ("luna-cap", "codex", "6\\x1b[A\\x1b[A\\n", ["6", "up", "up", "enter"], [], "gpt-6-luna|max"),
+    ("astra-ultra", "codex", "67", ["6", "7"], [], "gpt-6-astra|ultra"),
+    ("sol-ultra", "codex", "77", ["7", "7"], [], "gpt-6-sol|ultra"),
+    ("luna-max", "codex", "86", ["8", "6"], [], "gpt-6-luna|max"),
+    ("legacy-luna-max", "codex", "\\x1b[A\\x1b[A\\n6", ["up", "up", "enter", "6"], [], "gpt-5.6-luna|max"),
+    ("terra-56-arrows", "codex", "\\x1b[A" * 3 + "\\n4", ["up"] * 3 + ["enter", "4"], [], "gpt-5.6-terra|high"),
+    # Up from default selects type-in, then max: Luna's last effort.
+    ("luna-cap", "codex", "8\\x1b[A\\x1b[A\\n", ["8", "up", "up", "enter"], [], "gpt-6-luna|max"),
     # Enter twice is the launch that happened before this menu existed.
     ("defaults", "claude", "\\n\\n", ["enter", "enter"], [], "|"),
     ("escape", "claude", "\\x1b", ["esc"], [], "CANCELLED"),
     ("typed", "codex", "0gpt-5.6-custom\\n1", ["0", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
     ("typed-claude-codex", "claude-codex", "0gpt-6.1-terra\\n6", ["0", "6"], ["gpt-6.1-terra"], "gpt-6.1-terra|max"),
-    ("typed-effort", "codex", "20high\\n", ["2", "0"], ["high"], "gpt-6.1-sol|high"),
+    ("typed-effort", "codex", "50high\\n", ["5", "0"], ["high"], "gpt-6.1-sol|high"),
     ("typed-arrows", "codex", "\\x1b[A\\ngpt-5.6-custom\\n1", ["up", "enter", "1"], ["gpt-5.6-custom"], "gpt-5.6-custom|"),
     # Grok: default, 4.7, 4.7 Fast, 4.6, 4.5, type-in (row 6; shortcut 0 also works).
     ("typed-grok", "grok", "6grok-4-fast\\n4", ["6", "4"], ["grok-4-fast"], "grok-4-fast|high"),
@@ -700,7 +838,12 @@ MENU_CASES = [
     ("grok-45-cap", "grok", "5\\x1b[A\\x1b[A\\n", ["5", "up", "up", "enter"], [], "grok-4.5|high"),
     ("typed-grok-45-cap", "grok", "0grok-4.5\\n\\x1b[A\\x1b[A\\n", ["0", "up", "up", "enter"], ["grok-4.5"], "grok-4.5|high"),
     ("grok-default-xhigh", "grok", "15", ["1", "5"], [], "|xhigh"),
-    ("agy-argon-max", "agy", "26", ["2", "6"], [], "gemini-4-argon-high|max"),
+    ("agy-carbon-max", "agy", "26", ["2", "6"], [], "gemini-4-carbon-medium|max"),
+    ("agy-argon-max", "agy", "66", ["6", "6"], [], "gemini-4-argon-high|max"),
+    ("agy-hydrogen-xhigh", "agy", "94", ["9", "4"], [], "gemini-4-hydrogen-xhigh|high"),
+    ("agy-retired-typed", "agy", "0claude-opus-5-5-high\\n4", ["0", "4"], ["claude-opus-5-5-high"], "claude-opus-5-5-high|high"),
+    ("cursor-default", "cursor", "\\n\\n", ["enter", "enter"], [], "|"),
+    ("cursor-last-model", "cursor", "\\x1b[A\\x1b[A\\n\\n", ["up", "up", "enter", "enter"], [], "gemini-3.1-pro|"),
     ("agy-gptoss-max", "agy", "\\x1b[A\\x1b[A\\n6", ["up", "up", "enter", "6"], [], "gpt-oss-120b-medium|max"),
     (
         "typed-trim",
@@ -715,6 +858,8 @@ MENU_CASES = [
     # A typed value that could pass as a flag is refused and the menu stays put,
     # so the scripted keys run out and it backs out instead of launching.
     ("typed-refused", "codex", "\\x1b[A\\n--evil\\n", ["up", "enter"], ["--evil"], "CANCELLED"),
+    ("invalid-fixed-model", "cursor", "2\n", ["2", "enter"], [], "CANCELLED"),
+    ("invalid-fixed-effort", "cursor", "12", ["1", "2"], [], "CANCELLED"),
     # Web and directory rows carry no target; the key does nothing.
     ("no-target", "", "\\n\\n", ["enter", "enter"], [], "CANCELLED"),
 ]
@@ -785,7 +930,7 @@ if ($found -ne $wantFunctions.Count) { throw "expected $($wantFunctions.Count) f
 
 function Get-MycmuxClaudeCodexModelChoices { return @() }
 
-$wantVars = @("ClaudeModels","CodexModels","AgyModels","GrokModels","OmpModels","ClaudeEfforts","CodexEfforts","AgyEfforts","GrokEfforts","OmpEfforts","LaunchSpecCatalog")
+$wantVars = @("ClaudeModels","CodexModels","AgyModels","GrokModels","OmpModels","CursorModels","ClaudeEfforts","CodexEfforts","AgyEfforts","GrokEfforts","OmpEfforts","LaunchSpecCatalog")
 foreach ($a in $ast.FindAll({
   param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst]
 }, $true)) {
@@ -799,11 +944,21 @@ foreach ($case in (ConvertFrom-Json $env:MYCMUX_MENU_CASES)) {
   $script:TestLines = @($case.lines); $script:TestLineIndex = 0
   $script:MycmuxLaunchModel = ""; $script:MycmuxLaunchEffort = ""
   $option = [pscustomobject]@{ Label = "probe"; Target = $case.target }
+  $usesFixture = $case.id -in @("invalid-fixed-model", "invalid-fixed-effort")
+  if ($usesFixture) {
+    $original = $LaunchSpecCatalog[$case.target]
+    $LaunchSpecCatalog[$case.target] = if ($case.id -eq "invalid-fixed-model") {
+      [pscustomobject]@{ Models = @(New-MycmuxModelChoice "probe" "-not-model"); Efforts = @() }
+    } else {
+      [pscustomobject]@{ Models = @(); Efforts = @("-not-effort") }
+    }
+  }
   if (Invoke-MycmuxLaunchSpecMenu $option) {
     Write-Output ("{0}|{1}" -f $script:MycmuxLaunchModel, $script:MycmuxLaunchEffort)
   } else {
     Write-Output "CANCELLED"
   }
+  if ($usesFixture) { $LaunchSpecCatalog[$case.target] = $original }
 }
 """
 
@@ -819,7 +974,14 @@ def run_shell_menu() -> tuple[str, ...]:
     # writes to the read-only FD pollute process-substitution output on Bash 3.2.
     functions = functions.replace(">&$__CMUX_MENU_FD", ">&2")
     script = [functions, 'K="$(mktemp)"']
-    for _case_id, target, keys, _ps_keys, _lines, _expected in MENU_CASES:
+    fixed_row_fixtures = {
+        "invalid-fixed-model": "__spec_models_for() { printf '%s\\n' 'probe|-not-model'; }",
+        "invalid-fixed-effort": "__spec_efforts_for() { printf '%s\\n' '-not-effort'; }",
+    }
+    for case_id, target, keys, _ps_keys, _lines, _expected in MENU_CASES:
+        fixture = fixed_row_fixtures.get(case_id)
+        if fixture:
+            script.extend(["(", fixture])
         script.append(
             "__MYCMUX_LAUNCH_MODEL=''; __MYCMUX_LAUNCH_EFFORT=''\n"
             f"printf '%b' {shlex.quote(keys)} > \"$K\"\n"
@@ -832,6 +994,8 @@ def run_shell_menu() -> tuple[str, ...]:
             "fi\n"
             "exec 9<&-\n"
         )
+        if fixture:
+            script.append(")")
     result = subprocess.run(
         [bash, "-s"],
         input="\n".join(script),
@@ -855,8 +1019,8 @@ def run_powershell_menu() -> tuple[str, ...]:
     if not shell:
         pytest.skip("PowerShell is not available")
     cases = [
-        {"target": target, "keys": ps_keys, "lines": lines}
-        for _case_id, target, _keys, ps_keys, lines, _expected in MENU_CASES
+        {"id": case_id, "target": target, "keys": ps_keys, "lines": lines}
+        for case_id, target, _keys, ps_keys, lines, _expected in MENU_CASES
     ]
     result = subprocess.run(
         [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", PS_MENU_HARNESS],

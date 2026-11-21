@@ -495,6 +495,23 @@ def test_spawn_tab_activate_flag_requests_activation_without_foreground_switch()
     assert args["activate"] is True
 
 
+@pytest.mark.parametrize(("options", "socket_command"), [
+    ([], "pane.spawn_tab"),
+    (["--detach"], "pane.spawn"),
+])
+def test_raw_codex_argv_reaches_the_native_launch_path(
+    monkeypatch: pytest.MonkeyPatch, options: list[str], socket_command: str,
+) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    command_argv = ["codex", "resume", PANE_SESSION_ID]
+    namespace = cli.build_parser().parse_args(["spawn-tab", *options, "--", *command_argv])
+
+    command, args = cli.request_for(namespace)
+
+    assert command == socket_command
+    assert args["commandArgv"] == command_argv
+
+
 def test_spawn_tab_no_activate_remains_supported() -> None:
     cmd, args = request_for_spawn_tab(["--no-activate", "--target", "claude"])
     assert cmd == "pane.spawn_tab"

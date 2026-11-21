@@ -48,6 +48,16 @@ impl CodexExecutable {
         }
     }
 }
+/// Apply the UI startup policy only to an actual Codex CLI argv.
+pub(super) fn disable_startup_update_check(command: &str, args: &mut Vec<String>) {
+    let Some(CodexExecutable::Direct(script)) = classify_executable(command, args) else {
+        return;
+    };
+    // Keep node/bun's script first and place the config before resume/prompt args.
+    let start = usize::from(script.is_some());
+    drop(args.splice(start..start, ["-c".into(), "check_for_update_on_startup=false".into()]));
+}
+
 pub(super) fn classify_executable(command: &str, args: &[String]) -> Option<CodexExecutable> {
     // Normalize extension and case here; do not alter the base identity parser.
     let lower = command.to_ascii_lowercase();
@@ -206,6 +216,33 @@ mod report_context_tests {
         report.outcome = CodexRestoreOutcome::Downgrade;
         assert!(context.observe(Some(100), &report).is_none());
     }
+    #[test]
+    fn direct_codex_launches_disable_update_checks_without_changing_resume_identity() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        for command in ["codex", r"C:\Tools\Codex.CMD", "node.exe", "bun"] {
+            let script = if command == "node.exe" || command == "bun" { Some("C:/Tools/codex.js") } else { None };
+            let mut resume: Vec<String> = script.into_iter().chain(["resume", id, "--", "prompt"]).map(str::to_owned).collect();
+            disable_startup_update_check(command, &mut resume);
+            let start = usize::from(script.is_some());
+            assert_eq!(&resume[start..start + 2], ["-c", "check_for_update_on_startup=false"]);
+            if let Some(script) = script {
+                assert_eq!(resume[0], script);
+            }
+            assert_eq!(&resume[start + 2..], ["resume", id, "--", "prompt"]);
+            assert_eq!(exact_resume_id(command, &resume).as_deref(), Some(id));
+
+            let mut fresh = classify_executable(command, &resume).unwrap().fresh_args().unwrap();
+            disable_startup_update_check(command, &mut fresh);
+            assert_eq!(&fresh[start..], ["-c", "check_for_update_on_startup=false", "--no-alt-screen"]);
+        }
+        for (command, argument) in [("claude-codex", "--resume"), ("bash", "source launcher.sh"),
+            ("powershell.exe", "launcher.ps1"), ("node", "other.js")] {
+            let mut argv = vec![argument.into()];
+            disable_startup_update_check(command, &mut argv);
+            assert_eq!(argv, [argument]);
+        }
+    }
+
     #[test]
     fn n3_launch_only_grammar_does_not_change_capture_or_resume_prompt_uuids() {
         let id = "11111111-2222-4333-8444-555555555555";

@@ -78,6 +78,9 @@ pub fn open_workspace_window(
     height: Option<f64>,
     deferred_adoption: Option<bool>,
 ) -> Result<String, String> {
+    if crate::commands::quit::is_quitting(&app) {
+        return Err("Application is preparing to quit".into());
+    }
     if workspaces.is_empty() {
         return Err("open_workspace_window requires at least one workspace".to_string());
     }
@@ -154,11 +157,18 @@ pub fn open_workspace_window(
 pub async fn publish_window_fragment(
     state: State<'_, AppState>,
     fragment: WindowFragment,
+    require_published: Option<bool>,
 ) -> Result<(), String> {
     if fragment.window_label.is_empty() {
         return Err("publish_window_fragment requires a window label".to_string());
     }
-    if state.window_registry.is_closing(&fragment.window_label) { return Ok(()); }
+    if state.window_registry.is_closing(&fragment.window_label) {
+        return if require_published == Some(true) {
+            Err("window is closing before its fragment could be published".into())
+        } else {
+            Ok(())
+        };
+    }
     state.window_registry.publish_fragment(fragment);
     // Deliberately no `window-registry-changed` emit: fragments are republished
     // on every debounce tick and nothing reacts to them synchronously (main
@@ -183,6 +193,9 @@ pub async fn release_workspaces(
     workspace_ids: Vec<String>,
     to_label: String,
 ) -> Result<usize, String> {
+    if crate::commands::quit::is_quitting(&app) {
+        return Err("Receiving window is preparing to quit".into());
+    }
     // `get_webview_window` answers None for any window that also hosts a web
     // pane (a second webview under its own label), so the receiver must be
     // looked up as a plain window or a drop onto a window showing a web pane
@@ -289,7 +302,7 @@ pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
     crate::commands::window::release_window_role(app, label);
     let Some(state) = app.try_state::<AppState>() else { return; };
     if state.window_registry.take_close_intent(label) {
-        state.window_registry.forget_window(label);
+        state.window_registry.forget_closed_window(label);
         emit_registry_changed(app, state.window_registry.revision());
     } else {
         reclaim_destroyed_window(app, label);

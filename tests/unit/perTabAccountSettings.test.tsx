@@ -26,12 +26,12 @@ import { useCliLoginStore } from "../../src/stores/cliLoginStore";
 import { useCliAccountStore } from "../../src/stores/cliAccountStore";
 import { cliAccountMessage } from "../../src/lib/cliAccounts";
 import { launcherStrings } from "../../src/components/workspace/launcherStrings";
-import type { CliAccountProfile, CliProvider } from "../../src/lib/ipc";
+import type { CliAccountProfile, SwitchableCliProvider } from "../../src/lib/ipc";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement;
 let root: Root;
-const profile = (provider: CliProvider): CliAccountProfile => ({
+const profile = (provider: SwitchableCliProvider): CliAccountProfile => ({
   id: provider + "-fixture", provider, label: "仕事用", email: "fixture@example.test", identity_key: "fixture",
   plan: null, org_name: null, captured_at: "", last_switched_at: null, needs_relogin: false,
 });
@@ -56,7 +56,7 @@ beforeEach(() => {
   root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); vi.restoreAllMocks(); });
-async function render(provider: CliProvider = "claude") {
+async function render(provider: SwitchableCliProvider = "claude") {
   await act(async () => root.render(<TabAccountSettingsProvider><TabAccountSettings profile={profile(provider)} /></TabAccountSettingsProvider>));
 }
 function button(text: string): HTMLButtonElement {

@@ -1,9 +1,16 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
+#[cfg(any(windows, target_os = "macos"))]
+use tauri::Manager;
+
+#[path = "webpane_input_activity.rs"]
+pub(super) mod input_activity;
 
 #[cfg(target_os = "macos")]
 #[path = "webpane_native_mac.rs"]
 mod mac;
+#[cfg(target_os = "macos")]
+pub(super) use mac::dispatched_physical_key;
 
 #[cfg(any(all(not(windows), not(target_os = "macos")), test))]
 const SCREENSHOT_UNSUPPORTED: &str = "web.screenshot is not supported on this platform yet";
@@ -122,6 +129,17 @@ pub async fn webpane_screenshot(
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn native_input_window_destroyed(label: &str) {
+    input_activity::forget_window(label);
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn native_input_renderer_failed(label: &str) {
+    // The terminated renderer cannot deliver its input. Keep operator-focus marks for the tab.
+    input_activity::forget_webview(label);
+}
+
 #[tauri::command]
 pub async fn webpane_input_trusted(
     caller: tauri::Webview,
@@ -136,12 +154,23 @@ pub async fn webpane_input_trusted(
             "webpane_input_trusted is only available to the primary app webview".to_string(),
         );
     }
+    #[cfg(any(windows, target_os = "macos"))]
+    let (view, input) = {
+        let label = super::webpane::webview_label(&tab_id)?;
+        super::webpane::mark_automation_input(&label);
+        let view = app.get_webview(&label);
+        let window = view.as_ref().map(|view| view.window().label().to_owned());
+        let input = input_activity::InputAttempt::begin(&label, window);
+        super::webpane::reject_registered_native_key(super::webpane::shortcut_registry(), &label, &action)?;
+        let view = view.ok_or_else(|| "web pane does not exist".to_string())?;
+        (view, input)
+    };
     #[cfg(windows)]
     {
         let budget = NativeBudget::new(action.command_name(), budget_ms, command);
         budget
             .run(super::webpane_native_win::input_trusted(
-                &app, tab_id, action, &budget,
+                view, tab_id, action, &budget, input,
             ))
             .await
     }
@@ -149,7 +178,7 @@ pub async fn webpane_input_trusted(
     {
         let budget = NativeBudget::new(action.command_name(), budget_ms, command);
         budget
-            .run(mac::input_trusted(&app, tab_id, action, &budget))
+            .run(mac::input_trusted(view, tab_id, action, &budget, input))
             .await
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -175,6 +204,8 @@ pub async fn webpane_set_file_input(
             "webpane_set_file_input is only available to the primary app webview".to_string(),
         );
     }
+    let label = super::webpane::webview_label(&tab_id)?;
+    super::webpane::mark_automation_input(&label);
     #[cfg(windows)]
     {
         let budget = NativeBudget::new("web.upload", budget_ms, command);
@@ -253,7 +284,6 @@ impl WebPaneTrustedInput {
 
 #[cfg(any(windows, target_os = "macos", test))]
 const CDP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
-#[cfg(any(windows, target_os = "macos", test))]
 const NATIVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[cfg(any(windows, target_os = "macos", test))]

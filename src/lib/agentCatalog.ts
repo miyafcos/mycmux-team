@@ -16,6 +16,8 @@ export interface ModelChoice {
   /** Passed to the CLI verbatim. */
   value: string;
   label: string;
+  /** Present for an installed Codex model, including an empty effort list. */
+  efforts?: readonly string[];
 }
 
 export interface AgentCatalogEntry {
@@ -44,15 +46,15 @@ export interface AgentCatalogEntry {
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 /**
  * Codex's current GPT-6 and 5.6 models support low through max; Astra, Sol
- * and Terra also support ultra. Luna stops at max. Verified against the
- * Codex model catalog and official model docs on 2026-09-23.
+ * and Terra also support ultra. Luna stops at max. Verified against
+ * Codex CLI 0.169.0's models_cache.json on 2026-11-18.
  */
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const CODEX_LUNA_EFFORTS = CODEX_EFFORTS.filter((effort) => effort !== "ultra");
 /** Grok Build 1.0.77 models_cache.json, verified 2026-11-12; 4.5 stops at high. */
 const GROK_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 const GROK_45_EFFORTS = GROK_EFFORTS.filter((effort) => effort !== "xhigh");
-/** agy 1.5.5 --help, verified 2026-11-12. */
+/** agy 1.5.10 --help, verified 2026-11-18. */
 const AGY_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /**
@@ -67,13 +69,14 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
 ];
 
 /**
- * Current GPT-6 choices first, followed by the still-supported 5.6 fallbacks.
+ * Listed entries in Codex CLI 0.169.0's models_cache.json, verified 2026-11-18.
  * Keep generations explicit so an old saved choice is never silently upgraded.
- * Source: https://developers.openai.com/codex/models (2026-09-23).
  */
 const CODEX_MODELS: readonly ModelChoice[] = [
-  { value: "gpt-6.1-sol", label: "Sol (6.1)" },
+  { value: "gpt-6.2-sol", label: "Sol (6.2)" },
+  { value: "gpt-6.2-astra", label: "Astra (6.2)" },
   { value: "gpt-6.1-terra", label: "Terra (6.1)" },
+  { value: "gpt-6.1-sol", label: "Sol (6.1)" },
   { value: "gpt-6-astra", label: "Astra (6 flagship)" },
   { value: "gpt-6-sol", label: "Sol (6)" },
   { value: "gpt-6-luna", label: "Luna (6 light)" },
@@ -82,20 +85,25 @@ const CODEX_MODELS: readonly ModelChoice[] = [
   { value: "gpt-5.6-luna", label: "Luna (5.6)" },
 ];
 
-/** From agy 1.5.5 `agy models`, verified 2026-11-12; effort is baked into most ids. */
+/** From agy 1.5.10 `agy models`, verified 2026-11-18; effort is baked into most ids. */
 const AGY_MODELS: readonly ModelChoice[] = [
-  { value: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
+  { value: "gemini-4-carbon-medium", label: "Gemini 4 Carbon (Medium)" },
+  { value: "gemini-4-carbon-high", label: "Gemini 4 Carbon (High)" },
+  { value: "gemini-4-carbon-low", label: "Gemini 4 Carbon (Low)" },
   { value: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" },
+  { value: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
   { value: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" },
+  { value: "gemini-4-hydrogen-high", label: "Gemini 4 Hydrogen (High)" },
+  { value: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)" },
+  { value: "gemini-4-hydrogen-medium", label: "Gemini 4 Hydrogen (Medium)" },
+  { value: "gemini-4-hydrogen-low", label: "Gemini 4 Hydrogen (Low)" },
+  { value: "gemini-pro-orchestrator", label: "Orchestrator (Carbon)" },
+  { value: "gemini-pro-orchestrator-argon", label: "Orchestrator (Argon)" },
   { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
   { value: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
   { value: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
-  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)" },
-  { value: "claude-opus-5-5-medium", label: "Claude Opus 5.5 (Medium)" },
-  { value: "claude-opus-5-5-low", label: "Claude Opus 5.5 (Low)" },
-  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)" },
-  { value: "claude-sonnet-5-5-medium", label: "Claude Sonnet 5.5 (Medium)" },
-  { value: "claude-sonnet-5-5-low", label: "Claude Sonnet 5.5 (Low)" },
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+  { value: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
   { value: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
 ];
 
@@ -107,29 +115,43 @@ const GROK_MODELS: readonly ModelChoice[] = [
   { value: "grok-4.5", label: "Grok 4.5" },
 ];
 
+/** openai-codex provider from omp 18.2.11, verified 2026-11-18. */
 const OMP_MODELS: readonly ModelChoice[] = [
+  { value: "openai-codex/gpt-5.6-luna", label: "Luna (5.6)" },
+  { value: "openai-codex/gpt-5.6-sol", label: "Sol (5.6)" },
+  { value: "openai-codex/gpt-5.6-terra", label: "Terra (5.6)" },
   { value: "openai-codex/gpt-6-astra", label: "Astra (6 flagship)" },
-  { value: "openai-codex/gpt-6-sol", label: "Sol (6)" },
   { value: "openai-codex/gpt-6-luna", label: "Luna (6 light)" },
+  { value: "openai-codex/gpt-6-sol", label: "Sol (6)" },
 ];
 const OMP_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-/**
- * Recheck unavailable on 2026-11-12: cursor-agent 2026.01.28 reported
- * "No models available for this account"; public docs have names but no CLI ids.
- * Values remain as verified on 2026-10-15; effort is part of each id.
- */
+/** `cursor-agent models`, CLI 2026.10.19-6bbf2c4, verified 2026-11-18. */
 const CURSOR_MODELS: readonly ModelChoice[] = [
+  { value: "auto", label: "Auto" },
   { value: "composer-2.5", label: "Composer 2.5" },
-  { value: "grok-4.7-low", label: "Grok 4.7 (Low)" },
-  { value: "grok-4.7-medium", label: "Grok 4.7 (Medium)" },
-  { value: "grok-4.7-high", label: "Grok 4.7 (High)" },
-  { value: "grok-4.7-xhigh", label: "Grok 4.7 (Extra High)" },
-  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 (High)" },
-  { value: "claude-opus-5-5-max", label: "Claude Opus 5.5 (Max)" },
-  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 (High)" },
-  { value: "gpt-5.6-sol-high", label: "GPT-5.6 Sol (High)" },
-  { value: "gpt-5.6-sol-xhigh", label: "GPT-5.6 Sol (Extra High)" },
+  { value: "composer-2.5-fast", label: "Composer 2.5 Fast" },
+  { value: "claude-fable-5-2-high", label: "Claude Fable 5.2 1M High (NO ZDR)" },
+  { value: "claude-fable-5-2-max", label: "Claude Fable 5.2 1M Max (NO ZDR)" },
+  { value: "claude-opus-5-5-high", label: "Claude Opus 5.5 1M High" },
+  { value: "claude-opus-5-5-max", label: "Claude Opus 5.5 1M Max" },
+  { value: "claude-sonnet-5-5-high", label: "Claude Sonnet 5.5 High" },
+  { value: "claude-sonnet-5-5-max", label: "Claude Sonnet 5.5 Max" },
+  { value: "claude-haiku-5-5-high", label: "Claude Haiku 5.5 High No Thinking" },
+  { value: "claude-haiku-5-5-max", label: "Claude Haiku 5.5 Max No Thinking" },
+  { value: "gpt-5.6-sol-high", label: "GPT-5.6 Sol 1M High" },
+  { value: "gpt-5.6-sol-xhigh", label: "GPT-5.6 Sol 1M Extra High" },
+  { value: "gpt-5.6-terra-high", label: "GPT-5.6 Terra 1M High" },
+  { value: "gpt-5.6-terra-max", label: "GPT-5.6 Terra 1M Max" },
+  { value: "gpt-5.6-luna-high", label: "GPT-5.6 Luna 1M High" },
+  { value: "grok-4.7-low", label: "Grok 4.7 Low" },
+  { value: "grok-4.7-medium", label: "Grok 4.7 Medium" },
+  { value: "grok-4.7-high", label: "Grok 4.7 High" },
+  { value: "grok-4.7-xhigh", label: "Grok 4.7 Extra High" },
+  { value: "gemini-4-carbon-high", label: "Gemini 4 Carbon High" },
+  { value: "gemini-4-argon-high", label: "Gemini 4 Argon High" },
+  { value: "gemini-4-hydrogen-high", label: "Gemini 4 Hydrogen High" },
+  { value: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen Extra High" },
   { value: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
 ];
 
@@ -247,9 +269,13 @@ export function getCatalogEntry(target: string | undefined): AgentCatalogEntry |
 export function getLaunchEfforts(
   entry: AgentCatalogEntry | undefined,
   model?: string,
+  models = entry?.models,
 ): readonly string[] {
-  if (entry?.cli === "codex" && ["gpt-6-luna", "gpt-5.6-luna"].includes(model?.trim() ?? "")) {
-    return CODEX_LUNA_EFFORTS;
+  if (entry?.cli === "codex") {
+    const value = model?.trim() ?? "";
+    const installedEfforts = models?.find((choice) => choice.value === value)?.efforts;
+    if (installedEfforts !== undefined) return installedEfforts;
+    if (["gpt-6-luna", "gpt-5.6-luna"].includes(value)) return CODEX_LUNA_EFFORTS;
   }
   if (entry?.cli === "grok" && model?.trim() === "grok-4.5") {
     return GROK_45_EFFORTS;

@@ -1,5 +1,6 @@
 import { usePaneDragStore, type PaneDragSurface } from "../stores/paneDragStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
+import { isPreparingLayoutQuit } from "./layoutQuit";
 
 const WORKSPACE_HOVER_DELAY_MS = 350;
 interface WorkspaceHoverEffects {
@@ -15,7 +16,7 @@ export function createWorkspaceHover(effects: WorkspaceHoverEffects) {
   let marked: string | null = null;
   let point: { x: number; y: number } | null = null;
   const eligibleWorkspace = (): string | null => {
-    if (!point || !effects.active() || effects.surface?.() === "minimap") return null;
+    if (isPreparingLayoutQuit() || !point || !effects.active() || effects.surface?.() === "minimap") return null;
     const element = document.elementFromPoint(point.x, point.y);
     if (element?.closest("[data-dnd-new-workspace-target='true']")) return null;
     const id = element?.closest("[data-dnd-workspace-target-id]")?.getAttribute("data-dnd-workspace-target-id");

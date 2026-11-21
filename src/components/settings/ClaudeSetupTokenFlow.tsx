@@ -124,7 +124,11 @@ export function ClaudeSetupTokenFlow({ profile, surface = "settings", ownerKey =
       </div>
     </div>}
     {active && <div style={{ display: "grid", gap: 4 }}>
-      <div role="status">{!event || event.state === "starting" ? S.starting : event.state === "checking_owner" ? S.checking : S.waiting}</div>
+      <div role="status">{
+        !event || event.state === "starting" ? S.starting :
+        event.state === "confirming" ? S.confirming :
+        event.state === "checking_owner" ? S.checking : S.waiting
+      }</div>
       {ownsRegistration && event?.state === "code_available" && <>
         {event.url && <>
           <div>{S.fallback}</div>

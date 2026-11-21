@@ -9,6 +9,7 @@ import { useSessionAttentionStore } from "../stores/sessionAttentionStore";
 import { windowLabel } from "./windowContext";
 import { canTransferTab } from "./paneKindCapabilities";
 import { applyLayoutMutation, layoutStructureRevision } from "./layoutMutation";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "./layoutQuit";
 import { captureLegacyTearoutSource } from "./tearout/legacySource";
 import { LocalTearoutRefusal, localTearoutRefusal } from "./tearout/operation";
 
@@ -168,12 +169,13 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
     },
     result: (status, reason) => ({ operationId: request.operationId, status, phase, receipt, destinationWindow, ...(reason ? { reason } : {}) }),
   };
-  const reason = validatePaneMoveRequest(request);
+  const reason = isPreparingLayoutQuit() ? "window_quitting" : validatePaneMoveRequest(request);
   if (reason) {
     const result = execution.result("refused", reason);
     return request.destination.kind === "split" ? result : Promise.resolve(result);
   }
   if (request.destination.kind === "split") return executeSplitMove(request as PaneMoveRequest<SplitMoveDestination>, execution);
+  const finish = beginLayoutOperation()!;
   return (async () => {
     let restoreStagedSource: (() => void) | undefined;
     let restored = false;
@@ -230,6 +232,8 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
         return { ...execution.result("refused", "moving"), refusal: error };
       }
       return { ...execution.result("failed", error instanceof Error ? error.message : String(error)), error };
+    } finally {
+      finish();
     }
   })();
 }

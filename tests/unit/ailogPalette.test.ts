@@ -41,20 +41,27 @@ function expectedNear(actual: string, expected: string): void {
 }
 
 const measured = [
-  ["fable-5.1", "#a73a15", "#8b5240"], ["opus-5.5", "#b15233", "#976353"],
-  ["sonnet-5.5", "#bb674d", "#a27567"], ["haiku-4.5", "#c37c66", "#af8679"],
-  ["gpt-6-astra", "#2460b8", "#456492"], ["gpt-6.1-sol", "#497ac1", "#617ba2"],
-  ["gpt-6-luna", "#6d92ca", "#7c92b3"], ["grok-4.7", "#a55b98", "#946a8b"],
-  ["gemini-3.8-flash", "#00755a", "#426e5f"], ["gemini-3.5-flash-lite", "#4ba488", "#709c8c"],
+  ["fable-5.2", "#a73a15", "#8b5240"],
+  ["opus-5.5", "#b15233", "#976353"],
+  ["sonnet-5.5", "#bb674d", "#a27567"],
+  ["haiku-5.5", "#c37c66", "#af8679"],
+  ["gpt-6.2-astra", "#2460b8", "#456492"],
+  ["gpt-6.2-sol", "#497ac1", "#617ba2"],
+  ["gpt-6-luna", "#6d92ca", "#7c92b3"],
+  ["grok-4.7", "#a55b98", "#946a8b"],
+  ["gemini-4-carbon", "#00755a", "#426e5f"],
+  ["gemini-4-hydrogen", "#008f6f", "#528674"],
+  ["gemini-3.5-flash-lite", "#4ba488", "#709c8c"],
 ] as const;
 
 // Providers intentionally drawn in NEUTRAL rather than a company hue.
 const HUELESS_PROVIDERS = new Set(["local", "other"]);
 
 const legacyForRung: Record<string, string> = {
-  "fable-5.1": "fable-5", "opus-5.5": "opus-5", "sonnet-5.5": "sonnet-5",
-  "gpt-6.1-sol": "gpt-6-sol", "gpt-6-luna": "gpt-5.6-luna", "grok-4.7": "grok-4.6",
-  "gemini-3.8-flash": "gemini-3.7-flash", "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
+  "fable-5.2": "fable-5.1", "opus-5.5": "opus-5", "sonnet-5.5": "sonnet-5", "haiku-5.5": "haiku-4.5",
+  "gpt-6.2-astra": "gpt-6-astra", "gpt-6.2-sol": "gpt-6.1-sol",
+  "gpt-6-luna": "gpt-5.6-luna", "grok-4.7": "grok-4.6",
+  "gemini-4-hydrogen": "gemini-3.8-flash", "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
 };
 
 function mutedForRung(rung: string): string {
@@ -105,11 +112,37 @@ describe("ailog OKLCH palette", () => {
     }
   });
 
-  it("E: keeps the ten simultaneous core series distinguishable, including CVD transforms", () => {
+  it("places the Gemini 4 reasoning IDs in their confirmed Google tiers", () => {
+    for (const [family, efforts] of [
+      ["gemini-4-carbon", ["low", "medium", "high"]],
+      ["gemini-4-hydrogen", ["low", "medium", "high", "xhigh"]],
+    ] as const) {
+      for (const effort of efforts) {
+        const raw = `${family}-${effort}`;
+        expect(providerOf(raw)).toBe("google");
+        expect(resolveFamily(raw)).toBe(family);
+        expect(modelPaint(raw)).toEqual(modelPaint(family));
+        expect(modelPaint(raw).tone).toBe("solid");
+      }
+    }
+    expect(hexToOklch(modelPaint("gemini-4-carbon").color).L)
+      .toBeLessThan(hexToOklch(modelPaint("gemini-4-hydrogen").color).L);
+    expect(modelPaint("gemini-3.8-flash").tone).toBe("muted");
+    expect(modelPaint("claude-fable-5-2").tone).toBe("solid");
+    expect(modelPaint("claude-haiku-5-5").tone).toBe("solid");
+  });
+
+  it("paints the historical series label and the current family supplied by the backend", () => {
+    expect(seriesPaint("gpt-6.2-sol", "model")).toEqual(modelPaint("gpt-6.2-sol"));
+    expect(seriesPaint("gpt-6.2", "model")).toEqual(modelPaint("gpt-6.2-astra"));
+    expect(seriesPaint("gpt-6.2-sol", "model_raw")).toEqual(modelPaint("gpt-6.2-sol"));
+  });
+
+  it("E: keeps the eleven simultaneous core series distinguishable, including CVD transforms", () => {
     const core = Object.values(TIER_LADDER).flat().map((rung) => modelPaint(rung).color);
     const minPairwise = (colors: readonly string[]) => Math.min(...colors.flatMap((color, index) => colors.slice(index + 1).map((other) => deltaEok(color, other))));
     expect(minPairwise(core)).toBeGreaterThanOrEqual(0.035);
-    expect(core).toHaveLength(10); // Includes all four cloud providers.
+    expect(core).toHaveLength(11); // Includes all four cloud providers.
     for (const matrix of [
       [[0.152286, 1.052583, -0.204868], [0.114503, 0.786281, 0.099216], [-0.003882, -0.048116, 1.051998]],
       [[0.367322, 0.860646, -0.227968], [0.280085, 0.672501, 0.047413], [-0.011820, 0.042940, 0.968881]],
@@ -166,7 +199,7 @@ describe("ailog OKLCH palette", () => {
     expect(modelPaint("opus-4.8")).toEqual({ color: mutedForRung("opus-5.5"), tone: "muted" });
     expect(providerOf("grok-4.6")).toBe("xai");
     const unlisted = modelPaint("claude-totally-new-model");
-    expect(unlisted).toEqual(UNTIERED_POLICY === "neutral" ? { color: NEUTRAL_COLOR, tone: "neutral" } : { color: mutedForRung("haiku-4.5"), tone: "muted" });
+    expect(unlisted).toEqual(UNTIERED_POLICY === "neutral" ? { color: NEUTRAL_COLOR, tone: "neutral" } : { color: mutedForRung("haiku-5.5"), tone: "muted" });
     expect(modelPaint("totally-unknown-x")).toEqual({ color: NEUTRAL_COLOR, tone: "neutral" });
     expect(modelPaint("ollama/llama3")).toEqual({ color: NEUTRAL_COLOR, tone: "neutral" });
     expect(modelPaint("fugu-ultra")).toEqual({ color: NEUTRAL_COLOR, tone: "neutral" });
@@ -189,14 +222,23 @@ describe("ailog OKLCH palette", () => {
     expect(seriesPaint("gpt-5.6", "model")).toEqual(modelPaint("gpt-5.6-terra"));
     expect(seriesPaint("gpt-6.1", "model")).toEqual(modelPaint("gpt-6.1-sol"));
     expect(seriesPaint("opus-5.5", "model")).toEqual({ color: modelPaint("claude-opus-5-5").color, tone: "solid" });
-    expect(FAMILY_REPRESENTATIVE).toEqual({ "gpt-6": "gpt-6-astra", "gpt-6.1": "gpt-6.1-sol", "gpt-5.6": "gpt-5.6-terra" });
+    expect(seriesPaint("gpt-6.2", "model")).toEqual(modelPaint("gpt-6.2-astra"));
+    expect(modelPaint("gpt-6.2-sol").tone).toBe("solid");
+    expect(modelPaint("gpt-6-astra").tone).toBe("muted");
+    expect(modelPaint("gpt-6.1-sol").tone).toBe("muted");
+    expect(FAMILY_REPRESENTATIVE).toEqual({
+      "gpt-6.2": "gpt-6.2-astra", "gpt-6": "gpt-6-astra", "gpt-6.1": "gpt-6.1-sol", "gpt-5.6": "gpt-5.6-terra",
+    });
     const rungs = Object.values(TIER_LADDER).flat();
-    expect(rungs).toHaveLength(10);
+    expect(rungs).toHaveLength(11);
     for (const rung of rungs) expect(seriesPaint(rung, "model").tone, rung).not.toBe("muted");
   });
 
   it("resolves current snapshots and does not assign future Claude versions to older families", () => {
     for (const [raw, family] of [
+      ["claude-fable-5-2", "fable-5.2"], ["claude-haiku-5-5", "haiku-5.5"],
+      ["gpt-6.2-sol", "gpt-6.2"], ["gpt-6.2-astra", "gpt-6.2"],
+      ["gemini-4-carbon-medium", "gemini-4-carbon"], ["gemini-4-hydrogen-xhigh", "gemini-4-hydrogen"],
       ["claude-fable-5-1", "fable-5.1"], ["claude-opus-5-5[1m]", "opus-5.5"],
       ["claude-sonnet-5-5-20260928", "sonnet-5.5"], ["gpt-6.1-sol", "gpt-6.1"],
       ["claude-opus-5-7", "claude-opus-5-7"], ["gemini-3.8-flash-20260901", "gemini-3.8-flash"],
@@ -208,12 +250,14 @@ describe("ailog OKLCH palette", () => {
 
   it("keeps snapshot colors stable and future named variants visibly untiered", () => {
     for (const [snapshot, base] of [
+      ["gpt-6.2-astra-20261117", "gpt-6.2-astra"],
+      ["gpt-6.2[sol]", "gpt-6.2-sol"],
       ["gpt-6.1-sol-2026-09-22", "gpt-6.1-sol"],
       ["gpt-6[astra]", "gpt-6-astra"],
       ["gpt-5.6-sol-20260901", "gpt-5.6-sol"],
       ["claude-opus-5-5-20260922[1m]", "claude-opus-5-5"],
     ]) expect(modelPaint(snapshot)).toEqual(modelPaint(base));
-    for (const model of ["gpt-6.1-nova", "claude-opus-5-5-future", "gemini-3.8-flash-image"]) {
+    for (const model of ["gpt-6.2-nova", "gpt-6.1-nova", "claude-opus-5-5-future", "gemini-3.8-flash-image", "gemini-4-carbon-xhigh"]) {
       expect(modelPaint(model).tone, model).toBe("muted");
     }
   });

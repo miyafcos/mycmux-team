@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -75,6 +75,7 @@ struct LiveSessions {
 struct DataJsonFingerprint {
     path: PathBuf,
     sha256: [u8; 32],
+    tab_count: usize,
 }
 
 pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Option<PathBuf>) {
@@ -130,15 +131,34 @@ where
     F: FnOnce() -> Result<(), String>,
     G: FnOnce() -> Result<(), String>,
 {
-    let _initial_live_sessions = collect_live_sessions(&roots.app_data_parent)?;
+    // A startup sweep can be the first reader after a previous run broke the
+    // layout. Compare with the last sweep as well as the first in-run probe.
+    let checkpoint = roots.mycmux_dir.join("session-retention-live-tabs.json");
+    let mut previous = read_tab_counts(&checkpoint)?;
+    let initial = collect_live_sessions(&roots.app_data_parent)?;
+    for file in initial.data_json_fingerprints {
+        let count = previous.entry(file.path).or_default();
+        *count = (*count).max(file.tab_count);
+    }
     before_reprobe()?;
-    // Fail closed on a profile created, removed, or replaced after the first
-    // probe. No scrollback GC or record move may happen before this re-probe.
+    // Re-probe before any scrollback deletion or record move.
     let live_sessions = collect_live_sessions(&roots.app_data_parent)?;
     after_reprobe()?;
-    let expected_fingerprints = live_sessions.data_json_fingerprints.clone();
+    let current: BTreeMap<_, _> = live_sessions.data_json_fingerprints.iter()
+        .map(|file| (file.path.clone(), file.tab_count))
+        .collect();
+    for (path, before) in previous {
+        let after = current.get(&path).copied().unwrap_or_default();
+        if crate::db::storage::large_tab_drop(before, after) {
+            crate::diag_warn!("session_retention",
+                "skipped sweep after live tabs dropped {before}->{after} in {}", path.display());
+            write_tab_counts(&checkpoint, &current)?;
+            return Ok(RetentionSummary::default());
+        }
+    }
+    let expected_fingerprints = &live_sessions.data_json_fingerprints;
     let mut ensure_unchanged = || {
-        ensure_retention_inputs_unchanged(&roots.app_data_parent, &expected_fingerprints)
+        ensure_retention_inputs_unchanged(&roots.app_data_parent, expected_fingerprints)
     };
     for (scrollback_dir, keep) in &live_sessions.scrollback_keep_sets {
         crate::pty::scrollback_store::gc_guarded(scrollback_dir, keep, || {
@@ -179,7 +199,24 @@ where
         &mut ensure_unchanged,
     )?;
 
+    write_tab_counts(&checkpoint, &current)?;
     Ok(summary)
+}
+
+fn read_tab_counts(path: &Path) -> Result<BTreeMap<PathBuf, usize>, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| format!("parse {} failed: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("read {} failed: {error}", path.display())),
+    }
+}
+
+fn write_tab_counts(path: &Path, counts: &BTreeMap<PathBuf, usize>) -> Result<(), String> {
+    let bytes = serde_json::to_vec(counts).map_err(|error| error.to_string())?;
+    crate::util::atomic_write::AtomicWrite::new(
+        "retention tab counts", "Failed to install retention tab counts",
+    ).create_parents().write_bytes(path, &bytes)
 }
 
 fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String> {
@@ -259,13 +296,14 @@ fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String>
                     let data: RetentionData = serde_json::from_slice(&contents).map_err(|error| {
                         format!("parse {} failed: {error}", data_path.display())
                     })?;
-                    live_sessions.data_json_fingerprints.push(DataJsonFingerprint {
-                        path: data_path.clone(),
-                        sha256: Sha256::digest(&contents).into(),
-                    });
                     let mut local_ids = HashSet::new();
                     let mut local_tab_ids = HashSet::new();
                     insert_live_session_ids(&data, &mut local_ids, &mut local_tab_ids);
+                    live_sessions.data_json_fingerprints.push(DataJsonFingerprint {
+                        path: data_path.clone(),
+                        sha256: Sha256::digest(&contents).into(),
+                        tab_count: local_tab_ids.len(),
+                    });
                     live_sessions.all_ids.extend(local_ids.iter().cloned());
                     live_sessions.tab_ids.extend(local_tab_ids.iter().cloned());
                     let scrollback_dir = data_path.parent()
@@ -772,6 +810,53 @@ mod tests {
         assert!(pane_session_path(&roots, &recent_id).exists());
         assert!(!trash_session_path(&roots, now, &recent_id).exists());
         assert!(!trash_pane_session_path(&roots, now, &recent_id).exists());
+    }
+
+    #[test]
+    fn startup_sweep_leaves_scrollback_and_records_after_a_drop_since_the_previous_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let app = "com.miyazaki.mycmux";
+        let ids = [("ws1", "p1", "tab1"), ("ws2", "p2", "tab2"),
+            ("ws3", "p3", "tab3"), ("ws4", "p4", "tab4")];
+        let missing = make_session_id("ws4", "p4", "tab4");
+        let now = future_old_now();
+        write_data_json(&roots, app, &ids);
+        write_legacy_scrollback(&roots, app, &missing, b"recent output");
+        create_records(&roots, &missing);
+        run_retention_once(&roots, now).unwrap();
+        write_data_json(&roots, app, &ids[..1]);
+
+        let skipped = run_retention_once(&roots, now).unwrap();
+
+        assert!(scrollback_path(&roots, app, &missing).is_file());
+        assert_eq!(skipped.moved, 0);
+        assert!(session_path(&roots, &missing).is_dir());
+        assert!(pane_session_path(&roots, &missing).is_file());
+
+        // A later scan with the same count is not a new reduction.
+        assert_eq!(run_retention_once(&roots, now).unwrap().moved, 2);
+        assert!(!scrollback_path(&roots, app, &missing).exists());
+    }
+
+    #[test]
+    fn startup_sweep_leaves_scrollback_if_one_profile_shrinks_between_probes() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let app = "com.miyazaki.mycmux";
+        let ids = [("ws1", "p1", "tab1"), ("ws2", "p2", "tab2"),
+            ("ws3", "p3", "tab3"), ("ws4", "p4", "tab4")];
+        let missing = make_session_id("ws4", "p4", "tab4");
+        write_data_json(&roots, app, &ids);
+        write_legacy_scrollback(&roots, app, &missing, b"recent output");
+
+        run_retention_once_with_before_reprobe(&roots, future_old_now(), || {
+            write_data_json(&roots, app, &ids[..1]);
+            write_data_json(&roots, "com.miyazaki.mycmux-lite", &ids);
+            Ok(())
+        }).unwrap();
+
+        assert!(scrollback_path(&roots, app, &missing).is_file());
     }
 
     #[test]

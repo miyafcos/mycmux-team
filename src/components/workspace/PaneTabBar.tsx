@@ -24,7 +24,7 @@ import { getTabDisplayLabel, getTabDisplayFullLabel } from "../../lib/tabDisplay
 import { resolveTabMark, tabMarkSource, type TabMark } from "../../lib/tabMark";
 import { AGENT_DORMANT_LABEL, dormantAgentDescription } from "../../lib/agentDormancy";
 import { openDormantCompletionRecord } from "../../lib/dormantCompletion";
-import { crsmCreateHandoff, duplicateAgentSession, type CliProvider } from "../../lib/ipc";
+import { crsmCreateHandoff, duplicateAgentSession, type SwitchableCliProvider } from "../../lib/ipc";
 import { cliAccountSessionErrorMessage } from "../../lib/cliAccounts";
 import {
   buildClonedDuplicateSessionPaneOptions,
@@ -40,6 +40,7 @@ import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { capturePaneFocusReturn, captureTemporaryFocusReturn, focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import { useUiStore } from "../../stores/uiStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { isDeclaredTab } from "../../lib/tabLifecycle";
@@ -93,6 +94,7 @@ interface PaneTabBarProps {
   onAddTab?: (agentId?: string, type?: PaneTab["type"]) => void;
   onRemoveTab?: (tabId: string) => void;
   onSelectTab?: (tabId: string) => void;
+  onRepaintDisplay?: (tab: PaneTab) => void;
   hasTerminalBuffer: (sessionId: string) => boolean;
 }
 
@@ -971,6 +973,7 @@ export default memo(function PaneTabBar({
   onAddTab,
   onRemoveTab,
   onSelectTab,
+  onRepaintDisplay,
   hasTerminalBuffer,
 }: PaneTabBarProps) {
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
@@ -1032,7 +1035,7 @@ export default memo(function PaneTabBar({
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const contextFocusReturnRef = useRef<ReturnType<typeof capturePaneFocusReturn> | null>(null);
-  const [accountPanelTab, setAccountPanelTab] = useState<{ tab: PaneTab; provider: CliProvider } | null>(null);
+  const [accountPanelTab, setAccountPanelTab] = useState<{ tab: PaneTab; provider: SwitchableCliProvider } | null>(null);
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
   const publishPopoverRef = useRef<HTMLDivElement>(null);
@@ -1194,6 +1197,8 @@ export default memo(function PaneTabBar({
       return;
     }
 
+    const finish = beginLayoutOperation();
+    if (!finish) return;
     duplicateSessionLocksRef.current.add(tab.id);
     setDuplicatingTabIds((current) => new Set(current).add(tab.id));
 
@@ -1245,6 +1250,7 @@ export default memo(function PaneTabBar({
         "error",
       );
     } finally {
+      finish();
       duplicateSessionLocksRef.current.delete(tab.id);
       setDuplicatingTabIds((current) => {
         const next = new Set(current);
@@ -1383,7 +1389,7 @@ export default memo(function PaneTabBar({
   const commitTabLabel = useCallback((tab: PaneTab) => {
     const trimmed = editValue.trim();
     const nextLabel = trimmed === "" ? undefined : trimmed;
-    if (nextLabel !== tab.label) {
+    if (!isPreparingLayoutQuit() && nextLabel !== tab.label) {
       setTabLabel(workspaceId, pane.id, tab.id, nextLabel);
     }
     finishEditingTab();
@@ -1425,6 +1431,8 @@ export default memo(function PaneTabBar({
   const contextTab = contextMenu
     ? pane.tabs.find((candidate) => candidate.id === contextMenu.tabId)
     : undefined;
+  const displayActionAvailable = (tab?: PaneTab): boolean => Boolean(onRepaintDisplay && tab &&
+    (tab.type === undefined || tab.type === "terminal") && !isDeclaredTab(tab));
   const canResetContextTabName = contextTab?.label !== undefined;
   const isContextTabPinned = contextTab !== undefined && contextTab.id === pane.pinnedTabId;
 
@@ -1502,6 +1510,9 @@ export default memo(function PaneTabBar({
     { id: "reset-name", label: paneTabMenuStrings.resetName, disabled: activeTab?.label === undefined,
       title: activeTab?.label === undefined ? terminalPaneStrings.automaticName : undefined,
       run: () => { if (activeTab) setTabLabel(workspaceId, pane.id, activeTab.id, undefined); } },
+    { id: "repaint-display", label: terminalPaneStrings.repaintDisplay, disabled: !displayActionAvailable(activeTab),
+      title: !displayActionAvailable(activeTab) ? terminalPaneStrings.displayRestoreUnavailable : undefined,
+      run: () => { if (activeTab) onRepaintDisplay?.(activeTab); } },
     { id: "search", label: terminalPaneStrings.searchTerminal, disabled: !canSearchTerminal,
       title: canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable,
       run: handleSearchTerminal },
@@ -1936,6 +1947,11 @@ export default memo(function PaneTabBar({
           </PaneTabContextMenuItem>
           <PaneTabContextMenuItem onClick={handleTogglePinContextTab}>
             {isContextTabPinned ? paneToolbarStrings.unpinTab : paneToolbarStrings.pinTab}
+          </PaneTabContextMenuItem>
+          <PaneTabContextMenuItem disabled={!displayActionAvailable(contextTab)}
+            title={!displayActionAvailable(contextTab) ? terminalPaneStrings.displayRestoreUnavailable : undefined}
+            onClick={() => { if (contextTab) onRepaintDisplay?.(contextTab); closeContextMenu(); }}>
+            {terminalPaneStrings.repaintDisplay}
           </PaneTabContextMenuItem>
         </div>, portalTarget
       )}

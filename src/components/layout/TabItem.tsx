@@ -1,6 +1,7 @@
 import { memo, useState, useRef, useCallback, useEffect } from "react";
 import { ATTENTION_REASON_COLOR, ATTENTION_REASON_LABEL, unseenAttentionLabel } from "../../lib/attentionPresentation";
 import { resolveWorkspaceColor, workspaceRowBackground } from "../../lib/workspaceColors";
+import { isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import PetSprite, { type PetSpriteState } from "../workspace/PetSprite";
 import type { AttentionCategory } from "../../stores/sessionAttentionStore";
 
@@ -102,7 +103,7 @@ export default memo(function TabItem({ uiVariant = "default", name, description,
 
   const commitRename = useCallback(() => {
     const trimmed = editValue.trim();
-    if (trimmed && onRename) {
+    if (!isPreparingLayoutQuit() && trimmed && onRename) {
       onRename(trimmed);
     }
     setEditing(false);

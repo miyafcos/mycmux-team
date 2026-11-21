@@ -10,6 +10,8 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
+
+use super::webpane_native::input_activity;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
     WebviewUrl, Window,
@@ -17,6 +19,17 @@ use tauri::{
 
 #[path = "webpane_preview_links.rs"]
 mod preview_links;
+
+#[path = "webpane_input_proof.rs"]
+mod input_proof;
+#[path = "webpane_operator_focus.rs"]
+mod operator_focus;
+#[path = "webpane_shortcut_proof.rs"]
+mod shortcut_proof;
+
+pub(crate) fn listen_for_operator_focus_acceptance(app: &AppHandle) {
+    operator_focus::listen_for_acceptance(app);
+}
 
 pub(crate) fn retains_preview_mzopen_href(url: &str) -> bool {
     preview_links::retains_mzopen_href(url)
@@ -220,6 +233,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
 ];
 
 const WEB_PANE_KEYDOWN_EVENT: &str = "mycmux:web-pane-keydown";
+const WEB_PANE_SHORTCUT_WAITING_EVENT: &str = "mycmux:web-pane-shortcut-waiting";
 const WEB_PANE_URL_EVENT: &str = "mycmux:web-pane-url";
 #[cfg(target_os = "windows")]
 const WEB_PANE_SIGNIN_EVENT: &str = "mycmux:web-pane-signin";
@@ -259,6 +273,8 @@ static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 static WEB_PANE_OPEN_PRESETS: OnceLock<DashMap<String, &'static str>> = OnceLock::new();
 // Backend-authoritative shortcut registration; page state is untrusted.
 static WEB_PANE_FORWARDED_SHORTCUTS: OnceLock<DashMap<String, Vec<String>>> = OnceLock::new();
+type ShortcutProofs = DashMap<String, Mutex<shortcut_proof::ShortcutProofGate>>;
+static WEB_PANE_SHORTCUT_PROOFS: OnceLock<ShortcutProofs> = OnceLock::new();
 /// The original file URL, not the current page URL (which a relative link can change).
 static WEB_PANE_PREVIEW_URLS: OnceLock<DashMap<String, Url>> = OnceLock::new();
 static WEB_PANE_PREVIEW_RELOAD_SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -685,8 +701,16 @@ fn validate_forwarded_shortcuts(mut shortcuts: Vec<String>) -> Result<Vec<String
     Ok(shortcuts)
 }
 
-fn shortcut_registry() -> &'static DashMap<String, Vec<String>> {
+pub(super) fn mark_automation_input(label: &str) {
+    operator_focus::automation_touches().mark(label);
+}
+
+pub(super) fn shortcut_registry() -> &'static DashMap<String, Vec<String>> {
     WEB_PANE_FORWARDED_SHORTCUTS.get_or_init(DashMap::new)
+}
+
+fn shortcut_proofs() -> &'static ShortcutProofs {
+    WEB_PANE_SHORTCUT_PROOFS.get_or_init(DashMap::new)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -702,6 +726,33 @@ pub struct WebPaneForwardedKey {
     meta_key: bool,
     repeat: bool,
     is_composing: bool,
+    #[serde(default, skip_serializing)]
+    proof: Option<shortcut_proof::ShortcutProof>,
+}
+
+pub(super) fn physical_alphanumeric_code(code: &str) -> Result<Option<char>, ()> {
+    let (suffix, valid): (&str, fn(&u8) -> bool) = if let Some(letter) = code.strip_prefix("Key") {
+        (letter, u8::is_ascii_uppercase)
+    } else if let Some(digit) = code.strip_prefix("Digit") {
+        (digit, u8::is_ascii_digit)
+    } else if let Some(keypad) = code.strip_prefix("Numpad") {
+        if matches!(
+            keypad,
+            "Add" | "Backspace" | "Clear" | "ClearEntry" | "Comma" | "Decimal" | "Divide"
+                | "Enter" | "Equal" | "Hash" | "MemoryAdd" | "MemoryClear" | "MemoryRecall"
+                | "MemoryStore" | "MemorySubtract" | "Multiply" | "ParenLeft" | "ParenRight"
+                | "Star" | "Subtract"
+        ) {
+            return Ok(None);
+        }
+        (keypad, u8::is_ascii_digit)
+    } else {
+        return Ok(None);
+    };
+    match suffix.as_bytes() {
+        [byte] if valid(byte) => Ok(Some(char::from(byte.to_ascii_lowercase()))),
+        _ => Err(()),
+    }
 }
 
 fn physical_shortcut_key(code: &str) -> Option<String> {
@@ -715,12 +766,8 @@ fn physical_shortcut_key(code: &str) -> Option<String> {
         _ => "",
     };
     if !named.is_empty() { return Some(named.to_string()); }
-    if let Some(letter) = code.strip_prefix("Key").filter(|s| s.len() == 1 && s.as_bytes()[0].is_ascii_uppercase()) {
-        return Some(letter.to_ascii_lowercase());
-    }
-    if let Some(digit) = code.strip_prefix("Digit").or_else(|| code.strip_prefix("Numpad"))
-        .filter(|s| s.len() == 1 && s.as_bytes()[0].is_ascii_digit()) {
-        return Some(digit.to_string());
+    if let Ok(Some(key)) = physical_alphanumeric_code(code) {
+        return Some(key.to_string());
     }
     if let Some(number) = code.strip_prefix('F').and_then(|n| n.parse::<u8>().ok())
         .filter(|n| (1..=24).contains(n)) {
@@ -729,23 +776,54 @@ fn physical_shortcut_key(code: &str) -> Option<String> {
     None
 }
 
-fn forwarded_shortcut(payload: &WebPaneForwardedKey, is_mac: bool) -> String {
-    let key = if is_mac && payload.alt_key {
-        physical_shortcut_key(&payload.code).unwrap_or_else(|| payload.key.to_lowercase())
-    } else {
-        payload.key.to_lowercase()
-    };
+fn shortcut_for_key(key: &str, modifiers: [bool; 4]) -> String {
+    let key = key.to_lowercase();
     let key = match key.as_str() { " " => "space", "esc" => "escape", _ => &key };
     let mut parts = Vec::new();
-    if payload.ctrl_key { parts.push("ctrl"); }
-    if payload.alt_key { parts.push("alt"); }
-    if payload.shift_key { parts.push("shift"); }
-    if payload.meta_key { parts.push("meta"); }
+    for (name, pressed) in ["ctrl", "alt", "shift", "meta"].into_iter().zip(modifiers) {
+        if pressed { parts.push(name); }
+    }
     parts.push(key);
     parts.join("+")
 }
 
-fn authorize_forwarded_shortcut(
+fn forwarded_shortcut(payload: &WebPaneForwardedKey, is_mac: bool) -> String {
+    let physical_key = (is_mac && payload.alt_key)
+        .then(|| physical_shortcut_key(&payload.code)).flatten();
+    shortcut_for_key(
+        physical_key.as_deref().unwrap_or(&payload.key),
+        [payload.ctrl_key, payload.alt_key, payload.shift_key, payload.meta_key],
+    )
+}
+
+#[cfg(any(windows, target_os = "macos", test))]
+pub(super) fn reject_registered_native_key(
+    registry: &DashMap<String, Vec<String>>,
+    label: &str,
+    action: &super::webpane_native::WebPaneTrustedInput,
+) -> Result<(), String> {
+    use super::webpane_native::WebPaneTrustedInput;
+    let WebPaneTrustedInput::Key { key, code, modifiers, .. } = action else { return Ok(()) };
+    let Some(registered) = registry.get(label) else { return Ok(()) };
+    let modifiers = modifiers.as_deref().unwrap_or_default();
+    let pressed = |names: &[&str]| modifiers.iter()
+        .any(|m| names.iter().any(|name| m.eq_ignore_ascii_case(name)));
+    let pressed_modifiers = [pressed(&["ctrl", "control"]), pressed(&["alt"]),
+        pressed(&["shift"]), pressed(&["meta"])];
+    let matches = |key: &str| registered.contains(&shortcut_for_key(key, pressed_modifiers));
+    let is_registered =
+        matches(key) || code.as_deref().and_then(physical_shortcut_key).as_deref().is_some_and(matches);
+    #[cfg(target_os = "macos")]
+    let is_registered = is_registered
+        || super::webpane_native::dispatched_physical_key(key, code.as_deref(), modifiers)
+            .is_some_and(matches);
+    if is_registered {
+        return Err("This mycmux shortcut will not be sent to the Web tab".into());
+    }
+    Ok(())
+}
+
+fn validate_forwarded_shortcut(
     caller_label: &str,
     registered: &[String],
     payload: &WebPaneForwardedKey,
@@ -766,60 +844,171 @@ fn authorize_forwarded_shortcut(
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ShortcutForwardingDenial {
+    Rejected,
+    AwaitingReply,
+}
+
+fn authorize_forwarded_shortcut(
+    caller_label: &str,
+    registered: &[String],
+    payload: &WebPaneForwardedKey,
+    is_mac: bool,
+    gate: &mut shortcut_proof::ShortcutProofGate,
+    now: u64,
+    intervals: &input_activity::InputIntervals,
+) -> Result<(), ShortcutForwardingDenial> {
+    validate_forwarded_shortcut(caller_label, registered, payload, is_mac)
+        .map_err(|_| ShortcutForwardingDenial::Rejected)?;
+    let mut waiting_for_reply = false;
+    if !gate.accepts(payload, now, |pressed| {
+        let blocked = intervals.blocks(caller_label, pressed, now);
+        waiting_for_reply = blocked && intervals.waiting_for_reply(caller_label);
+        blocked
+    }) {
+        return Err(if waiting_for_reply {
+            ShortcutForwardingDenial::AwaitingReply
+        } else {
+            ShortcutForwardingDenial::Rejected
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn webpane_forward_shortcut(
     caller: Webview,
     ipc: crate::ipc_caller::IpcCaller,
-    payload: WebPaneForwardedKey,
+    payload: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    let Ok(payload) = serde_json::from_value::<WebPaneForwardedKey>(payload.unwrap_or_default()) else {
+        ipc.log_denied();
+        return Ok(());
+    };
+    let target = tauri::EventTarget::Webview { label: caller.window().label().to_owned() };
     let result = (|| {
         if !open_presets().contains_key(caller.label()) {
-            return Err("web pane shortcut caller is not registered".to_string());
+            return Err(ShortcutForwardingDenial::Rejected);
         }
-        let registered = shortcut_registry().get(caller.label())
-            .ok_or_else(|| "web pane shortcuts are not registered".to_string())?;
-        authorize_forwarded_shortcut(caller.label(), &registered, &payload, cfg!(target_os = "macos"))?;
-        // The fixed event goes only to the primary webview owning this child.
-        caller.app_handle().emit_to(
-            tauri::EventTarget::Webview { label: caller.window().label().to_string() },
-            WEB_PANE_KEYDOWN_EVENT,
-            payload,
-        ).map_err(|error| format!("failed to forward web pane shortcut: {error}"))
+        {
+            let now = input_activity::unix_millis();
+            let registered = shortcut_registry().get(caller.label())
+                .ok_or(ShortcutForwardingDenial::Rejected)?;
+            let proof = shortcut_proofs().get(caller.label())
+                .ok_or(ShortcutForwardingDenial::Rejected)?;
+            let mut gate = proof.lock().map_err(|_| ShortcutForwardingDenial::Rejected)?;
+            authorize_forwarded_shortcut(
+                caller.label(), &registered, &payload, cfg!(target_os = "macos"), &mut gate, now,
+                &input_activity::activity_at(now),
+            )?;
+        }
+        // The fixed events go only to the primary webview owning this child.
+        caller.app_handle().emit_to(target.clone(), WEB_PANE_KEYDOWN_EVENT, &payload)
+            .map_err(|_| ShortcutForwardingDenial::Rejected)
     })();
-    if result.is_err() { ipc.log_denied(); }
-    result
+    if let Err(reason) = result {
+        ipc.log_denied();
+        if reason == ShortcutForwardingDenial::AwaitingReply {
+            let _ = caller.app_handle().emit_to(target, WEB_PANE_SHORTCUT_WAITING_EVENT, &payload.tab_id);
+        }
+    }
+    Ok(())
 }
 
-fn shortcut_initialization_script(tab_id: &str, shortcuts: &[String]) -> Result<String, String> {
+fn shortcut_initialization_script(
+    tab_id: &str,
+    shortcuts: &[String],
+    proof_key: &str,
+) -> Result<String, String> {
     let tab_id = serde_json::to_string(tab_id)
         .map_err(|error| format!("failed to serialize web pane tab id: {error}"))?;
     let shortcuts = serde_json::to_string(shortcuts)
         .map_err(|error| format!("failed to serialize web pane shortcuts: {error}"))?;
     let state_name = serde_json::to_string(WEB_PANE_SHORTCUT_STATE)
         .map_err(|error| format!("failed to serialize web pane shortcut state: {error}"))?;
+    let proof_key = serde_json::to_string(proof_key)
+        .map_err(|_| "failed to serialize web pane shortcut proof key".to_string())?;
+    let hmac = include_str!("webpane_hmac.js").trim();
     Ok(format!(
         r#"(() => {{
   const stateName = {state_name};
   const state = {{ shortcuts: new Set({shortcuts}) }};
+  const tabId = {tab_id};
+  const sign = ({hmac})({proof_key});
+  const dateNow = Date.now;
+  const random = crypto.getRandomValues.bind(crypto);
+  const call = (method) => Function.prototype.call.bind(method);
+  const get = (prototype, name) => call(Object.getOwnPropertyDescriptor(prototype, name).get);
+  const nativeKey = KeyboardEvent.prototype;
+  const wasPrevented = get(Event.prototype, "defaultPrevented");
+  const key = get(nativeKey, "key");
+  const code = get(nativeKey, "code");
+  const location = get(nativeKey, "location");
+  const ctrl = get(nativeKey, "ctrlKey");
+  const alt = get(nativeKey, "altKey");
+  const shift = get(nativeKey, "shiftKey");
+  const meta = get(nativeKey, "metaKey");
+  const repeat = get(nativeKey, "repeat");
+  const composing = get(nativeKey, "isComposing");
+  const keyCode = get(nativeKey, "keyCode");
+  const preventDefault = call(Event.prototype.preventDefault);
+  const stopImmediately = call(Event.prototype.stopImmediatePropagation);
+  const lowercase = call(String.prototype.toLowerCase);
+  const has = call(state.shortcuts.has);
+  const ipc = window.__TAURI_INTERNALS__;
+  const invoke = ipc.invoke.bind(ipc);
+  const then = call(Promise.prototype.then);
+  const ignore = () => undefined;
+  const bytes = random(new Uint8Array(16));
+  const digits = "0123456789abcdef";
+  let documentNonce = "";
+  for (let i = 0; i < 16; i++) {{
+    documentNonce += digits[bytes[i] >>> 4] + digits[bytes[i] & 15];
+  }}
+  let sequence = 0;
+
   Object.defineProperty(window, stateName, {{ value: state, configurable: false, enumerable: false }});
-  document.addEventListener("keydown", (event) => {{
+  document.addEventListener("keydown", (nativeEvent) => {{
+    const event = nativeEvent.isTrusted ? {{
+      isTrusted: true,
+      defaultPrevented: wasPrevented(nativeEvent),
+      isComposing: composing(nativeEvent),
+      keyCode: keyCode(nativeEvent),
+      key: key(nativeEvent),
+      code: code(nativeEvent),
+      location: location(nativeEvent),
+      ctrlKey: ctrl(nativeEvent),
+      altKey: alt(nativeEvent),
+      shiftKey: shift(nativeEvent),
+      metaKey: meta(nativeEvent),
+      repeat: repeat(nativeEvent),
+    }} : {{ isTrusted: false }};
     if (!event.isTrusted || event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229) return;
-    const parts = [];
-    if (event.ctrlKey) parts.push("ctrl");
-    if (event.altKey) parts.push("alt");
-    if (event.shiftKey) parts.push("shift");
-    if (event.metaKey) parts.push("meta");
-    let key = event.key.toLowerCase();
-    if (key === " ") key = "space";
-    if (key === "esc") key = "escape";
-    if (["control", "alt", "shift", "meta"].includes(key)) return;
-    parts.push(key);
-    if (!state.shortcuts.has(parts.join("+"))) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    void window.__TAURI_INTERNALS__.invoke("webpane_forward_shortcut", {{
+    const pressedAt = dateNow();
+    let normalized = lowercase(event.key);
+    if (normalized === " ") normalized = "space";
+    if (normalized === "esc") normalized = "escape";
+    if (normalized === "control" || normalized === "alt" || normalized === "shift" || normalized === "meta") return;
+    const shortcut = (event.ctrlKey ? "ctrl+" : "") + (event.altKey ? "alt+" : "")
+      + (event.shiftKey ? "shift+" : "") + (event.metaKey ? "meta+" : "") + normalized;
+    try {{
+      if (!has(state.shortcuts, shortcut)) return;
+    }} catch {{
+      // A document may have replaced its local copy of the registration.
+      return;
+    }}
+    preventDefault(nativeEvent);
+    stopImmediately(nativeEvent);
+    sequence += 1;
+    const message = documentNonce + "\n" + sequence + "\n" + pressedAt + "\n"
+      + tabId + "\n" + event.key + "\n" + event.code + "\n" + event.location + "\n"
+      + event.ctrlKey + "\n" + event.altKey + "\n" + event.shiftKey + "\n" + event.metaKey + "\n"
+      + event.repeat + "\n" + event.isComposing;
+    const proof = {{ document: documentNonce, sequence, pressedAt, mac: sign(message) }};
+    void then(invoke("webpane_forward_shortcut", {{
       payload: {{
-        tabId: {tab_id},
+        tabId,
         key: event.key,
         code: event.code,
         location: event.location,
@@ -828,9 +1017,10 @@ fn shortcut_initialization_script(tab_id: &str, shortcuts: &[String]) -> Result<
         shiftKey: event.shiftKey,
         metaKey: event.metaKey,
         repeat: event.repeat,
-        isComposing: event.isComposing
+        isComposing: event.isComposing,
+        proof,
       }}
-    }}).catch(() => undefined);
+    }}), ignore, ignore);
   }}, true);
 }})();"#,
     ))
@@ -1121,13 +1311,44 @@ pub async fn webpane_create(
     } else {
         String::new()
     };
+    let operator_focus_gate = Mutex::new(operator_focus::OperatorFocusGate::new());
+    let operator_focus_script = if preset.id == "browser" {
+        operator_focus_gate.lock().map_err(|_| "operator focus gate failed")?.script()
+    } else {
+        String::new()
+    };
+    let operator_focus_tab = tab_id.clone();
+    let operator_focus_label = label.clone();
+    let operator_focus_owner = window.label().to_string();
+    let shortcut_key = input_proof::new_key();
+    let shortcut_script = shortcut_initialization_script(&tab_id, &forwarded_shortcuts, &shortcut_key)?;
     let navigation_app = app.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .focused(false)
         .data_directory(profile_dir)
         .initialization_script(automation_initialization_script(preset.id == "browser")?)
         .initialization_script(preview_click_script)
+        .initialization_script(operator_focus_script)
         .on_navigation(move |url| {
+            if url.host_str() == Some(operator_focus::REQUEST_HOST) {
+                use operator_focus::OperatorFocusDecision;
+                let now_ms = input_activity::unix_millis();
+                let decision = operator_focus_gate.lock().ok().map(|mut gate| {
+                    operator_focus::operator_focus_decision(
+                        &mut gate, url, preset.id, &operator_focus_label, now_ms,
+                        std::time::Instant::now(), &operator_focus::automation_touches(),
+                    )
+                });
+                let Some(decision @ (OperatorFocusDecision::Focus(_)
+                    | OperatorFocusDecision::AutomationRefused)) = decision else { return false };
+                let app = navigation_app.clone();
+                let owner = operator_focus_owner.clone();
+                let tab_id = operator_focus_tab.clone();
+                tauri::async_runtime::spawn(async move {
+                    operator_focus::emit_request(&app, owner, tab_id, decision);
+                });
+                return false;
+            }
             // Three answers, not two. A service pane follows its own site
             // wherever it goes, because that is what being signed in to it
             // means. The browser pane is held to its scheme rules. A preview
@@ -1162,10 +1383,7 @@ pub async fn webpane_create(
                 || preset_keeps_url_inside_pane(preset, url)
         })
         .on_download(move |_webview, event| handle_download(&download_tab_id, preset, event))
-        .initialization_script(shortcut_initialization_script(
-            &tab_id,
-            &forwarded_shortcuts,
-        )?);
+        .initialization_script(shortcut_script);
     #[cfg(target_os = "macos")]
     let builder = {
         let identifier = macos_data_store_identifier(preset.profile_dir);
@@ -1255,8 +1473,9 @@ pub async fn webpane_create(
     #[cfg(target_os = "macos")]
     crate::watchdog::register_mac_process_failed(&webview);
     crate::perf_timeline::mark("webpane.child.created", Some(&tab_id));
-    open_presets().insert(label.clone(), preset.id);
+    shortcut_proofs().insert(label.clone(), Mutex::new(shortcut_proof::ShortcutProofGate::with_key(shortcut_key)));
     shortcut_registry().insert(label.clone(), forwarded_shortcuts.clone());
+    open_presets().insert(label.clone(), preset.id);
     if preset.id == "preview" && url.as_str() != "about:blank" {
         preview_urls().insert(label.clone(), url);
     }
@@ -1359,6 +1578,9 @@ pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), Strin
             .close()
             .map_err(|error| format!("failed to destroy web pane: {error}"))?;
     }
+    shortcut_proofs().remove(&label);
+    #[cfg(any(windows, target_os = "macos"))]
+    input_activity::forget_webview(&label);
     Ok(())
 }
 
@@ -1428,8 +1650,10 @@ async fn webpane_signin_windows(
     for (label, _) in &closing {
         open_presets().remove(label);
         shortcut_registry().remove(label);
-        if let Some(webview) = app.get_webview(label) {
-            let _ = webview.close();
+        // A reused webview still embeds this key. Only new creation replaces it.
+        if app.get_webview(label).is_none_or(|webview| webview.close().is_ok()) {
+            #[cfg(any(windows, target_os = "macos"))]
+            input_activity::forget_webview(label);
         }
     }
     let _ = app.emit(
@@ -1549,7 +1773,7 @@ pub async fn webpane_push(
         return Err("webpane_push is only available to the primary app webview".to_string());
     }
     let _push_guard = WEB_PANE_PUSH_LOCK.lock().await;
-    let webview = command_webview(&caller, &app, &tab_id, "webpane_push")?;
+    let webview = command_webview(&caller, &app, &tab_id, "webpane_push", None)?;
     let preset = composer_preset(&webview, &tab_id)?;
     let (_pending, receiver) = start_evaluation(&webview, &WEB_PANE_PUSH_RESULTS, "push", |id| {
         composer_push_script(preset, id, text.as_deref(), submit)
@@ -1605,7 +1829,7 @@ pub async fn webpane_read(
         return Err("webpane_read is only available to the primary app webview".to_string());
     }
     let _read_guard = WEB_PANE_READ_LOCK.lock().await;
-    let webview = command_webview(&caller, &app, &tab_id, "webpane_read")?;
+    let webview = command_webview(&caller, &app, &tab_id, "webpane_read", Some(false))?;
     let preset = composer_preset(&webview, &tab_id)?;
     let (_pending, receiver) = start_evaluation(&webview, &WEB_PANE_READ_RESULTS, "read", |id| {
         read_script(preset, id)
@@ -1740,6 +1964,7 @@ fn command_webview(
     app: &AppHandle,
     tab_id: &str,
     command: &str,
+    automation: Option<bool>,
 ) -> Result<Webview, String> {
     if caller.label() != caller.window().label() {
         return Err(format!(
@@ -1747,6 +1972,7 @@ fn command_webview(
         ));
     }
     let label = webview_label(tab_id)?;
+    operator_focus::automation_touches().record_command(&label, automation);
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
@@ -1851,24 +2077,21 @@ async fn evaluation_with_timeout<T>(
 }
 
 async fn evaluate_webpane(
-    caller: &Webview,
-    app: &AppHandle,
-    tab_id: &str,
+    webview: &Webview,
     timeout_ms: Option<u64>,
     fallback_script: Option<&str>,
     make_script: impl FnOnce(&str) -> Result<String, String>,
 ) -> Result<serde_json::Value, String> {
-    let webview = command_webview(caller, app, tab_id, "web.eval")?;
     let timeout = evaluation_timeout(timeout_ms)?;
     // Queueing and both CSP attempts share one deadline.
     let fallback_started = std::sync::atomic::AtomicBool::new(false);
     evaluation_with_timeout(timeout, &fallback_started, async {
         let _eval_guard = WEB_PANE_EVAL_LOCK.lock().await;
-        let result = evaluation_roundtrip(&webview, make_script).await;
+        let result = evaluation_roundtrip(webview, make_script).await;
         let result = if let Some(script) = fallback_script {
             retry_csp_failure(result, || {
                 fallback_started.store(true, std::sync::atomic::Ordering::Relaxed);
-                evaluation_roundtrip(&webview, |id| direct_eval_script(id, script))
+                evaluation_roundtrip(webview, |id| direct_eval_script(id, script))
             })
             .await
         } else {
@@ -1887,13 +2110,13 @@ pub async fn webpane_eval(
     script: String,
     timeout_ms: Option<u64>,
     direct: Option<bool>,
+    automation: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", automation)?;
     validate_eval_script(&script)?;
     let direct = direct.unwrap_or(false);
     let value = evaluate_webpane(
-        &caller,
-        &app,
-        &tab_id,
+        &webview,
         timeout_ms,
         if direct { None } else { Some(&script) },
         |id| {
@@ -2027,9 +2250,9 @@ fn automation_initialization_script(browser: bool) -> Result<String, String> {
   };
   const prepare = target => {
     const el = resolve(target);
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") throw new Error("target is disabled");
     if (target.ref !== undefined || target.selector !== undefined)
       el.scrollIntoView({ block: "center", inline: "center" });
-    if (el.disabled || el.getAttribute("aria-disabled") === "true") throw new Error("target is disabled");
     return el;
   };
   const targetInfo = el => ({ generation: state.generation, ...(el.getAttribute("data-mycmux-ref") ? { ref: el.getAttribute("data-mycmux-ref") } : {}), rect: rect(el) });
@@ -2264,12 +2487,11 @@ fn direct_eval_script(request_id: &str, script: &str) -> Result<String, String> 
 }
 
 async fn helper_result(
-    caller: &Webview,
-    app: &AppHandle,
+    webview: &Webview,
     tab_id: &str,
     make_script: impl FnOnce(&str) -> Result<String, String>,
 ) -> Result<serde_json::Value, String> {
-    let mut value = evaluate_webpane(caller, app, tab_id, None, None, make_script).await?;
+    let mut value = evaluate_webpane(webview, None, None, make_script).await?;
     let result = value
         .as_object_mut()
         .ok_or_else(|| "web.eval failed: expected an object".to_string())?;
@@ -2284,6 +2506,7 @@ pub async fn webpane_navigate(
     tab_id: String,
     url: Option<String>,
     action: Option<String>,
+    automation: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     // The sandboxed frame cannot run document scripts or invoke this itself.
     // BrowserPane forwards a trusted anchor click from the primary app view.
@@ -2296,7 +2519,7 @@ pub async fn webpane_navigate(
         preview_links::open(app, target).await?;
         return Ok(serde_json::json!({ "accepted": true }));
     }
-    let webview = command_webview(&caller, &app, &tab_id, "web.navigate")?;
+    let webview = command_webview(&caller, &app, &tab_id, "web.navigate", automation)?;
     match (url, action.as_deref()) {
         (Some(url), None) => {
             let parsed = url
@@ -2333,7 +2556,7 @@ pub async fn webpane_reload_preview(
 ) -> Result<(), String> {
     // command_webview accepts the primary webview of either the main window or
     // a detached window, and refuses a caller from any other child webview.
-    let webview = command_webview(&caller, &app, &tab_id, "webpane.reload_preview")?;
+    let webview = command_webview(&caller, &app, &tab_id, "webpane.reload_preview", Some(false))?;
     if preset_for_label(webview.label()).map(|preset| preset.id) != Some("preview") {
         return Err("webpane.reload_preview requires a document preview".to_string());
     }
@@ -2368,7 +2591,8 @@ pub async fn webpane_snapshot(
     }
     let max_bytes = max_bytes.unwrap_or(262144);
     validate_snapshot_max_bytes(max_bytes)?;
-    helper_result(&caller, &app, &tab_id, |id| {
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", Some(false))?;
+    helper_result(&webview, &tab_id, |id| {
         snapshot_script(
             id,
             serde_json::json!({ "mode": mode, "maxBytes": max_bytes }),
@@ -2384,7 +2608,8 @@ pub async fn webpane_find(
     tab_id: String,
     query: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    helper_result(&caller, &app, &tab_id, |id| find_script(id, query)).await
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", Some(false))?;
+    helper_result(&webview, &tab_id, |id| find_script(id, query)).await
 }
 
 #[tauri::command]
@@ -2395,7 +2620,8 @@ pub async fn webpane_click(
     target: serde_json::Value,
     options: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    helper_result(&caller, &app, &tab_id, |id| click_script(id, serde_json::json!({ "target": target, "options": options.unwrap_or(serde_json::json!({})) }))).await
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", None)?;
+    helper_result(&webview, &tab_id, |id| click_script(id, serde_json::json!({ "target": target, "options": options.unwrap_or(serde_json::json!({})) }))).await
 }
 
 #[tauri::command]
@@ -2408,11 +2634,12 @@ pub async fn webpane_type(
     mode: Option<String>,
     submit: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", None)?;
     let mode = mode.as_deref().unwrap_or("replace");
     if !matches!(mode, "replace" | "append") {
         return Err("web.type mode must be replace or append".to_string());
     }
-    helper_result(&caller, &app, &tab_id, |id| type_script(id, serde_json::json!({ "target": target, "text": text, "mode": mode, "submit": submit.unwrap_or(false) }))).await
+    helper_result(&webview, &tab_id, |id| type_script(id, serde_json::json!({ "target": target, "text": text, "mode": mode, "submit": submit.unwrap_or(false) }))).await
 }
 
 #[tauri::command]
@@ -2425,7 +2652,8 @@ pub async fn webpane_key(
     modifiers: Option<Vec<String>>,
     target: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    helper_result(&caller, &app, &tab_id, |id| {
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", None)?;
+    helper_result(&webview, &tab_id, |id| {
         key_script(
             id,
             serde_json::json!({
@@ -2446,7 +2674,8 @@ pub async fn webpane_scroll(
     delta_x: Option<f64>,
     delta_y: Option<f64>,
 ) -> Result<serde_json::Value, String> {
-    helper_result(&caller, &app, &tab_id, |id| scroll_script(id, serde_json::json!({
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", None)?;
+    helper_result(&webview, &tab_id, |id| scroll_script(id, serde_json::json!({
         "target": target.unwrap_or(serde_json::json!({})), "deltaX": delta_x.unwrap_or(0.0), "deltaY": delta_y.unwrap_or(600.0)
     }))).await
 }
@@ -2517,7 +2746,7 @@ pub async fn webpane_upload(
     paths: Vec<String>,
     mode: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    command_webview(&caller, &app, &tab_id, "web.upload")?;
+    let webview = command_webview(&caller, &app, &tab_id, "web.upload", None)?;
     let mode = mode.unwrap_or_else(|| "input".to_string());
     if !matches!(mode.as_str(), "input" | "drop") {
         return Err("web.upload mode must be input or drop".to_string());
@@ -2525,7 +2754,7 @@ pub async fn webpane_upload(
     let files = tauri::async_runtime::spawn_blocking(move || upload_files(&paths))
         .await
         .map_err(|error| format!("web.upload failed: {error}"))??;
-    helper_result(&caller, &app, &tab_id, |id| {
+    helper_result(&webview, &tab_id, |id| {
         upload_script(
             id,
             serde_json::json!({ "target": target, "files": files, "mode": mode }),
@@ -2706,7 +2935,7 @@ pub async fn webpane_downloads(
     app: AppHandle,
     tab_id: String,
 ) -> Result<serde_json::Value, String> {
-    command_webview(&caller, &app, &tab_id, "web.downloads")?;
+    command_webview(&caller, &app, &tab_id, "web.downloads", Some(false))?;
     let state = download_state()
         .lock()
         .map_err(|_| "web.downloads lock poisoned".to_string())?;
@@ -2725,7 +2954,8 @@ pub async fn webpane_dialogs(
     tab_id: String,
     clear: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    helper_result(&caller, &app, &tab_id, |id| {
+    let webview = command_webview(&caller, &app, &tab_id, "web.eval", Some(false))?;
+    helper_result(&webview, &tab_id, |id| {
         dialogs_script(id, serde_json::json!({ "clear": clear.unwrap_or(false) }))
     })
     .await
@@ -3861,6 +4091,7 @@ assert.match(reply.error, /host changed/);
         let script = shortcut_initialization_script(
             "tab_1",
             &["ctrl+tab".to_string(), "ctrl+alt+pagedown".to_string()],
+            "test-only-key",
         )
         .unwrap();
         assert!(script.contains("event.isTrusted"));
@@ -3943,21 +4174,52 @@ assert.match(reply.error, /host changed/);
         WebPaneForwardedKey {
             tab_id: "test".into(), key: "Tab".into(), code: "Tab".into(), location: 0,
             ctrl_key: true, alt_key: false, shift_key: false, meta_key: false,
-            repeat: false, is_composing: false,
+            repeat: false, is_composing: false, proof: None,
         }
+    }
+
+    #[test]
+    fn registered_native_keys_match_either_field_and_use_the_latest_mapping() {
+        use crate::commands::webpane_native::WebPaneTrustedInput;
+
+        let label = webview_label("native-key-fixture").unwrap();
+        let registry = DashMap::new();
+        registry.insert(label.clone(), vec!["ctrl+1".to_string(), "alt+a".to_string()]);
+        let key = |key: &str, code: &str, modifier: &str| WebPaneTrustedInput::Key {
+            key: key.to_owned(), code: Some(code.to_owned()), text: None,
+            modifiers: Some(vec![modifier.to_owned()]), expected_generation: None,
+        };
+        assert!(reject_registered_native_key(&registry, &label, &key("1", "Digit2", "Control")).is_err());
+        assert!(reject_registered_native_key(&registry, &label, &key("2", "Digit1", "ctrl")).is_err());
+        assert!(reject_registered_native_key(&registry, &label, &key("å", "KeyA", "alt")).is_err());
+        assert!(reject_registered_native_key(&registry, &label, &key("2", "Digit2", "ctrl")).is_ok());
+        assert!(reject_registered_native_key(&registry, "web-pane-other", &key("1", "Digit1", "ctrl")).is_ok());
+        registry.insert(label.clone(), vec!["ctrl+2".to_string()]);
+        assert!(reject_registered_native_key(&registry, &label, &key("1", "Digit1", "Control")).is_ok());
+        assert!(reject_registered_native_key(&registry, &label, &key("2", "Digit2", "Control")).is_err());
+    }
+
+    #[test]
+    fn shortcut_forwarding_rejects_an_unsigned_registered_key() {
+        let registered = vec!["ctrl+tab".to_string()];
+        let mut gate = shortcut_proof::ShortcutProofGate::with_key("test-only-key".to_string());
+        assert!(authorize_forwarded_shortcut(
+            "web-pane-test", &registered, &forwarded_key(), false, &mut gate, 1_800_000_000_000,
+            &input_activity::InputIntervals::default(),
+        ).is_err(), "the authorization check accepted a fixture with no document proof");
     }
 
     #[test]
     fn shortcut_forwarding_accepts_registered_keys_and_binds_the_real_child() {
         let registered = vec!["ctrl+tab".to_string()];
         let payload = forwarded_key();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_ok());
-        assert!(authorize_forwarded_shortcut("web-pane-other", &registered, &payload, false).is_err());
-        assert!(authorize_forwarded_shortcut("main", &registered, &payload, false).is_err());
-        assert!(authorize_forwarded_shortcut("web-pane-test", &[], &payload, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_ok());
+        assert!(validate_forwarded_shortcut("web-pane-other", &registered, &payload, false).is_err());
+        assert!(validate_forwarded_shortcut("main", &registered, &payload, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &[], &payload, false).is_err());
         let mut forged = payload.clone();
         forged.tab_id = "other".into();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &forged, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &forged, false).is_err());
     }
 
     #[test]
@@ -3966,15 +4228,15 @@ assert.match(reply.error, /host changed/);
         let payload = forwarded_key();
         let mut invalid = payload.clone();
         invalid.key = "r".into();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
         invalid = payload.clone(); invalid.is_composing = true;
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
         invalid = payload.clone(); invalid.location = 4;
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
         invalid = payload.clone(); invalid.key = "\n".into();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
         invalid = payload.clone(); invalid.code = "x".repeat(65);
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &invalid, false).is_err());
         let mut object = serde_json::to_value(payload).unwrap();
         object["event"] = "unexpected-event".into();
         assert!(serde_json::from_value::<WebPaneForwardedKey>(object).is_err());
@@ -3984,12 +4246,12 @@ assert.match(reply.error, /host changed/);
     fn shortcut_forwarding_preserves_mac_command_option_and_control_tab() {
         let mut payload = forwarded_key();
         let registered = vec!["ctrl+tab".into(), "meta+1".into(), "alt+meta+d".into()];
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
         payload.ctrl_key = false; payload.meta_key = true; payload.key = "1".into(); payload.code = "Digit1".into();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
         payload.alt_key = true; payload.key = "∂".into(); payload.code = "KeyD".into();
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
-        assert!(authorize_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_err());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &payload, true).is_ok());
+        assert!(validate_forwarded_shortcut("web-pane-test", &registered, &payload, false).is_err());
     }
 
     #[tokio::test]
@@ -4013,7 +4275,7 @@ assert.match(reply.error, /host changed/);
         let label = "web-pane-review-load";
         let old = vec!["ctrl+tab".to_string()];
         let current = vec!["ctrl+shift+pageup".to_string()];
-        let creation = shortcut_initialization_script("review-load", &old).unwrap();
+        let creation = shortcut_initialization_script("review-load", &old, "test-only-key").unwrap();
         update_shortcut_registration_with(label, old, |_| Ok(())).unwrap();
         update_shortcut_registration_with(label, current.clone(), |_| Ok(())).unwrap();
         for _event in ["navigation", "reload", "blank", "preview"] {

@@ -19,7 +19,8 @@ export const launcherStrings = {
   noMatch: (query: string) => `「${query}」に一致なし`,
   // model / effort は delegation のティア運用が依存しているので必ず残す (§6.3)。
   specTooltip: (label: string) => `${label} のモデル・effort を選ぶ (Tab / Shift+Enter)`,
-  specKeyHint: "←→ 選ぶ　↑↓ Tab 行　Enter 起動　Esc 戻る",
+  specKeyHint: (hasModelChoices: boolean) =>
+    `←→ 選ぶ　↑↓ Tab 行　${hasModelChoices ? "F2 手入力　" : ""}Enter 起動　Esc 戻る`,
   accountLabel: "アカウント",
   accountLoading: "アカウントの一覧を読み込んでいます…",
   accountReadFailed: "アカウントの一覧を読めませんでした",
@@ -31,6 +32,9 @@ export const launcherStrings = {
   accountClaudeLimitations: "このタブでは Remote Control・Claude in Chrome・ファイルの添付など、claude.ai へのサインインが要る機能は使えません",
   modelLabel: "モデル",
   modelDefault: "モデル (既定)",
+  modelManual: "手入力…",
+  modelUnavailable: (model: string) => `${model} はモデル候補から外れました。選び直してください。`,
+  effortUnavailable: (effort: string) => `effort ${effort} は候補から外れました。選び直してください。`,
   effortLabel: "effort",
   effortDefault: "effort (既定)",
   // チップとして並べるときは「既定」だけで足りる (見出しが直前にある)。

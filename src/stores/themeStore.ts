@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { hanabiRecommendedBackground, normalizeHanabiBackgroundRestore } from "../lib/themeBackgrounds";
 import type { ThemeBackgroundSettings, ThemeDefinition, ThemeTweakColorKey, ThemeTweaks } from "../types";
 import { DEFAULT_THEME_ID, getTheme, resolveThemeId } from "../components/theme/themeDefinitions";
 import { stackBreaksBoxDrawing, stackFallsBackEntirely } from "../lib/fontAvailability";
@@ -246,16 +247,25 @@ function themeToTweakColors(theme: ThemeDefinition): Partial<Record<ThemeTweakCo
   ) as Partial<Record<ThemeTweakColorKey, string>>;
 }
 
+function normalizeStoredThemeTweaks(input: unknown): ThemeTweaks {
+  const tweaks = normalizeThemeTweaks(input);
+  const record = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown> : {};
+  const restore = tweaks.background.mode === "scene"
+    ? normalizeHanabiBackgroundRestore(record.hanabiBackgroundRestore) : undefined;
+  return restore ? { ...tweaks, hanabiBackgroundRestore: restore } : tweaks;
+}
+
 function migrateLegacyThemeSettings(themeId: string | undefined, themeTweaksInput: unknown): ThemeTweaks {
   const resolvedThemeId = resolveThemeId(themeId ?? DEFAULT_THEME_ID);
-  const themeTweaks = normalizeThemeTweaks(themeTweaksInput ?? DEFAULT_THEME_TWEAKS);
+  const themeTweaks = normalizeStoredThemeTweaks(themeTweaksInput ?? DEFAULT_THEME_TWEAKS);
 
   if (resolvedThemeId === DEFAULT_THEME_ID) {
     return themeTweaks;
   }
 
   const legacyThemeColors = themeToTweakColors(getTheme(resolvedThemeId));
-  return normalizeThemeTweaks({
+  return normalizeStoredThemeTweaks({
     ...themeTweaks,
     enabled: true,
     colors: {
@@ -351,10 +361,23 @@ export const useThemeStore = create<ThemeState>((set) => ({
       // and the previous theme's per-key color tweaks are dropped. Background
       // tweaks (image / opacity) are preserved. The pre-switch state is kept
       // as a snapshot so the discard can be undone from the toast.
-      const themeTweaks = normalizeThemeTweaks({
+      let background = state.themeTweaks.background;
+      let restore = state.themeTweaks.hanabiBackgroundRestore;
+      if (nextThemeId === "hanabi" && state.themeId !== "hanabi") {
+        const recommended = hanabiRecommendedBackground(background);
+        if (recommended !== background) {
+          restore = background;
+          background = recommended;
+        }
+      } else if (state.themeId === "hanabi" && nextThemeId !== "hanabi" && restore) {
+        background = { ...restore, completionFireworks: background.completionFireworks };
+        restore = undefined;
+      }
+      const themeTweaks = normalizeStoredThemeTweaks({
         ...state.themeTweaks,
         colors: {},
-        background: state.themeTweaks.background,
+        background,
+        hanabiBackgroundRestore: restore,
       });
       return {
         themeId: nextThemeId,
@@ -374,7 +397,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       if (!snapshot) {
         return state;
       }
-      const themeTweaks = normalizeThemeTweaks(snapshot.themeTweaks);
+      const themeTweaks = normalizeStoredThemeTweaks(snapshot.themeTweaks);
       return {
         themeId: snapshot.themeId,
         theme: resolveTheme(snapshot.themeId, themeTweaks),
@@ -409,7 +432,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
 
   setThemeTweakEnabled: (enabled) => {
     set((state) => {
-      const themeTweaks = normalizeThemeTweaks({
+      const themeTweaks = normalizeStoredThemeTweaks({
         ...state.themeTweaks,
         enabled,
       });
@@ -427,7 +450,8 @@ export const useThemeStore = create<ThemeState>((set) => ({
     }
 
     set((state) => {
-      const themeTweaks = normalizeThemeTweaks({
+      const themeTweaks = normalizeStoredThemeTweaks({
+        ...state.themeTweaks,
         enabled: true,
         colors: {
           ...state.themeTweaks.colors,
@@ -448,7 +472,8 @@ export const useThemeStore = create<ThemeState>((set) => ({
       for (const key of THEME_TWEAK_PRESET_SCOPE) {
         delete nextColors[key];
       }
-      const themeTweaks = normalizeThemeTweaks({
+      const themeTweaks = normalizeStoredThemeTweaks({
+        ...state.themeTweaks,
         enabled: true,
         colors: {
           ...nextColors,
@@ -465,11 +490,14 @@ export const useThemeStore = create<ThemeState>((set) => ({
 
   setThemeBackground: (background) => {
     set((state) => {
-      const themeTweaks = normalizeThemeTweaks({
+      const edited = Object.keys(background).some(key => !["completionFireworks", "backgroundCustomized"].includes(key));
+      const themeTweaks = normalizeStoredThemeTweaks({
         ...state.themeTweaks,
+        hanabiBackgroundRestore: edited ? undefined : state.themeTweaks.hanabiBackgroundRestore,
         background: {
           ...state.themeTweaks.background,
           ...background,
+          ...(edited ? { backgroundCustomized: true } : {}),
         },
       });
       return {
@@ -483,7 +511,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
     set((state) => {
       const colors = { ...state.themeTweaks.colors };
       delete colors[key];
-      const themeTweaks = normalizeThemeTweaks({
+      const themeTweaks = normalizeStoredThemeTweaks({
         ...state.themeTweaks,
         colors,
       });
@@ -503,7 +531,10 @@ export const useThemeStore = create<ThemeState>((set) => ({
 
   hydrateSettings: (settings) => {
     const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
-    const themeTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
+    const hydratedTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
+    // A restore memo belongs only to the saved Hanabi scene, never to an old
+    // unrelated theme or the previous in-memory snapshot of this window.
+    const themeTweaks = nextThemeId === "hanabi" ? hydratedTweaks : normalizeThemeTweaks(hydratedTweaks);
     const nextFont = normalizeFontSize(settings.fontSize);
     const savedFontFamily = normalizeFontFamily(settings.fontFamily);
     // Two ways a saved stack stops working as a terminal font, both of which the
@@ -528,6 +559,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       fontFamily: nextFontFamily,
       lineHeight: nextLineHeight,
       themeTweaks,
+      previousThemeSnapshot: null,
       uiDensity: normalizeUiDensity(settings.uiDensity),
       uiFontScale: normalizeUiFontScale(settings.uiFontScale),
       fontFamilyRepairedFrom: nextFontFamily === savedFontFamily ? null : savedFontFamily,

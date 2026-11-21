@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import type { ThemeBackgroundSettings } from "../../types";
+import { SurfaceThumbnail } from "./SurfaceThumbnail";
 import { appearanceStrings } from "../../lib/appearanceStrings";
 import {
   applyBackgroundPreset,
@@ -87,9 +88,9 @@ export function BackgroundPresetSegment({ background, onChange }: BackgroundPres
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     let delta = 0;
-    if (event.key === "ArrowRight") {
+    if ((event.key === "ArrowRight" || event.key === "ArrowDown")) {
       delta = 1;
-    } else if (event.key === "ArrowLeft") {
+    } else if ((event.key === "ArrowLeft" || event.key === "ArrowUp")) {
       delta = -1;
     } else {
       return;
@@ -116,7 +117,7 @@ export function BackgroundPresetSegment({ background, onChange }: BackgroundPres
         onKeyDown={handleKeyDown}
         style={{
           ...GROUP_STYLE,
-          gridTemplateColumns: `repeat(${options.length}, 1fr)`,
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100px, 100%), 1fr))",
         }}
       >
         {options.map((id) => {
@@ -131,8 +132,9 @@ export function BackgroundPresetSegment({ background, onChange }: BackgroundPres
               ref={(el) => registerRef(id, el)}
               onClick={() => select(id)}
               style={{
-                height: 28,
-                border: "none",
+                minWidth: 0,
+                padding: 3,
+                border: `2px solid ${active ? "var(--cmux-accent)" : "transparent"}`,
                 borderRadius: 5,
                 background: active ? "var(--cmux-selected)" : "transparent",
                 color: active ? "var(--cmux-accent-text)" : "var(--cmux-text-secondary)",
@@ -142,16 +144,13 @@ export function BackgroundPresetSegment({ background, onChange }: BackgroundPres
                 whiteSpace: "nowrap",
               }}
             >
-              {PRESET_LABELS[id]}
+              <SurfaceThumbnail id={id} background={background} />
+              <span style={{ display: "block", padding: "6px 2px 4px" }}>{PRESET_LABELS[id]}</span>
             </button>
           );
         })}
       </div>
-      <div style={HINT_STYLE}>
-        {current === "custom"
-          ? appearanceStrings.backgroundPresetCustomHint
-          : appearanceStrings.backgroundPresetHint}
-      </div>
+      {current === "custom" && <div style={HINT_STYLE}>{appearanceStrings.backgroundPresetCustomHint}</div>}
     </div>
   );
 }

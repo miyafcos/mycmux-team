@@ -12,6 +12,7 @@ use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
 use windows_webview2::core::{BOOL, HRESULT, HSTRING};
 
 use super::webpane::webview_label;
+use super::webpane_native::input_activity::{unix_millis, InputAttempt, InputReceipt};
 use super::webpane_native::{
     png_dimensions, screenshot_path, write_screenshot, NativeBudget, WebPaneClip, WebPaneFile,
     WebPaneScreenshotResult, WebPaneSetFileInputResult, WebPaneTrustedInput,
@@ -91,15 +92,25 @@ pub(super) async fn cdp_call(
     timeout: Duration,
 ) -> Result<Value, String> {
     let label = webview_label(tab_id)?;
-    let webview = app
+    let view = app
         .get_webview(&label)
         .ok_or_else(|| "web pane does not exist".to_string())?;
+    cdp_call_on(&view, method, params, timeout, None).await
+}
+
+async fn cdp_call_on(
+    view: &tauri::Webview,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    receipt: Option<InputReceipt<'static>>,
+) -> Result<Value, String> {
     let (tx, rx) = oneshot::channel::<Result<(i32, String), String>>();
     let hidden = Arc::new(AtomicBool::new(false));
     let callback_hidden = hidden.clone();
     let method_name = method.to_string();
     let params_json = params.to_string();
-    webview
+    view
         .with_webview(move |pw| {
             // A queued closure must not start an action after its caller timed out.
             if tx.is_closed() {
@@ -110,12 +121,22 @@ pub(super) async fn cdp_call(
             if unsafe { controller.IsVisible(&mut visible) }.is_ok() {
                 callback_hidden.store(!visible.as_bool(), Ordering::Relaxed);
             }
-            // This cell and the COM callback stay on the UI thread. No mutex,
-            // blocking receive, or message pump is needed there.
+            let core = match unsafe { controller.CoreWebView2() } {
+                Ok(core) => core,
+                Err(error) => {
+                    let _ = tx.send(Err(format!("HRESULT 0x{:08X}: {error}", error.code().0 as u32)));
+                    return;
+                }
+            };
+            // The cell and COM callback both stay on the UI thread.
             let sender = Rc::new(RefCell::new(Some(tx)));
             let completed_sender = sender.clone();
+            let completed_receipt = receipt.clone();
             let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
                 move |status, reply| {
+                    if let Some(receipt) = &completed_receipt {
+                        receipt.complete(unix_millis());
+                    }
                     let status = status.err().map_or(0, |error| error.code().0);
                     if let Some(tx) = completed_sender.borrow_mut().take() {
                         let _ = tx.send(Ok((status, reply)));
@@ -123,17 +144,17 @@ pub(super) async fn cdp_call(
                     Ok(())
                 },
             ));
-            let started = unsafe {
-                controller.CoreWebView2().and_then(|core| {
-                    core.CallDevToolsProtocolMethod(
-                        &HSTRING::from(method_name),
-                        &HSTRING::from(params_json),
-                        &handler,
-                    )
-                })
-            };
+            let method_name = HSTRING::from(method_name);
+            let params_json = HSTRING::from(params_json);
+            if receipt.as_ref().is_some_and(|receipt| !receipt.begin_pending()) {
+                return;
+            }
+            let started = unsafe { core.CallDevToolsProtocolMethod(&method_name, &params_json, &handler) };
             if let Err(error) = started {
                 if let Some(tx) = sender.borrow_mut().take() {
+                    if let Some(receipt) = &receipt {
+                        receipt.cancel_pending();
+                    }
                     let _ = tx.send(Err(format!(
                         "HRESULT 0x{:08X}: {error}",
                         error.code().0 as u32
@@ -440,33 +461,22 @@ fn input_events(action: &WebPaneTrustedInput) -> Result<(&'static str, Vec<CdpEv
 }
 
 pub(super) async fn input_trusted(
-    app: &AppHandle,
+    view: tauri::Webview,
     tab_id: String,
     action: WebPaneTrustedInput,
     budget: &NativeBudget,
+    input: InputAttempt<'static>,
 ) -> Result<WebPaneTrustedInputResult, String> {
     check_generation(action.expected_generation(), |params| async {
-        cdp_call(
-            app,
-            &tab_id,
-            "Runtime.evaluate",
-            params,
-            budget.call_timeout()?,
-        )
-        .await
+        cdp_call_on(&view, "Runtime.evaluate", params, budget.call_timeout()?, None).await
     })
     .await?;
     let (kind, events) = input_events(&action)?;
-    cdp_call(
-        app,
-        &tab_id,
-        "Emulation.setFocusEmulationEnabled",
-        json!({"enabled":true}),
-        budget.call_timeout()?,
-    )
-    .await?;
+    cdp_call_on(&view, "Emulation.setFocusEmulationEnabled",
+        json!({"enabled":true}), budget.call_timeout()?, None,
+    ).await?;
     for (method, params) in events {
-        cdp_call(app, &tab_id, method, params, budget.call_timeout()?).await?;
+        cdp_call_on(&view, method, params, budget.call_timeout()?, Some(input.receipt())).await?;
     }
     Ok(WebPaneTrustedInputResult {
         tab_id,

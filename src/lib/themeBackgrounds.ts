@@ -1,4 +1,5 @@
 import type { ThemeBackgroundSettings } from "../types";
+import { normalizeHanabiSceneId } from "./hanabiScenes";
 
 // Only the thumbnails are bundled. The full-resolution wallpapers are
 // downloaded on demand into the runtime directory; see
@@ -37,6 +38,8 @@ export const DEFAULT_THEME_BACKGROUND: ThemeBackgroundSettings = {
   // theme's own colour. `presetId` still names the wallpaper a first switch to
   // preset mode lands on.
   mode: "solid",
+  sceneId: "winter-night",
+  completionFireworks: true,
   presetId: "dark_city",
   imagePath: "",
   imageOpacity: 1,
@@ -76,7 +79,7 @@ export function normalizeThemeBackground(input: unknown): ThemeBackgroundSetting
   }
 
   const rawMode =
-    record.mode === "solid" || record.mode === "preset" || record.mode === "image"
+    record.mode === "solid" || record.mode === "preset" || record.mode === "image" || record.mode === "scene"
       ? record.mode
       : DEFAULT_THEME_BACKGROUND.mode;
   const presetId =
@@ -95,6 +98,8 @@ export function normalizeThemeBackground(input: unknown): ThemeBackgroundSetting
 
   return {
     mode,
+    sceneId: normalizeHanabiSceneId(record.sceneId),
+    completionFireworks: typeof record.completionFireworks === "boolean" ? record.completionFireworks : true,
     presetId,
     imagePath,
     imageOpacity: normalizeNumber(record.imageOpacity, 0, 1, DEFAULT_THEME_BACKGROUND.imageOpacity),
@@ -108,12 +113,26 @@ export function normalizeThemeBackground(input: unknown): ThemeBackgroundSetting
       DEFAULT_THEME_BACKGROUND.terminalOpacity,
     ),
     solidSurfaces: record.solidSurfaces === true,
+    ...(record.backgroundCustomized === true ? { backgroundCustomized: true } : {}),
   };
+}
+
+/** Accept only complete, valid solid snapshots made before an automatic scene switch. */
+export function normalizeHanabiBackgroundRestore(input: unknown): ThemeBackgroundSettings | undefined {
+  const record = toRecord(input);
+  if (!record || record.mode !== "solid") return undefined;
+  const background = normalizeThemeBackground(record);
+  // Unlike ordinary old preferences, a damaged restore memo must be discarded,
+  // not repaired into an invented background the user never had.
+  if (!Object.keys(DEFAULT_THEME_BACKGROUND).every(key => record[key] === background[key as keyof ThemeBackgroundSettings])
+    || (record.backgroundCustomized !== undefined && record.backgroundCustomized !== true)) return undefined;
+  return background;
 }
 
 export function isDefaultThemeBackground(background: ThemeBackgroundSettings): boolean {
   return (
     background.mode === DEFAULT_THEME_BACKGROUND.mode &&
+    (background.completionFireworks ?? true) === DEFAULT_THEME_BACKGROUND.completionFireworks &&
     background.presetId === DEFAULT_THEME_BACKGROUND.presetId &&
     background.imagePath === DEFAULT_THEME_BACKGROUND.imagePath &&
     background.imageOpacity === DEFAULT_THEME_BACKGROUND.imageOpacity &&
@@ -123,6 +142,18 @@ export function isDefaultThemeBackground(background: ThemeBackgroundSettings): b
     background.terminalOpacity === DEFAULT_THEME_BACKGROUND.terminalOpacity &&
     background.solidSurfaces === DEFAULT_THEME_BACKGROUND.solidSurfaces
   );
+}
+
+/** Apply Hanabi recommendations only to an untouched shipped solid background. */
+export function hanabiRecommendedBackground(background: ThemeBackgroundSettings): ThemeBackgroundSettings {
+  // A chosen image or preset wallpaper is the user's; only a plain solid background becomes the scene.
+  if (background.mode !== "solid") return background;
+  const customized = background.backgroundCustomized || !isDefaultThemeBackground({ ...background, completionFireworks: true });
+  // Opaque surfaces would hide the scene completely, and their stored opacities were never in effect,
+  // so they get the theme's recommended glass. Opacities the user set on glass stay as they are.
+  return customized && !background.solidSurfaces
+    ? { ...background, mode: "scene", sceneId: "winter-night" }
+    : { ...background, mode: "scene", sceneId: "winter-night", solidSurfaces: false, panelOpacity: 0.55, terminalOpacity: 0.25 };
 }
 
 /** Widest tone in either direction. Mirrors the old `imageDim` 0-0.85 range. */

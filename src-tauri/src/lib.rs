@@ -426,6 +426,9 @@ app_commands![
             commands::pane_leftovers::list_pane_leftover_processes,
             commands::pane_leftovers::stop_pane_leftover_process,
             commands::next_action::run_next_action_judge,
+            ai::presend::configure_presend_reading,
+            ai::presend::cancel_presend_reading,
+            ai::presend::run_presend_reading,
             commands::next_action::abort_next_action_judge,
             commands::dispatch::dispatch_scan,
             commands::dispatch::dispatch_claim_watchdog,
@@ -448,6 +451,7 @@ app_commands![
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::claude_codex_models::claude_codex_model_choices,
+            commands::codex_models::codex_model_choices,
             agent_services::detect_agent_services,
             commands::launcher::launcher_dirs_get,
             commands::launcher::launcher_dirs_set_section_label,
@@ -758,6 +762,8 @@ pub fn run() {
                 .build(),
         )
         .manage(state)
+        .manage(ai::presend::PresendService::default())
+        .plugin(ai::presend::lifecycle_plugin())
         .manage(codex_app_server::CodexAppServerState::default())
         .manage(dsh_acp::DshAcpState::default())
         .manage(tearout::TearoutState::default())
@@ -776,6 +782,8 @@ pub fn run() {
             use tauri::Manager;
 
             let app_handle = app.handle().clone();
+            db::storage::record_run_start(&app_handle);
+            commands::webpane::listen_for_operator_focus_acceptance(&app_handle);
             watchdog::start(app_handle.clone());
             watchdog::main_webview_created();
             if let Some(profile) = test_profile::name() {
@@ -954,6 +962,8 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 #[cfg(target_os = "windows")]
                 snap_layouts::window_destroyed(window.label());
+                #[cfg(any(windows, target_os = "macos"))]
+                commands::webpane_native::native_input_window_destroyed(window.label());
                 livebrief::archive::close_window(window.label());
                 if let Some(state) = window.try_state::<AppState>() {
                     state.livebrief_service.unsubscribe(window.label());

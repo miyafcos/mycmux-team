@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -8,6 +9,19 @@ import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import {
+  OCCLUDER_SELECTOR,
+  OPERATOR_FOCUS_ACCEPTED_EVENT,
+  OPERATOR_FOCUS_EVENT,
+  OPERATOR_FOCUS_WINDOW_EVENT,
+  findOperatorFocusWindow,
+  isOperatorFocusBlocked,
+  jumpToOperatorFocusTab,
+  parseOperatorFocusRequest,
+  useOperatorFocusNoticeStore,
+  type OperatorFocusRefusal,
+} from "../../lib/operatorFocusRequest";
+import { webPaneStrings } from "./webPaneStrings";
 import { useWebPaneTranscriptStore } from "../../stores/webPaneTranscriptStore";
 import { isPlacementSamplingEnabled, recordPerf, recordPlacementSample } from "../../lib/perfTimeline";
 import type { Workspace } from "../../types";
@@ -25,16 +39,10 @@ import {
   dispatchWebPaneKeydown,
   displayedPaneShortcutSource,
   WEB_PANE_KEYDOWN_EVENT,
+  WEB_PANE_SHORTCUT_WAITING_EVENT,
   type WebPaneForwardedKey,
 } from "./webPaneShortcuts";
 
-const OCCLUDER_SELECTOR = [
-  ".cmux-overlay-backdrop",
-  ".cmux-popover-panel",
-  "[aria-modal='true']",
-  "[role='menu']",
-  "[data-cmux-native-webview-occluder]",
-].join(",");
 const PLACEMENT_MUTATION_SELECTOR = `${OCCLUDER_SELECTOR},[data-web-pane-host-tab-id]`;
 
 function placementMutation(records: MutationRecord[], hosts: ReadonlySet<HTMLElement>): boolean {
@@ -188,6 +196,8 @@ function frameKey(bounds: WebPaneBounds | null): string {
 }
 
 export default function WebPaneController() {
+  const blockedNotice = useOperatorFocusNoticeStore(({ notices }) =>
+    Array.from(notices.values()).includes("blocked"));
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
   const keybindings = useKeybindingStore((state) => state.keybindings);
   const paneDragActive = usePaneDragStore((state) => state.item !== null);
@@ -266,6 +276,104 @@ export default function WebPaneController() {
     return () => {
       unlisten?.();
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    void getCurrentWebview().listen<unknown>(WEB_PANE_SHORTCUT_WAITING_EVENT, ({ payload: tabId }) => {
+      if (cancelled || typeof tabId !== "string" || suspendedRef.current.has(tabId)
+        || document.visibilityState === "hidden" || displayedPaneShortcutSource(tabId)?.type !== "web") return;
+      clearTimeout(timers.get(tabId));
+      useOperatorFocusNoticeStore.setState(({ waitingShortcuts }) => ({ waitingShortcuts: new Set(waitingShortcuts).add(tabId) }));
+      timers.set(tabId, setTimeout(() => {
+        timers.delete(tabId);
+        useOperatorFocusNoticeStore.setState(({ waitingShortcuts }) => {
+          const remaining = new Set(waitingShortcuts);
+          remaining.delete(tabId);
+          return { waitingShortcuts: remaining };
+        });
+      }, 8_000));
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    }).catch(() => undefined);
+
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      cancelled = true;
+      unlisten?.();
+      useOperatorFocusNoticeStore.setState({ waitingShortcuts: new Set() });
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const windowLookups = new Map<string, object>();
+
+    function showNotice(tabId: string, reason: OperatorFocusRefusal | null) {
+      clearTimeout(noticeTimers.get(tabId));
+      noticeTimers.delete(tabId);
+      useOperatorFocusNoticeStore.setState(state => {
+        if (!reason && !state.notices.has(tabId)) return state;
+        const notices = new Map(state.notices);
+        if (reason) notices.set(tabId, reason);
+        else notices.delete(tabId);
+        return { notices };
+      });
+      if (reason) {
+        noticeTimers.set(tabId, setTimeout(() => showNotice(tabId, null), 8_000));
+      }
+    }
+
+    void getCurrentWebview().listen<unknown>(OPERATOR_FOCUS_EVENT, async (event) => {
+      const request = parseOperatorFocusRequest(event.payload);
+      if (cancelled || !request || suspendedRef.current.has(request.tabId)) return;
+      const source = displayedPaneShortcutSource(request.tabId);
+      if (source?.type !== "web" || source.presetId !== "browser") return;
+      if (document.visibilityState === "hidden") return;
+      windowLookups.delete(request.tabId);
+      if ("refused" in request) {
+        showNotice(request.tabId, request.refused);
+        return;
+      }
+
+      const reason = isOperatorFocusBlocked(dragBlockedRef.current) ? "blocked"
+        : jumpToOperatorFocusTab(request.targetTabId);
+      if (reason === "missing") {
+        windowLookups.set(request.tabId, request);
+        const otherWindow = await findOperatorFocusWindow(request.targetTabId).catch(() => null);
+        if (cancelled || windowLookups.get(request.tabId) !== request) return;
+        windowLookups.delete(request.tabId);
+        if (otherWindow) {
+          if (isOperatorFocusBlocked(dragBlockedRef.current)) {
+            showNotice(request.tabId, "blocked");
+            return;
+          }
+          showNotice(request.tabId, null);
+          void emitTo(otherWindow, OPERATOR_FOCUS_WINDOW_EVENT, { targetTabId: request.targetTabId })
+            .catch(() => undefined);
+          return;
+        }
+      }
+      showNotice(request.tabId, reason);
+      if (reason === null) {
+        void emit(OPERATOR_FOCUS_ACCEPTED_EVENT, { requestId: request.requestId }).catch(() => undefined);
+      }
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      for (const timer of noticeTimers.values()) clearTimeout(timer);
+      cancelled = true;
+      unlisten?.();
+      useOperatorFocusNoticeStore.setState({ notices: new Map() });
     };
   }, []);
 
@@ -560,5 +668,18 @@ export default function WebPaneController() {
     };
   }, [enqueue, forwardedShortcuts, shortcutsSignature, hasWebPanes]);
 
-  return null;
+  if (!blockedNotice) return null;
+  // The pane's strip sits below dialogs. This copy uses the root stacking
+  // context and leaves pointer input and assistive announcements to the UI below.
+  return createPortal(
+    <div data-operator-focus-blocked-notice aria-hidden="true" style={{
+      position: "fixed", zIndex: 10_001, top: 8, left: "50%", transform: "translateX(-50%)",
+      maxWidth: "calc(100vw - 32px)", padding: "6px 10px", pointerEvents: "none",
+      fontSize: 12, color: "var(--cmux-text)", background: "var(--cmux-popover, #161616)",
+      border: "1px solid var(--cmux-border)", borderRadius: 6,
+    }}>
+      {webPaneStrings.operatorFocus.blocked}
+    </div>,
+    document.body,
+  );
 }

@@ -130,9 +130,11 @@ describe("user turn helpers", () => {
   });
 
   it("points at the last turn when following the bottom, otherwise the last top at or above the container", () => {
-    expect(userTurnIndexFromTops([10, 40, 80], 0, true)).toBe(2);
-    expect(userTurnIndexFromTops([10, 40, 80], 40, false)).toBe(1);
-    expect(userTurnIndexFromTops([10, 40, 80], 5, false)).toBe(0);
-    expect(userTurnIndexFromTops([], 0, false)).toBe(-1);
+    const tops = [10, 40, 80];
+    const topAt = (index: number) => tops[index];
+    expect(userTurnIndexFromTops(tops.length, 0, true, topAt)).toBe(2);
+    expect(userTurnIndexFromTops(tops.length, 40, false, topAt)).toBe(1);
+    expect(userTurnIndexFromTops(tops.length, 5, false, topAt)).toBe(0);
+    expect(userTurnIndexFromTops(0, 0, false, topAt)).toBe(-1);
   });
 });

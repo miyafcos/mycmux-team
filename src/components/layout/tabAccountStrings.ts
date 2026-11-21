@@ -97,6 +97,7 @@ export const setupTokenStrings = {
   cancel: "中止",
   starting: "準備しています…",
   waiting: "ブラウザで承認してください",
+  confirming: "登録中…",
   fallback: "ブラウザが開かないときはこの URL を開いてください",
   openUrl: "URL を開く",
   urlFailed: "URL を開けませんでした。表示された URL をブラウザで開いてください。",

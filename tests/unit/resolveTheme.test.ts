@@ -317,10 +317,10 @@ function compareVars(actual: Record<string, unknown>, expected: Record<string, u
 // ---------------------------------------------------------------------------
 
 describe("resolveTheme leaves every dark theme byte-identical", () => {
-  it("ships the 30 themes this proof claims to cover", () => {
-    expect(THEMES).toHaveLength(30);
+  it("ships the 31 themes this proof claims to cover", () => {
+    expect(THEMES).toHaveLength(31);
     expect(LIGHT_THEMES).toHaveLength(9);
-    expect(DARK_THEMES).toHaveLength(21);
+    expect(DARK_THEMES).toHaveLength(22);
   });
 
   it("emits 53 colour variables plus 11 typography/spacing plus 8 font/dashboard plus colorScheme", () => {
@@ -362,8 +362,8 @@ describe("resolveTheme leaves every dark theme byte-identical", () => {
       }
     }
 
-    // 21 dark themes x 2 wallpaper states x 70 variables, including U1 fonts.
-    expect(comparisons).toBe(2940);
+    // 22 dark themes x 2 wallpaper states x 70 variables, including U1 fonts.
+    expect(comparisons).toBe(3080);
   });
 });
 
@@ -428,8 +428,8 @@ describe("dark edge cases stay identical too", () => {
       }
     }
 
-    // 21 dark themes x 3 edge cases x 70 variables, including U1 fonts.
-    expect(comparisons).toBe(4410);
+    // 22 dark themes x 3 edge cases x 70 variables, including U1 fonts.
+    expect(comparisons).toBe(4620);
   });
 
   it("reads an empty image path as no wallpaper", () => {

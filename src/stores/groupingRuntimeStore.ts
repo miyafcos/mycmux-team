@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { structuralUndoSignature, type GroupingStateSnapshot, type Sha256 } from "../components/layout/tabGroupingEngine";
 import { PersistentLayoutValidationError } from "../lib/persistentLayoutProjection";
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 import type { PersistOutcome } from "../lib/workspacePersistenceCoordinator";
 import { useUiStore } from "./uiStore";
 import { useWorkspaceListStore } from "./workspaceListStore";
@@ -575,6 +576,7 @@ export function runLayoutTransition<F extends () => unknown>(
 }
 
 export function tryBeginGroupingOperation(kind: "commit" | "undo"): symbol | null {
+  if (isPreparingLayoutQuit()) return null;
   const token = Symbol(kind);
   let acquired = false;
   try {

@@ -5,7 +5,10 @@ const mocks = vi.hoisted(() => ({
   cancelCliLogin: vi.fn(() => Promise.resolve()),
   killSession: vi.fn(() => Promise.resolve()),
   listCliAccounts: vi.fn(),
-  usageFetch: vi.fn(() => Promise.resolve()),
+  switchCliAccount: vi.fn(),
+  usageFetch: vi.fn<(
+    refreshMetadata?: boolean, apiCommand?: ApiUsageCommand, options?: { afterSwitch: boolean },
+  ) => Promise<void>>(() => Promise.resolve()),
   pushToast: vi.fn(),
   confirmDialog: vi.fn(() => Promise.resolve(false)),
   show: vi.fn(() => Promise.resolve()),
@@ -21,6 +24,7 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
     cancelCliLogin: mocks.cancelCliLogin,
     killSession: mocks.killSession,
     listCliAccounts: mocks.listCliAccounts,
+    switchCliAccount: mocks.switchCliAccount,
   };
 });
 vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(() => false), confirm: mocks.confirmDialog }));
@@ -37,6 +41,7 @@ vi.mock("../../src/stores/toastStore", () => ({
 }));
 
 import type {
+  ApiUsageCommand,
   CliAccountProfile,
   CliAccountsSnapshot,
   CliLoginSession,
@@ -231,6 +236,32 @@ describe("cliLoginStore events", () => {
       expect.objectContaining({ label: "切り替える", run: expect.any(Function) }),
       undefined, 60_000,
     );
+  });
+
+  it("releases completed login for another Claude switch while Gemini HTTP is pending", async () => {
+    await startClaudeLogin();
+    let releaseGemini!: () => void;
+    const gemini = new Promise<void>((resolve) => { releaseGemini = resolve; });
+    mocks.usageFetch.mockImplementation((_, apiCommand, options) => {
+      return apiCommand === "account.switch" || options?.afterSwitch ? Promise.resolve() : gemini;
+    });
+    const otherProfile = { ...profile, id: "claude-b", identity_key: "b" };
+    const switched = { profile: otherProfile, wrote_back_to: null, backup_dir: "backup", warnings: [] };
+    mocks.switchCliAccount.mockResolvedValueOnce(switched);
+
+    const pendingPoll = mocks.usageFetch();
+    const complete = useCliLoginStore.getState().handleCompleted({ login_id: loginId, profile, updated_existing: false });
+    try {
+      await vi.waitFor(() => expect(mocks.listCliAccounts).toHaveBeenCalled());
+      await vi.waitFor(() => expect(useCliAccountStore.getState().busyByProvider.claude).toBeNull());
+      expect(mocks.usageFetch).toHaveBeenCalledWith(false, undefined, { afterSwitch: true });
+      await expect(useCliAccountStore.getState().switchTo("claude", otherProfile.id)).resolves.toEqual(switched);
+    } finally {
+      releaseGemini();
+      await Promise.all([complete, pendingPoll]);
+      mocks.usageFetch.mockImplementation(() => Promise.resolve());
+      mocks.switchCliAccount.mockReset();
+    }
   });
 
   it("uses the shared dialog for a clicked switch confirmation and coalesces double clicks", async () => {

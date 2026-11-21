@@ -69,7 +69,8 @@ def test_process_failed_registration_only_enqueues_recovery_and_uses_the_existin
 def test_renderer_heartbeat_keeps_the_shared_name_schema_and_async_contract() -> None:
     source = WATCHDOG.read_text(encoding="utf-8")
     assert re.search(
-        r"#\[tauri::command\]\s*pub async fn report_renderer_heartbeat\(caller: tauri::Webview, heartbeat: RendererHeartbeat\)"
+        r"#\[tauri::command\]\s*pub async fn report_renderer_heartbeat\(\s*caller: tauri::Webview,"
+        r"\s*heartbeat: Option<RendererHeartbeat>,\s*diagnostic: Option<TerminalDiagnostic>,\s*\)"
         r"\s*-> Result<\(\), String>", source,
     )
     fields = re.search(
@@ -78,9 +79,20 @@ def test_renderer_heartbeat_keeps_the_shared_name_schema_and_async_contract() ->
     assert fields
     actual = dict(re.findall(r"pub (\w+): ([^,]+),", fields.group(1)))
     assert actual == {"heap_used_mib": "Option<f64>", "long_tasks": "u32",
-                      "max_long_task_ms": "f64", "xterm_count": "u32", "pending_invokes": "u32",
+                      "max_long_task_ms": "f64", "xterm_count": "u32", "heap_alert": "bool",
+                      "live_count": "u32", "cache_count": "u32", "pending_tickets": "u32",
+                      "pending_invokes": "u32",
                       "visibility": "String", "focus": "bool"}
+    for field in ("heap_alert", "live_count", "cache_count", "pending_tickets"):
+        assert re.search(r"#\[serde\(default\)\]\s*pub " + field + ":", fields.group(1))
+    assert "xterm={} pending_invokes={} visibility={visibility} focus={}" in source
     assert "watchdog::report_renderer_heartbeat," in LIB.read_text(encoding="utf-8")
+
+
+def test_heartbeat_rejects_empty_invocations_and_invalid_diagnostics() -> None:
+    body = function_body(WATCHDOG.read_text(encoding="utf-8"), "report_renderer_heartbeat")
+    assert re.search(r"heartbeat\.is_none\(\)\s*&&\s*diagnostic\.is_none\(\)\s*\{\s*return Err", body)
+    assert re.search(r"diagnostic\.line\(caller\.label\(\)\)\s*\.ok_or_else\(", body)
 
 
 def test_kill_session_registration_times_the_whole_existing_command_on_the_same_executor() -> None:

@@ -7,10 +7,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUST_ROOT = ROOT / "src-tauri" / "src"
 MODEL_IDS = (
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
+    "claude-fable-5-2",
     "claude-fable-5-1",
+    "claude-haiku-5-5",
     "claude-opus-5-5",
     "claude-sonnet-5-5",
     "gpt-6-astra",
@@ -30,6 +34,8 @@ def allowed_model_path(path: Path) -> bool:
 
 
 def test_ai_models_are_centralized() -> None:
+    catalog = (ROOT / "src/lib/aiModels.ts").read_text(encoding="utf-8")
+    assert set(re.findall(r'\{ id: "([^"]+)", note:', catalog)) == set(MODEL_IDS)
     for path in RUST_ROOT.rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
         for model in MODEL_IDS:

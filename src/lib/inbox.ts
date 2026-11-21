@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PreviewArtifactInfo } from "./ipc";
+import { isPreparingLayoutQuit } from "./layoutQuit";
 import { useDashboardViewStore } from "../stores/dashboardViewStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
@@ -33,16 +34,19 @@ export function inboxSenderLabel(from: string): string {
 
 /** Only explicit user actions focus a preview. Receipt itself leaves the workspace alone. */
 export async function openInboxEntry(entry: InboxEntry): Promise<void> {
+  if (isPreparingLayoutQuit()) return;
   try {
     const [{ selectOpenTarget }, { createWorkspaceAtCwd }] = await Promise.all([
       import("./openWithPaths"), import("./workspaceBootstrap"),
     ]);
+    if (isPreparingLayoutQuit()) return;
     if (!useWorkspaceListStore.getState().workspaces.length) {
       createWorkspaceAtCwd("", { name: inboxStrings.title });
     }
     const target = selectOpenTarget(useWorkspaceListStore.getState(), useUiStore.getState().activePaneId);
     if (!target) throw new Error("No workspace pane is available");
     const info = await invoke<PreviewArtifactInfo>("inbox_preview", { sessionId: target.sessionId, path: entry.path });
+    if (isPreparingLayoutQuit()) return;
     useWorkspaceLayoutStore.getState().openOrReloadHtmlPreviewPane(target.workspaceId, target.paneId, info);
     useDashboardViewStore.getState().close();
   } catch (error) {

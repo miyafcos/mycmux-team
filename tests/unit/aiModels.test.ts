@@ -48,6 +48,11 @@ describe("normalizeAiModel", () => {
     expect(normalizeAiModel("  some-future-model  ", "codex")).toBe("some-future-model");
   });
 
+  it("preserves saved selections from earlier generations", () => {
+    expect(normalizeAiModel("gpt-6.1-sol", "codex")).toBe("gpt-6.1-sol");
+    expect(normalizeAiModel("claude-fable-5-1", "claude-code")).toBe("claude-fable-5-1");
+  });
+
   it("falls back to the provider default when blank or absent", () => {
     expect(normalizeAiModel("   ", "codex")).toBe("gpt-5.6-luna");
     expect(normalizeAiModel(undefined, "claude-code")).toBe("claude-haiku-4-5-20251001");
@@ -89,10 +94,11 @@ describe("modelForProviderSwitch", () => {
 
 describe("current model presets", () => {
   it("offers current models while preserving the configured defaults and legacy presets", () => {
-    for (const model of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
+    expect(aiProviderDef("codex").presets.slice(0, 2).map(({ id }) => id)).toEqual(["gpt-6.2-sol", "gpt-6.2-astra"]);
+    for (const model of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
       expect(classifyModelForProvider("codex", model)).toBe("preset");
     }
-    for (const model of ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
+    for (const model of ["claude-fable-5-2", "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
       expect(classifyModelForProvider("claude-code", model)).toBe("preset");
     }
     for (const provider of AI_PROVIDERS) {

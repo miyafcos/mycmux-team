@@ -49,6 +49,7 @@ import { useEffectiveMediaActive } from "../../stores/compositionStore";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { closePaneOperation } from "../../lib/paneCloseOperation";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { closeWorkspaceAfterConfirmation } from "../../lib/workspaceClose";
 import {
@@ -63,6 +64,7 @@ import {
 } from "../../stores/sessionAttentionStore";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { buildThemeVars } from "./themeVars";
+import { WinterNightBackground } from "../theme/WinterNightBackground";
 export { dashboardTypographyVars, buildThemeVars } from "./themeVars";
 
 type Direction = "up" | "down" | "left" | "right";
@@ -101,12 +103,16 @@ function AppBackgroundLayer({
   presetImagePath,
   tone,
   toneColor,
+  sidebarWidth,
+  terminalColor,
 }: {
   background: ThemeBackgroundSettings;
   /** Cached full-resolution file for the selected preset; "" until it lands. */
   presetImagePath: string;
   tone: number;
   toneColor: string;
+  sidebarWidth: number;
+  terminalColor?: string;
 }) {
   const userImageUrl = background.mode === "image" && background.imagePath
     ? convertFileSrc(background.imagePath)
@@ -124,6 +130,12 @@ function AppBackgroundLayer({
   const currentImageUrlRef = useRef(finalImageUrl);
 
   useEffect(() => {
+    if (background.mode === "scene") {
+      currentImageUrlRef.current = "";
+      setPreviousImageUrl("");
+      setCurrentImageUrl("");
+      return;
+    }
     if (finalImageUrl === currentImageUrlRef.current) {
       return;
     }
@@ -143,7 +155,7 @@ function AppBackgroundLayer({
       window.cancelAnimationFrame(frameId);
       window.clearTimeout(timeoutId);
     };
-  }, [finalImageUrl]);
+  }, [finalImageUrl, background.mode]);
 
   const hasVisualBackground = Boolean(currentImageUrl || previousImageUrl);
   const toneStrength = Math.abs(tone);
@@ -179,7 +191,10 @@ function AppBackgroundLayer({
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }}>
       <div style={{ position: "absolute", inset: 0, background: "var(--cmux-bg-solid)" }} />
-      {hasVisualBackground && (
+      {background.mode === "scene" && (
+        <WinterNightBackground terminalColor={terminalColor} terminalOpacity={background.terminalOpacity} sceneId={background.sceneId} fireworksEnabled={background.completionFireworks ?? true} sidebarWidth={sidebarWidth} />
+      )}
+      {background.mode !== "scene" && hasVisualBackground && (
         <>
           {renderImageLayer(previousImageUrl, fadeStarted ? 0 : background.imageOpacity)}
           {renderImageLayer(
@@ -655,6 +670,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   // caret next to it. The new workspace inherits the folder the user is looking
   // at, which is what they would have typed into the dialog anyway.
   const handleNewWorkspace = useCallback(() => {
+    if (isPreparingLayoutQuit()) return;
     const cwd = activeWorkspaceCwd();
     const taken = useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.name);
     createWorkspaceAtCwd(cwd, {
@@ -672,6 +688,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
   const handleLaunch = useCallback(
     (result: WorkspaceSetupResult) => {
+      if (isPreparingLayoutQuit()) return;
       createWorkspaceAtCwd(result.cwd, {
         name: result.name,
         nameSource: result.nameSource,
@@ -687,19 +704,25 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     async (id: string) => {
       const requestedWorkspace = useWorkspaceListStore.getState().getWorkspace(id);
       if (!requestedWorkspace) return;
-      const workspaceName = requestedWorkspace.name ?? "ワークスペース";
-      if (!await confirmPaneClose(requestedWorkspace.panes, "workspace", { workspaceName })) return;
+      const finish = beginLayoutOperation();
+      if (!finish) return;
+      try {
+        const workspaceName = requestedWorkspace.name ?? "ワークスペース";
+        if (!await confirmPaneClose(requestedWorkspace.panes, "workspace", { workspaceName })) return;
 
-      // Re-read fresh from the store (not the `workspaces` closure) — panes
-      // can be added to this workspace while confirm() was awaited (drag-and-
-      // drop, pane.reopen, etc.), and the stale closure would skip their
-      // session kill / cache eviction while still removing the workspace.
-      const listState = useWorkspaceListStore.getState();
-      const ws = listState.workspaces.find((w) => w.id === id);
-      if (ws && ws.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
-        !== requestedWorkspace.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
-        && !await confirmPaneClose(ws.panes, "workspace", { workspaceName })) return;
-      await closeWorkspaceAfterConfirmation(id);
+        // Re-read fresh from the store (not the `workspaces` closure) — panes
+        // can be added to this workspace while confirm() was awaited (drag-and-
+        // drop, pane.reopen, etc.), and the stale closure would skip their
+        // session kill / cache eviction while still removing the workspace.
+        const listState = useWorkspaceListStore.getState();
+        const ws = listState.workspaces.find((w) => w.id === id);
+        if (ws && ws.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
+          !== requestedWorkspace.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
+          && !await confirmPaneClose(ws.panes, "workspace", { workspaceName })) return;
+        await closeWorkspaceAfterConfirmation(id);
+      } finally {
+        finish();
+      }
     },
     [],
   );
@@ -735,6 +758,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   };
 
   const restoreClosedPane = useCallback(() => {
+    if (isPreparingLayoutQuit()) return;
     const {
       workspaces: ws,
       activeId: aid,
@@ -1114,6 +1138,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     <div
       className={uiVariant === "cmux" ? "ui-cmux" : undefined}
       data-cmux-themed-root="true"
+      data-cmux-theme={currentTheme.id}
+      data-hanabi-glass={themeBackground.mode === "scene" && !themeBackground.solidSurfaces ? "true" : undefined}
       data-cmux-zoom-active={zoomedPaneId && !dashboardOpen ? "true" : undefined}
       style={{
         ...themeVars,
@@ -1133,9 +1159,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     >
       <AppBackgroundLayer
         background={themeBackground}
+        terminalColor={currentTheme.id === "hanabi" && !themeBackground.solidSurfaces ? currentTheme.terminal.background : undefined}
         presetImagePath={presetImagePath}
         tone={backgroundComposition.wallpaperTone}
         toneColor={backgroundComposition.wallpaperToneColor}
+        sidebarWidth={sidebarCollapsed || (zoomedPaneId && !dashboardOpen) ? 0 : sidebarWidth}
       />
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
         <SocketListener />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { ArrowDownToLine, Search, TriangleAlert } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ThemeBackgroundSettings } from "../../types";
 import { appearanceStrings } from "../../lib/appearanceStrings";
@@ -10,6 +11,8 @@ import {
   THEME_BACKGROUND_PRESETS,
   isDefaultThemeBackground,
 } from "../../lib/themeTweaks";
+import { ScenePicker } from "./ScenePicker";
+import { HANABI_SCENES, normalizeHanabiSceneId } from "../../lib/hanabiScenes";
 import { BackgroundPresetSegment } from "./BackgroundPresetSegment";
 import type { ThemeBackgroundTone } from "../../lib/themeTweaks";
 import type { WallpaperCardState } from "../../lib/wallpaperCache";
@@ -177,7 +180,7 @@ export function ThemeBackgroundPanel({
       ? "画像"
       : background.mode === "solid"
         ? "単色"
-        : "プリセット";
+        : background.mode === "scene" ? HANABI_SCENES.find(scene => scene.id === normalizeHanabiSceneId(background.sceneId))!.label : "プリセット";
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -333,6 +336,8 @@ export function ThemeBackgroundPanel({
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <button type="button" onClick={applySolid} style={chipStyle(background.mode === "solid")}>
+            <span aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", width: 32, height: 18, marginRight: 6,
+              border: "1px solid var(--cmux-border)", borderRadius: 3, background: "var(--cmux-bg-solid)" }} />
             単色
           </button>
           <button
@@ -344,6 +349,10 @@ export function ThemeBackgroundPanel({
               cursor: isPickingImage ? "default" : "pointer",
             }}
           >
+            <span aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", width: 32, height: 18, marginRight: 6,
+              border: "1px solid var(--cmux-border)", borderRadius: 3,
+              backgroundImage: background.imagePath ? `url("${convertFileSrc(background.imagePath)}")` : "linear-gradient(155deg, #303955 55%, #71838a 56%, #313d53 75%)",
+              backgroundSize: "cover", backgroundPosition: "center" }} />
             {isPickingImage ? "選択中..." : "画像を選ぶ"}
           </button>
           <button
@@ -365,6 +374,18 @@ export function ThemeBackgroundPanel({
             リセット
           </button>
         </div>
+
+        <ScenePicker background={background} onChange={setThemeBackground} />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--cmux-text-secondary)" }}>
+          <input
+            type="checkbox"
+            checked={background.completionFireworks ?? true}
+            onChange={(event) => setThemeBackground({ completionFireworks: event.target.checked })}
+          />
+          完了で花火
+          <span title="場面の背景で有効。視覚効果を減らす設定に従います。" style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>場面で有効</span>
+        </label>
 
         <BackgroundPresetSegment background={background} onChange={setThemeBackground} />
 
@@ -664,7 +685,7 @@ export function ThemeBackgroundPanel({
                 gap: 10,
               }}
             >
-              <RangeControl
+              {background.mode !== "scene" && <RangeControl
                 label="画像の不透明度"
                 value={background.imageOpacity}
                 min={0.1}
@@ -672,8 +693,8 @@ export function ThemeBackgroundPanel({
                 step={0.01}
                 displayValue={percentLabel(background.imageOpacity)}
                 onChange={(value) => setThemeBackground({ imageOpacity: value })}
-              />
-              <RangeControl
+              />}
+              {background.mode !== "scene" && <RangeControl
                 label="ぼかし"
                 value={background.imageBlur}
                 min={0}
@@ -681,8 +702,8 @@ export function ThemeBackgroundPanel({
                 step={1}
                 displayValue={`${Math.round(background.imageBlur)}px`}
                 onChange={(value) => setThemeBackground({ imageBlur: value })}
-              />
-              <RangeControl
+              />}
+              {background.mode !== "scene" && <RangeControl
                 label="壁紙の色調"
                 value={background.wallpaperTone}
                 min={-0.85}
@@ -690,7 +711,7 @@ export function ThemeBackgroundPanel({
                 step={0.01}
                 displayValue={toneLabel(background.wallpaperTone)}
                 onChange={(value) => setThemeBackground({ wallpaperTone: value })}
-              />
+              />}
               <RangeControl
                 label="パネル"
                 value={background.panelOpacity}

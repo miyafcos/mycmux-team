@@ -12,6 +12,7 @@ import { focusController } from "../lib/focusController";
 import { detachedOriginForDrag, isTransferableTab } from "../lib/detachedPane";
 import { isOutsideWindowViewport } from "../lib/windowEdge";
 import { createWorkspaceHover } from "../lib/workspaceHover";
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 import { localTearoutRefusal } from "../lib/tearout/operation";
 import { recordTearoutRefusal } from "../lib/tearout/refusal";
 import { TearoutRecord } from "../lib/tearout/record";
@@ -265,7 +266,7 @@ export function commitPaneDragDrop(
   target: PaneDropTarget | null,
   trace: TearOutDragTrace | null = null,
 ): void {
-  if (!target || !canDropTarget(item, target)) return;
+  if (isPreparingLayoutQuit() || !target || !canDropTarget(item, target)) return;
 
   const refusal = target.kind === "new-window" ? localTearoutRefusal() : null;
   if (refusal) {

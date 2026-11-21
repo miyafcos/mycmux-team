@@ -32,7 +32,7 @@ import {
   CLI_LOGIN_FAILED_EVENT,
   type CliAccountProfile,
   type CliAccountsSnapshot,
-  type CliProvider,
+  type SwitchableCliProvider,
 } from "../../src/lib/ipc";
 import { cliAccountMessage } from "../../src/lib/cliAccounts";
 import { useCliLoginEvents } from "../../src/hooks/useCliLoginEvents";
@@ -42,14 +42,14 @@ import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
 let root: Root;
 let host: HTMLDivElement;
-const providers: CliProvider[] = ["claude", "codex", "grok"];
+const providers: SwitchableCliProvider[] = ["claude", "codex", "grok"];
 
 function Listener(): null {
   useCliLoginEvents();
   return null;
 }
 
-function pendingLogin(provider: CliProvider): void {
+function pendingLogin(provider: SwitchableCliProvider): void {
   useCliAccountStore.getState().setLoginBusy(provider, `login:${provider}`);
   useCliLoginStore.setState((state) => ({ byProvider: {
     ...state.byProvider,
@@ -58,7 +58,7 @@ function pendingLogin(provider: CliProvider): void {
   } }));
 }
 
-function profileFor(provider: CliProvider): CliAccountProfile {
+function profileFor(provider: SwitchableCliProvider): CliAccountProfile {
   return { id: `${provider}-dummy`, provider, label: `Dummy ${provider}`,
     email: `${provider}@example.test`, identity_key: `dummy-${provider}`,
     plan: "pro", org_name: null, captured_at: "2026-10-09T00:00:00Z",

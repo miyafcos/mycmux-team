@@ -1,0 +1,16 @@
+{
+  "models": {
+    "gemini-2.5-pro": {
+      "displayName": "Gemini 2.5 Pro",
+      "quotaInfo": { "remainingFraction": 0.75, "resetTime": "2026-11-20T09:00:00+09:00" }
+    },
+    "gemini-2.5-flash": {
+      "displayName": "Gemini 2.5 Flash",
+      "quotaInfo": { "remainingFraction": 0.5 }
+    },
+    "claude-no-quota": { "displayName": "Claude" },
+    "tab_gemini-2.5-flash": { "quotaInfo": { "remainingFraction": 0 } },
+    "chat_claude-sonnet": { "quotaInfo": { "remainingFraction": 0 } },
+    "unrecognised-model": { "quotaInfo": { "remainingFraction": 0 } }
+  }
+}

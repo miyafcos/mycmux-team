@@ -1,4 +1,4 @@
-import type { CliAccountProfile, CliLiveLogin, CliProvider } from "../../lib/ipc";
+import type { CliAccountProfile, CliLiveLogin, SwitchableCliProvider } from "../../lib/ipc";
 import { eligibleTargets } from "../../lib/accountAutoSwitch";
 import { PROVIDER_TITLE } from "../../lib/cliAccounts";
 import { excludedTargetsFor, useAccountAutoSwitchStore } from "../../stores/accountAutoSwitchStore";
@@ -16,7 +16,7 @@ export function AutoSwitchToggle({
   profiles,
   live,
 }: {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   /** This provider's registered accounts. */
   profiles: CliAccountProfile[];
   live: CliLiveLogin | undefined;

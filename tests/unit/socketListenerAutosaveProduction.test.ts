@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { listen } from "@tauri-apps/api/event";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,18 +8,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const productionRaceMocks = vi.hoisted(() => ({
   claimLeader: vi.fn(),
   closeHandler: null as null | ((event: { preventDefault: () => void }) => Promise<void>),
+  dockSaveHandler: null as null | (() => void),
   confirm: vi.fn(),
   getPtyMetadataSnapshot: vi.fn(),
+  getAppSettings: vi.fn(),
   listRunningSessionIds: vi.fn(async () => [] as string[]),
   getWindowFragments: vi.fn(),
   listPets: vi.fn(),
   loadPersistentData: vi.fn(),
   onCloseRequested: vi.fn(),
   destroy: vi.fn(),
+  emitTo: vi.fn(async () => {}),
+  killSession: vi.fn(async () => {}),
+  publishWindowFragment: vi.fn<(fragment: WindowFragment, requirePublished?: true) => Promise<void>>(),
+  quitPrepared: vi.fn(async () => {}),
+  quitSaved: vi.fn(async () => {}),
   readAgentSessionMappings: vi.fn(),
   restoreWorkspaceConfigs: vi.fn(),
   savePersistentData: vi.fn(),
+  sendSocketResponse: vi.fn(async () => {}),
   setAppFrontendVisible: vi.fn(),
+  windowLabel: "main",
 }));
 
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: vi.fn(async () => true) }));
@@ -28,12 +38,17 @@ vi.mock("../../src/lib/appConfirmation", () => ({ cancelAppConfirmations: vi.fn(
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+  emitTo: productionRaceMocks.emitTo,
+  listen: vi.fn(async (event: string, handler: () => void) => {
+    if (event === "mycmux://dock-save") productionRaceMocks.dockSaveHandler = handler;
+    return () => {};
+  }),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
-    label: "main",
+    label: productionRaceMocks.windowLabel,
     onCloseRequested: productionRaceMocks.onCloseRequested,
     destroy: productionRaceMocks.destroy,
   }),
@@ -46,16 +61,20 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
     claimLeader: productionRaceMocks.claimLeader,
     setWindowCloseIntent: vi.fn(async () => {}),
     takePendingAdoption: vi.fn(async () => []),
-    killSession: vi.fn(async () => {}),
+    killSession: productionRaceMocks.killSession,
     discardSessionScrollback: vi.fn(async () => {}),
-    publishWindowFragment: vi.fn(async () => {}),
+    publishWindowFragment: productionRaceMocks.publishWindowFragment,
+    quitPrepared: productionRaceMocks.quitPrepared,
+    quitSaved: productionRaceMocks.quitSaved,
     getPtyMetadataSnapshot: productionRaceMocks.getPtyMetadataSnapshot,
+    getAppSettings: productionRaceMocks.getAppSettings,
     listRunningSessionIds: productionRaceMocks.listRunningSessionIds,
     getWindowFragments: productionRaceMocks.getWindowFragments,
     listPets: productionRaceMocks.listPets,
     loadPersistentData: productionRaceMocks.loadPersistentData,
     readAgentSessionMappings: productionRaceMocks.readAgentSessionMappings,
     savePersistentData: productionRaceMocks.savePersistentData,
+    sendSocketResponse: productionRaceMocks.sendSocketResponse,
     setAppFrontendVisible: productionRaceMocks.setAppFrontendVisible,
   };
 });
@@ -69,6 +88,7 @@ vi.mock("../../src/lib/workspaceRestore", async (importOriginal) => {
 });
 
 import {
+  __resetWindowCloseStateForTests,
   installWorkspacePersistenceAutosaveController,
   publishPersistentSchemaAfterHydration,
   useWorkspacePersist,
@@ -80,6 +100,7 @@ import {
   useGroupingRuntimeStore,
 } from "../../src/stores/groupingRuntimeStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import {
   __resetPersistenceCoordinatorForTests,
   createTransitionAwareAutosaveGate,
@@ -93,7 +114,12 @@ import {
 import { hashCanonical, type Sha256 } from "../../src/lib/persistentLayoutProjection";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 import type { Workspace } from "../../src/types";
-import { setWindowRole, hasWindowRole } from "../../src/lib/windowContext";
+import { setWindowRole, hasWindowRole, resetWindowContextCacheForTests } from "../../src/lib/windowContext";
+import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
+import { QUIT_PREPARE_EVENT, QUIT_SAVE_EVENT, type WindowFragment } from "../../src/lib/ipc";
+import { closePaneOperation, type PaneCloseResult } from "../../src/lib/paneCloseOperation";
+import { PEER_COMMAND_EVENTS } from "../../src/lib/socketCommandWindows";
+import { webPaneCommandContext } from "../../src/components/workspace/webPaneCommandQueue";
 
 describe("SocketListener production autosave subscriptions", () => {
   let host: HTMLDivElement | null = null;
@@ -104,9 +130,11 @@ describe("SocketListener production autosave subscriptions", () => {
     vi.clearAllMocks();
     __resetGroupingRuntimeForTests();
     __resetPersistenceCoordinatorForTests();
+    __resetWindowCloseStateForTests();
     markPersistentSchemaSupported(1);
     __resetToastStoreForTests();
     productionRaceMocks.closeHandler = null;
+    productionRaceMocks.dockSaveHandler = null;
     productionRaceMocks.claimLeader.mockResolvedValue(true);
     productionRaceMocks.confirm.mockResolvedValue(false);
     productionRaceMocks.getPtyMetadataSnapshot.mockResolvedValue({});
@@ -118,6 +146,8 @@ describe("SocketListener production autosave subscriptions", () => {
       return () => {};
     });
     productionRaceMocks.destroy.mockResolvedValue(undefined);
+    productionRaceMocks.killSession.mockReset().mockResolvedValue(undefined);
+    productionRaceMocks.publishWindowFragment.mockReset().mockResolvedValue(undefined);
     productionRaceMocks.restoreWorkspaceConfigs.mockReturnValue({ activePaneSessionId: null });
     productionRaceMocks.savePersistentData.mockResolvedValue(undefined);
     productionRaceMocks.setAppFrontendVisible.mockResolvedValue(undefined);
@@ -125,11 +155,300 @@ describe("SocketListener production autosave subscriptions", () => {
 
   afterEach(async () => {
     if (root) await act(async () => root?.unmount());
+    productionRaceMocks.windowLabel = "main";
+    resetWindowContextCacheForTests();
     __resetToastStoreForTests();
     useWorkspaceListStore.setState(originalWorkspaceState, true);
     host?.remove();
     root = null;
     host = null;
+  });
+
+  it("restores all four main workspaces when startup already shows only one persistable tab", async () => {
+    const { restoreWorkspaceConfigs: restore } =
+      await vi.importActual<typeof import("../../src/lib/workspaceRestore")>("../../src/lib/workspaceRestore");
+    vi.mocked(restoreWorkspaceConfigs).mockImplementationOnce(restore);
+    const saved = [10, 9, 9, 9].map((tabCount, index) => ({
+      id: `saved-${index}`, name: `Saved ${index}`, grid_template_id: "1x1", created_at: index,
+      window_group: { label: "main" },
+      panes: [{
+        pane_id: `pane-${index}`, agent_id: "shell", active_tab_id: `tab-${index}-0`,
+        tabs: Array.from({ length: tabCount }, (_, tab) => ({
+          tab_id: `tab-${index}-${tab}`, agent_id: "shell", type: "terminal",
+        })),
+      }],
+    }));
+    const visible: Workspace = {
+      id: "new-visible-workspace", name: "Visible", gridTemplateId: "1x1", createdAt: 8, status: "running",
+      panes: [{
+        id: "new-pane", sessionId: "new-session", agentId: "shell", activeTabId: "new-tab",
+        tabs: [{ id: "new-tab", sessionId: "new-session", agentId: "shell", type: "terminal" }],
+      }],
+    };
+    useWorkspaceListStore.setState({ workspaces: [visible], activeWorkspaceId: visible.id });
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    productionRaceMocks.loadPersistentData.mockResolvedValue({
+      supported: true, schemaVersion: 1,
+      data: {
+        schema_version: 1, settings: { theme_id: "default" }, workspaces: saved,
+        active_workspace_id: "saved-0", active_pane_id: "pane-0", active_tab_id: "tab-0-0",
+      },
+    });
+
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    await vi.waitFor(() => expect(productionRaceMocks.claimLeader).toHaveBeenCalledTimes(2));
+
+    const snapshot = { workspaces: useWorkspaceListStore.getState().workspaces };
+    await act(async () => {
+      await requestImmediatePersist({
+        requestId: "first-startup-snapshot", revision: 1, signature: "a".repeat(64) as Sha256,
+        snapshot, snapshotDigest: hashCanonical(snapshot),
+      });
+    });
+    const written = productionRaceMocks.savePersistentData.mock.calls.at(-1)?.[0];
+    expect(written.workspaces.map((workspace: {id: string}) => workspace.id)).toEqual(
+      [visible.id, ...saved.map((workspace) => workspace.id)],
+    );
+    expect(written.workspaces.map((workspace: {panes: {tabs: unknown[]}[]}) =>
+      workspace.panes[0].tabs.length)).toEqual([1, 10, 9, 9, 9]);
+  });
+
+  it("keeps the sole socket-created workspace and its terminal tab while restoring the saved layout", async () => {
+    const { restoreWorkspaceConfigs: restore } =
+      await vi.importActual<typeof import("../../src/lib/workspaceRestore")>("../../src/lib/workspaceRestore");
+    vi.mocked(restoreWorkspaceConfigs).mockImplementationOnce(restore);
+    const saved = {
+      id: "saved-workspace", name: "Saved", grid_template_id: "1x1", created_at: 1,
+      panes: [{
+        pane_id: "saved-pane", agent_id: "shell", active_tab_id: "saved-tab",
+        tabs: [{ tab_id: "saved-tab", agent_id: "shell", type: "terminal" }],
+      }],
+    };
+    const envelope = {
+      supported: true, schemaVersion: 1,
+      data: { schema_version: 1, settings: { theme_id: "default" }, workspaces: [saved] },
+    };
+    let finishLoad!: (result: typeof envelope) => void;
+    productionRaceMocks.loadPersistentData.mockReturnValueOnce(new Promise((resolve) => { finishLoad = resolve; }));
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
+
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    expect(productionRaceMocks.loadPersistentData).toHaveBeenCalledOnce();
+    expect(useWorkspaceListStore.getState().workspaces).toHaveLength(0);
+
+    const [, onSocketRequest] = vi.mocked(listen).mock.calls.find(([event]) => event === "socket-request")!;
+    await act(async () => {
+      await onSocketRequest({ event: "socket-request", id: 0, payload: {
+        id: "create-during-load", cmd: "workspace.new", args: { name: "Created through socket" },
+      } });
+    });
+    const { workspaces } = useWorkspaceListStore.getState();
+    expect(workspaces).toHaveLength(1);
+    const [created] = workspaces;
+    expect(productionRaceMocks.sendSocketResponse).toHaveBeenCalledWith(
+      "create-during-load", expect.objectContaining({ workspaceId: created.id }), null,
+    );
+    await act(async () => {
+      useWorkspaceLayoutStore.getState().addTabToPane(created.id, created.panes[0].id, "shell", "terminal");
+    });
+    const tab = useWorkspaceListStore.getState().getWorkspace(created.id)?.panes[0].tabs.find(({ type }) => type === "terminal");
+    expect(tab).toBeDefined();
+
+    await act(async () => { finishLoad(envelope); });
+    expect(useWorkspaceListStore.getState().workspaces.map(({ id }) => id)).toEqual([created.id, saved.id]);
+    expect(useWorkspaceListStore.getState().getWorkspace(created.id)?.panes[0].tabs).toContainEqual(tab);
+  });
+
+  it("acknowledges quit preparation even when publishing the window fragment fails", async () => {
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    productionRaceMocks.loadPersistentData.mockResolvedValue({
+      supported: true, schemaVersion: 1,
+      data: { schema_version: 1, workspaces: [], settings: { theme_id: "default" } },
+    });
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    await vi.waitFor(() => expect(productionRaceMocks.publishWindowFragment).toHaveBeenCalled());
+
+    const [, prepareQuit] = vi.mocked(listen).mock.calls.find(([event]) => event === QUIT_PREPARE_EVENT)!;
+    const error = new Error("publish failed");
+    productionRaceMocks.publishWindowFragment.mockRejectedValueOnce(error);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await act(async () => {
+        prepareQuit({ event: QUIT_PREPARE_EVENT, id: 0, payload: undefined });
+      });
+      expect(warn).toHaveBeenCalledWith("[quit] Failed to prepare this window:", error);
+      expect(productionRaceMocks.quitPrepared).toHaveBeenCalledExactlyOnceWith(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("acknowledges quit preparation even when a child window fails to load", async () => {
+    productionRaceMocks.windowLabel = "mycmux-w1";
+    resetWindowContextCacheForTests();
+    const error = new Error("child settings failed to load");
+    productionRaceMocks.getAppSettings.mockRejectedValueOnce(error);
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await act(async () => root?.render(createElement(Harness)));
+      expect(warn).toHaveBeenCalledWith("[persist] Failed to hydrate child window:", error);
+      productionRaceMocks.publishWindowFragment.mockClear();
+      const [, prepareQuit] = vi.mocked(listen).mock.calls.find(([event]) => event === QUIT_PREPARE_EVENT)!;
+      await act(async () => {
+        prepareQuit({ event: QUIT_PREPARE_EVENT, id: 0, payload: undefined });
+      });
+      expect(productionRaceMocks.quitPrepared).toHaveBeenCalledExactlyOnceWith(false);
+      expect(productionRaceMocks.publishWindowFragment).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  function quitWorkspace(id: string): Workspace {
+    return {
+      id, name: id, gridTemplateId: "1x1", createdAt: 1, status: "running",
+      panes: [{
+        id: `${id}-pane`, sessionId: `${id}-keep-session`, agentId: "shell", activeTabId: `${id}-keep`,
+        tabs: ["keep", "closing"].map((tab) => ({
+          id: `${id}-${tab}`, sessionId: `${id}-${tab}-session`, agentId: "shell", type: "terminal",
+        })),
+      }],
+    };
+  }
+
+  async function mountQuitWindow(label: string, workspace: Workspace) {
+    productionRaceMocks.windowLabel = label;
+    resetWindowContextCacheForTests();
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    productionRaceMocks.getAppSettings.mockResolvedValue({ schema_version: 1, theme_id: "default" });
+    productionRaceMocks.loadPersistentData.mockResolvedValue({
+      supported: true, schemaVersion: 1,
+      data: { schema_version: 1, workspaces: [], settings: { theme_id: "default" } },
+    });
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host ??= document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    expect(productionRaceMocks.publishWindowFragment).toHaveBeenCalledWith(
+      expect.objectContaining({ window_label: label }),
+    );
+  }
+
+  function dispatchQuitTestEvent(event: string, payload?: unknown) {
+    const registration = vi.mocked(listen).mock.calls.findLast(([name]) => name === event);
+    if (!registration) throw new Error(`No listener for ${event}`);
+    return registration[1]({ event, id: 0, payload });
+  }
+
+  async function beginSlowTabClose(workspace: Workspace) {
+    let finish!: () => void;
+    productionRaceMocks.killSession.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    let close!: Promise<PaneCloseResult>;
+    await act(async () => {
+      close = closePaneOperation({
+        kind: "tab", workspaceId: workspace.id, paneId: workspace.panes[0].id, tabId: `${workspace.id}-closing`,
+      }, "ui");
+    });
+    expect(productionRaceMocks.killSession).toHaveBeenCalledWith(`${workspace.id}-closing-session`);
+    return { finish, close };
+  }
+
+  it("saves the closed tab's absence when a child starts closing it before another window answers quit", async () => {
+    const child = quitWorkspace("child");
+    await mountQuitWindow("mycmux-w1", child);
+    const { finish, close } = await beginSlowTabClose(child);
+    await act(async () => { dispatchQuitTestEvent(QUIT_PREPARE_EVENT); });
+    const answersBeforeClose = productionRaceMocks.quitPrepared.mock.calls.length;
+
+    await act(async () => {
+      finish();
+      expect(await close).toMatchObject({ status: "closed" });
+    });
+    expect(productionRaceMocks.quitPrepared).toHaveBeenCalledExactlyOnceWith(true);
+    const childFragment = productionRaceMocks.publishWindowFragment.mock.calls
+      .findLast(([fragment, required]) => required && fragment.window_label === "mycmux-w1")?.[0];
+    expect(childFragment).toBeDefined();
+
+    // A separate webview owns the final save and answers after this child.
+    await act(async () => root?.unmount());
+    __resetWindowCloseStateForTests();
+    productionRaceMocks.getWindowFragments.mockResolvedValue([childFragment]);
+    await mountQuitWindow("main", quitWorkspace("main-workspace"));
+    await act(async () => { dispatchQuitTestEvent(QUIT_PREPARE_EVENT); });
+    expect(productionRaceMocks.quitPrepared.mock.calls).toEqual([[true], [true]]);
+    await act(async () => { dispatchQuitTestEvent(QUIT_SAVE_EVENT); });
+    expect(productionRaceMocks.quitSaved).toHaveBeenCalledOnce();
+    const saved = productionRaceMocks.savePersistentData.mock.lastCall?.[0];
+    const tabIds = saved.workspaces.find((workspace: { id: string }) => workspace.id === child.id)
+      ?.panes[0].tabs.map((tab: { tab_id: string }) => tab.tab_id);
+    expect({ answersBeforeClose, tabIds }).toEqual({ answersBeforeClose: 0, tabIds: ["child-keep"] });
+  });
+
+  it("answers quit without a published fragment when a tab close outlasts the preparation budget", async () => {
+    const workspace = quitWorkspace("slow");
+    await mountQuitWindow("main", workspace);
+    vi.useFakeTimers();
+    const { finish, close } = await beginSlowTabClose(workspace);
+    try {
+      await act(async () => {
+        dispatchQuitTestEvent(QUIT_PREPARE_EVENT);
+        await vi.advanceTimersByTimeAsync(1_100);
+      });
+      const responses = productionRaceMocks.quitPrepared.mock.calls.slice();
+      await act(async () => { dispatchQuitTestEvent(QUIT_SAVE_EVENT); });
+      expect(productionRaceMocks.quitSaved).toHaveBeenCalledOnce();
+      expect(responses).toEqual([[false]]);
+      expect(productionRaceMocks.publishWindowFragment.mock.calls.some(([, required]) => required)).toBe(false);
+    } finally {
+      await act(async () => { finish(); await close; });
+      vi.useRealTimers();
+    }
+    expect(productionRaceMocks.quitPrepared.mock.calls).toEqual([[false]]);
+  });
+
+  it("refuses UI and peer socket tab additions after a child answers quit", async () => {
+    const child = quitWorkspace("prepared-child");
+    const label = "mycmux-w1";
+    await mountQuitWindow(label, child);
+    await act(async () => { dispatchQuitTestEvent(QUIT_PREPARE_EVENT); });
+    expect(productionRaceMocks.quitPrepared).toHaveBeenCalledExactlyOnceWith(true);
+
+    const pane = child.panes[0];
+    const context = webPaneCommandContext("pane.declare_tab");
+    await act(async () => {
+      useWorkspaceLayoutStore.getState().addTabToPane(child.id, pane.id, "shell", "terminal");
+      await dispatchQuitTestEvent(PEER_COMMAND_EVENTS.request, {
+        requestId: "add-after-prepare", targetWindow: label, replyWindow: "main", cmd: "pane.declare_tab",
+        args: { paneId: pane.id, label: "Late tab" }, expiresAt: context.deadline, context,
+      });
+    });
+    const reply = productionRaceMocks.emitTo.mock.calls.find((call: unknown[]) => call[1] === PEER_COMMAND_EVENTS.response);
+    const tabIds = useWorkspaceListStore.getState().getWorkspace(child.id)?.panes[0].tabs.map((tab) => tab.id);
+    expect({ tabIds, reply }).toEqual({
+      tabIds: pane.tabs.map((tab) => tab.id),
+      reply: ["main", PEER_COMMAND_EVENTS.response, {
+        requestId: "add-after-prepare", ownerWindow: label, error: expect.stringMatching(/quit|shut/i),
+      }],
+    });
   });
 
   it("refreshes live PTYs on every save and falls back with one warning when the IPC fails", async () => {
@@ -177,6 +496,33 @@ describe("SocketListener production autosave subscriptions", () => {
       expect(warn.mock.calls.filter(([message]) => message === "[persist] Failed to list running session ids:")).toEqual([["[persist] Failed to list running session ids:", error]]);
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it("writes committed dock ownership immediately even when the layout payload is unchanged", async () => {
+    productionRaceMocks.readAgentSessionMappings.mockResolvedValue({});
+    productionRaceMocks.loadPersistentData.mockResolvedValue({
+      supported: true, schemaVersion: 1,
+      data: { schema_version: 1, workspaces: [], settings: { theme_id: "default" } },
+    });
+    const Harness = () => { useWorkspacePersist(); return null; };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(createElement(Harness)));
+    await vi.waitFor(() => expect(productionRaceMocks.claimLeader).toHaveBeenCalledTimes(2));
+    vi.useFakeTimers();
+    try {
+      expect(productionRaceMocks.savePersistentData).not.toHaveBeenCalled();
+      expect(productionRaceMocks.dockSaveHandler).not.toBeNull();
+      await act(async () => productionRaceMocks.dockSaveHandler?.());
+      expect(productionRaceMocks.savePersistentData).toHaveBeenCalledTimes(1);
+      await act(async () => productionRaceMocks.dockSaveHandler?.());
+      expect(productionRaceMocks.savePersistentData).toHaveBeenCalledTimes(2);
+      expect(productionRaceMocks.savePersistentData.mock.calls[0][0])
+        .toEqual(productionRaceMocks.savePersistentData.mock.calls[1][0]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

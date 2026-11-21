@@ -20,7 +20,10 @@ class FakePerformanceObserver {
   }
 
   emit(...durations: number[]): void {
-    const entries = durations.map((duration) => ({ duration })) as PerformanceEntry[];
+    this.emitEntries(durations.map((duration) => ({ duration })) as PerformanceEntry[]);
+  }
+
+  emitEntries(entries: PerformanceEntry[]): void {
     this.callback(
       { getEntries: () => entries } as PerformanceObserverEntryList,
       this as unknown as PerformanceObserver,
@@ -129,9 +132,10 @@ describe("production renderer heartbeat", () => {
     vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
     const { liveTerms, termCache } = await import("../../src/components/terminal/terminalCache");
     const { initializeRendererHeartbeat } = await import("../../src/lib/perfDiagnostics");
-    liveTerms.set("live", {} as import("@xterm/xterm").Terminal);
-    termCache.set("live", {} as import("../../src/components/terminal/terminalCache").CachedTerm);
-    termCache.set("cached", {} as import("../../src/components/terminal/terminalCache").CachedTerm);
+    const shared = {} as import("@xterm/xterm").Terminal;
+    liveTerms.set("live", shared);
+    termCache.set("live", { term: shared } as import("../../src/components/terminal/terminalCache").CachedTerm);
+    termCache.set("cached", { term: {} } as import("../../src/components/terminal/terminalCache").CachedTerm);
     const cleanup = initializeRendererHeartbeat();
     try {
       expect(initializeRendererHeartbeat()).toBe(cleanup);
@@ -142,7 +146,8 @@ describe("production renderer heartbeat", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(heartbeatInvoke).toHaveBeenCalledExactlyOnceWith("report_renderer_heartbeat", { heartbeat: {
         heapUsedMib: 10.5, longTasks: 2, maxLongTaskMs: 225.5, xtermCount: 2,
-        pendingInvokes: 0, visibility: "hidden", focus: true,
+        heapAlert: false, liveCount: 0, cacheCount: 2, pendingTickets: 0, pendingInvokes: 0, visibility: "hidden", focus: true,
+        progress: { timerDelayMs: 0, longestFrameMs: 0, workKind: "long-task", workMs: 226 },
       } });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(heartbeatInvoke).toHaveBeenCalledTimes(2);
@@ -170,9 +175,40 @@ describe("production renderer heartbeat", () => {
     expect(heartbeatInvoke).toHaveBeenCalledTimes(3);
     expect(heartbeatInvoke).toHaveBeenLastCalledWith("report_renderer_heartbeat", { heartbeat: {
       heapUsedMib: null, longTasks: 0, maxLongTaskMs: 0, xtermCount: 0,
-      pendingInvokes: 0, visibility: "visible", focus: false,
+      heapAlert: false, liveCount: 0, cacheCount: 0, pendingTickets: 0, pendingInvokes: 0, visibility: "visible", focus: false,
+      progress: { timerDelayMs: 0, longestFrameMs: 0, workKind: "unknown", workMs: 0 },
     } });
     cleanup();
+  });
+
+  it("reports the missed renderer timer and dominant work during a long frame", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    vi.stubGlobal("performance", { now: () => now });
+    vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => true });
+    class FrameObserver extends FakePerformanceObserver {
+      static supportedEntryTypes = ["longtask", "long-animation-frame"];
+    }
+    vi.stubGlobal("PerformanceObserver", FrameObserver);
+    const { initializeRendererHeartbeat } = await import("../../src/lib/perfDiagnostics");
+    const stop = initializeRendererHeartbeat();
+    try {
+      now = 81_000;
+      FrameObserver.instances[0].emitEntries([{
+        entryType: "long-animation-frame", startTime: 30_100, duration: 50_429,
+        renderStart: 31_100, styleAndLayoutStart: 32_100,
+        scripts: [{ duration: 1_000, invokerType: "user-callback", forcedStyleAndLayoutDuration: 100 }],
+      } as unknown as PerformanceEntry]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeatInvoke.mock.calls[0][1].heartbeat.progress).toEqual({
+        timerDelayMs: 51_000, longestFrameMs: 50_429, workKind: "style-layout", workMs: 48_529,
+      });
+      now = 111_000;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeatInvoke.mock.calls[1][1].heartbeat.progress).toEqual({
+        timerDelayMs: 0, longestFrameMs: 0, workKind: "unknown", workMs: 0,
+      });
+    } finally { stop(); }
   });
 
   it("silently ignores backend rejections and synchronous IPC errors", async () => {
@@ -189,4 +225,47 @@ describe("production renderer heartbeat", () => {
     expect(warn).not.toHaveBeenCalled();
     cleanup();
   });
+});
+
+it("renderer heartbeat compares each 30-second heap sample and forces early high-heap logging", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => false });
+  const memory = { usedJSHeapSize: 100 * 1024 * 1024, totalJSHeapSize: 900 * 1024 * 1024, jsHeapSizeLimit: 2000 * 1024 * 1024 };
+  vi.stubGlobal("performance", { memory });
+  vi.stubGlobal("PerformanceObserver", undefined);
+  const { initializeRendererHeartbeat } = await import("../../src/lib/perfDiagnostics");
+  const cleanup = initializeRendererHeartbeat();
+  try {
+    await vi.advanceTimersByTimeAsync(30_000);
+    memory.usedJSHeapSize = 200 * 1024 * 1024;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(heartbeatInvoke.mock.calls[1][1].heartbeat.heapAlert).toBe(true);
+    memory.usedJSHeapSize = 210 * 1024 * 1024;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(heartbeatInvoke.mock.calls[2][1].heartbeat.heapAlert).toBe(false);
+    memory.usedJSHeapSize = 600 * 1024 * 1024;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(heartbeatInvoke.mock.calls[3][1].heartbeat.heapAlert).toBe(true);
+  } finally { cleanup(); }
+});
+
+it("heartbeat counts each managed live or cached Terminal instance once", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => false });
+  vi.stubGlobal("performance", {});
+  vi.stubGlobal("PerformanceObserver", undefined);
+  const { liveTerms, termCache } = await import("../../src/components/terminal/terminalCache");
+  const { initializeRendererHeartbeat } = await import("../../src/lib/perfDiagnostics");
+  const a = {} as import("@xterm/xterm").Terminal, b = {} as typeof a;
+  liveTerms.set("front", a);
+  liveTerms.set("alias", a);
+  liveTerms.set("shared", b);
+  termCache.set("shared", { term: b } as import("../../src/components/terminal/terminalCache").CachedTerm);
+  const stop = initializeRendererHeartbeat();
+  try {
+    await vi.advanceTimersByTimeAsync(30000);
+    const sample = heartbeatInvoke.mock.calls[0][1].heartbeat;
+    expect(sample).toMatchObject({ liveCount: 1, cacheCount: 1, xtermCount: 2 });
+    expect(sample).not.toHaveProperty("headlessCount");
+  } finally { stop(); liveTerms.clear(); termCache.clear(); }
 });

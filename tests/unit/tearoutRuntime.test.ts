@@ -35,6 +35,7 @@ import { tearoutOperationBusy, beginTearoutOperation, endTearoutOperation, tearo
   reserveIncomingTearout, finishIncomingTearout, localTearoutRefusal } from "../../src/lib/tearout/operation";
 import { activeTearoutRecords, TearoutRecord } from "../../src/lib/tearout/record";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { ensurePresendTab, forgetPresendTab, presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
 import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
 import { buildWindowFragment, toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
@@ -1524,6 +1525,24 @@ it.each(["raw-busy", "not-pre-ownership", "different-window", "same-request"] as
     expect(tearoutOperationBusy()).toBe(false); expect(activeTearoutRecords.size).toBe(0);
   });
 
+
+
+it.each([false, true])("discards source reading attempts only after a native tab move succeeds (escape=%s)", async escape => {
+  const sessionId = "pty-original";
+  mocks.escape = escape;
+  setPresendTabEnabled(sessionId, false);
+  ensurePresendTab(sessionId).attempted.add("earlier-attempt");
+  try {
+    await tearoutTab(item, gap, { x: 10, y: 10 });
+    expect(useWorkspaceListStore.getState().workspaces.map(workspace => workspace.id)).toEqual(escape ? ["source"] : []);
+    expect(presendTab(sessionId)).toEqual({
+      enabled: false,
+      attempted: new Set(escape ? ["earlier-attempt"] : []),
+    });
+  } finally {
+    forgetPresendTab(sessionId);
+  }
+});
 
 describe("O2 separates first detach from whole-window dock", () => {
   it.each(["workspace", "center"])("keeps the first window despite an otherwise valid %s approval", async kind => {

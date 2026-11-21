@@ -164,8 +164,34 @@ export type WebPaneTrustedAction = (
 export function navigateWebPane(tabId: string, options: { url?: string; action?: "back" | "forward" | "reload" }) {
   return invoke<WebPaneNavigateResult>("webpane_navigate", { tabId, ...options });
 }
-export function evalWebPane<T = unknown>(tabId: string, script: string, timeoutMs?: number, direct = false) {
-  return invoke<WebPaneEvalResult<T>>("webpane_eval", { tabId, script, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(direct ? { direct: true } : {}) });
+const WAIT_SCRIPT_START = "const config = ";
+const WAIT_SCRIPT_END = ';return {url: location.href, ready: config.state === "selector" ? !!document.querySelector(config.selector)'
+  + ': document.readyState === "complete" && (config.state === "load" || (window.__mycmux && Date.now() - window.__mycmux.lastMutationAt >= 500))};';
+
+export function buildWebPaneWaitScript(state: WebPaneWaitResult["state"], selector?: string): string {
+  return WAIT_SCRIPT_START + JSON.stringify({ state, selector }) + WAIT_SCRIPT_END;
+}
+
+function isInternalWebPaneRead(script: string): boolean {
+  if (script === "return window.__mycmux.generation;") return true;
+  if (!script.startsWith(WAIT_SCRIPT_START) || !script.endsWith(WAIT_SCRIPT_END)) return false;
+  try {
+    const config = JSON.parse(script.slice(WAIT_SCRIPT_START.length, -WAIT_SCRIPT_END.length));
+    return config !== null && typeof config === "object" && typeof config.state === "string";
+  } catch {
+    return false;
+  }
+}
+
+export function evalWebPane<T = unknown>(
+  tabId: string, script: string, timeoutMs?: number, direct = false, automation = !direct || !isInternalWebPaneRead(script),
+) {
+  return invoke<WebPaneEvalResult<T>>("webpane_eval", {
+    tabId, script,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(direct ? { direct: true } : {}),
+    ...(automation ? {} : { automation: false }),
+  });
 }
 export function snapshotWebPane(tabId: string, options: { mode?: "ax" | "text"; maxBytes?: number }) {
   return invoke<WebPaneSnapshotResult>("webpane_snapshot", { tabId, ...options });

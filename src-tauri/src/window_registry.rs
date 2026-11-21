@@ -26,7 +26,9 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
@@ -228,6 +230,9 @@ pub struct WindowRegistry {
     assignments: DashMap<String, String>,
     fragments: DashMap<String, WindowFragment>,
     pending_adoptions: DashMap<String, Vec<Value>>,
+    // Process startup only. Stays initialized after the last hold is cleared so
+    // a later read cannot put deliberately closed workspaces back under guard.
+    startup_workspaces: Mutex<Option<HashMap<String, String>>>,
     pub(crate) child_window_labels: crate::commands::window::ChildWindowLabelReservations,
     revision: AtomicU64,
     leader: std::sync::Mutex<Option<String>>,
@@ -238,6 +243,14 @@ pub struct WindowRegistry {
 impl WindowRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn hold_startup_workspaces<'a>(&self, owners: impl Iterator<Item = (&'a str, &'a str)>) {
+        self.startup_workspaces.lock().unwrap().get_or_insert_with(|| {
+            owners.filter(|(id, _)| !id.is_empty())
+                .map(|(id, label)| (id.to_string(), label.to_string()))
+                .collect()
+        });
     }
 
     /// A process-wide mutex makes competing claims exclusive and repeatable.
@@ -301,9 +314,13 @@ impl WindowRegistry {
     /// Point every listed workspace at `label`, dropping any stale assignment
     /// that used to point at it.
     pub fn assign(&self, workspace_ids: &[String], label: &str) {
+        let mut startup = self.startup_workspaces.lock().unwrap();
         for workspace_id in workspace_ids {
             self.assignments
                 .insert(workspace_id.clone(), label.to_string());
+            if let Some(owner) = startup.as_mut().and_then(|held| held.get_mut(workspace_id)) {
+                *owner = label.to_string();
+            }
         }
         self.bump();
     }
@@ -379,6 +396,7 @@ impl WindowRegistry {
         let label = fragment.window_label.clone();
         let workspace_ids = workspace_config_ids(&fragment.workspaces);
         let published: std::collections::HashSet<&String> = workspace_ids.iter().collect();
+        let mut startup = self.startup_workspaces.lock().unwrap();
 
         self.assignments.retain(|workspace_id, owner| {
             owner != &label || published.contains(workspace_id)
@@ -388,6 +406,11 @@ impl WindowRegistry {
                 .insert(workspace_id.clone(), label.clone());
         }
         self.fragments.insert(label, fragment);
+        if let Some(held) = startup.as_mut() {
+            for id in &workspace_ids {
+                held.remove(id);
+            }
+        }
         self.bump();
     }
 
@@ -542,13 +565,26 @@ impl WindowRegistry {
         self.bump();
     }
 
-    /// Ids some live window still holds: what it published, plus what is
-    /// queued for a window that has not adopted it yet.
+    pub fn forget_closed_window(&self, label: &str) {
+        let mut startup = self.startup_workspaces.lock().unwrap();
+        if let Some(held) = startup.as_mut() {
+            held.retain(|_, owner| owner != label);
+        }
+        self.forget_window(label);
+    }
+
+    /// Ids still held by published fragments, handoff queues or startup.
     ///
     /// Only the ids, because the save path asks this on every write and the
     /// values are whole workspaces.
     pub fn held_workspace_ids(&self) -> std::collections::HashSet<String> {
+        // Do not let publication remove a startup hold between reading these
+        // IDs and reading the fragment that supersedes them.
+        let startup = self.startup_workspaces.lock().unwrap();
         let mut ids = std::collections::HashSet::new();
+        if let Some(held) = startup.as_ref() {
+            ids.extend(held.keys().cloned());
+        }
         for entry in self.fragments.iter() {
             ids.extend(workspace_config_ids(&entry.value().workspaces));
         }

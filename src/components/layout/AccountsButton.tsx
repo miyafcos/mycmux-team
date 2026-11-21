@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   OVERLAY_EXIT_MS,
   useDeferredUnmount,
 } from "../../hooks/useDeferredUnmount";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import type { CliProvider, ProfileUsage, WindowStat } from "../../lib/ipc";
+import { PROVIDER_ORDER } from "../../lib/cliAccounts";
 import {
   PROVIDER_SHORT,
   formatPct,
@@ -14,6 +15,8 @@ import {
   rowIsPressed,
   rowNeedsAttention,
   usageBarColor,
+  usageColor,
+  worstPct,
 } from "../../lib/accountRows";
 import {
   buildChipLabels,
@@ -161,7 +164,7 @@ function AccountsButtonLabel({
   chipLabels: Map<string, string>;
 }) {
   if (mode === "extreme") {
-    return <span>{[PROVIDER_SHORT.claude, PROVIDER_SHORT.codex, PROVIDER_SHORT.grok].join("\u00b7")}</span>;
+    return <span>{PROVIDER_ORDER.map((provider) => PROVIDER_SHORT[provider]).join("\u00b7")}</span>;
   }
 
   return (
@@ -173,26 +176,12 @@ function AccountsButtonLabel({
         minWidth: 0,
       }}
     >
-      <ProviderSummary
-        provider="claude"
-        rows={rows}
-        chipLabels={chipLabels}
-        mode={mode}
-      />
-      <span aria-hidden="true">{String.fromCharCode(183)}</span>
-      <ProviderSummary
-        provider="codex"
-        rows={rows}
-        chipLabels={chipLabels}
-        mode={mode}
-      />
-      <span aria-hidden="true">{String.fromCharCode(183)}</span>
-      <ProviderSummary
-        provider="grok"
-        rows={rows}
-        chipLabels={chipLabels}
-        mode={mode}
-      />
+      {PROVIDER_ORDER.map((provider, index) => (
+        <Fragment key={provider}>
+          {index > 0 && <span aria-hidden="true">{String.fromCharCode(183)}</span>}
+          <ProviderSummary provider={provider} rows={rows} chipLabels={chipLabels} mode={mode} />
+        </Fragment>
+      ))}
     </span>
   );
 }
@@ -262,7 +251,11 @@ function ProviderUsageSummary({
   const showsNumbers =
     row &&
     (row.state === "ok" || (row.state === "cooldown" && rowHasWindows(row)));
-  const fiveHour = showsNumbers ? row.five_hour : null;
+  if (showsNumbers && row.provider === "gemini") {
+    const peak = worstPct(row);
+    if (peak !== null) return <span style={{ color: usageColor(peak) }}>{formatPct(peak)}</span>;
+  }
+  const fiveHour = showsNumbers && row.provider !== "grok" ? row.five_hour : null;
   const sevenDay = showsNumbers ? row.seven_day : null;
   if (!fiveHour && !sevenDay) {
     return <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>;

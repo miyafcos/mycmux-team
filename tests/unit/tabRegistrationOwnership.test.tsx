@@ -43,12 +43,12 @@ import { useClaudeSetupTokenStore } from "../../src/stores/claudeSetupTokenStore
 import { launcherStrings as L } from "../../src/components/workspace/launcherStrings";
 import { setupTokenStrings as S } from "../../src/components/layout/tabAccountStrings";
 import { getCatalogEntry, type PaneLaunchSpec } from "../../src/lib/agentCatalog";
-import type { CliAccountProfile, CliProvider, ClaudeSetupTokenEvent } from "../../src/lib/ipc";
+import type { CliAccountProfile, SwitchableCliProvider, ClaudeSetupTokenEvent } from "../../src/lib/ipc";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView = () => {};
 let host: HTMLDivElement, root: Root;
-const profile = (provider: CliProvider): CliAccountProfile => ({
+const profile = (provider: SwitchableCliProvider): CliAccountProfile => ({
   id: provider + "-missing", provider, label: provider + " fixture", email: "fixture@example.test",
   identity_key: "fixture", plan: null, org_name: null, captured_at: "", last_switched_at: null, needs_relogin: false,
 });
@@ -84,7 +84,7 @@ async function key(value: string, target: EventTarget = document.activeElement ?
 }
 const search = () => host.querySelector<HTMLInputElement>("input[aria-label='" + L.searchPlaceholder + "']")!;
 const launcher = () => <LauncherPane workspaceId="ws" paneId="pane" tabId="tab" sessionId="session" isActive />;
-async function openProvider(provider: CliProvider) {
+async function openProvider(provider: SwitchableCliProvider) {
   await click(L.specTooltip(getCatalogEntry(provider)!.label));
 }
 function homeEntry(profileId: string, stage: CliLoginEntry["stage"] = "waiting"): CliLoginEntry {
@@ -302,7 +302,7 @@ describe("registration origin ends independently of component lifetime", () => {
   });
 });
 
-function SelectorPair({ provider }: { provider: CliProvider }) {
+function SelectorPair({ provider }: { provider: SwitchableCliProvider }) {
   const [values, setValues] = useState<PaneLaunchSpec[]>([{ target: provider }, { target: provider }]);
   return <>{values.map((value, index) => <section key={index} data-registration-slot={index}>
     <AgentSelector workspaceInstanceId={1} slotIndex={index} value={value} onChange={next => {
@@ -482,7 +482,7 @@ describe("launcher result focus survives account refresh", () => {
 
 describe("new workspace registration lifetime", () => {
   const workspace = () => <WorkspaceSetup defaultCwd="fixture-work" onCancel={vi.fn()} onLaunch={vi.fn()} />;
-  async function chooseProvider(provider: CliProvider) {
+  async function chooseProvider(provider: SwitchableCliProvider) {
     const select = host.querySelector<HTMLSelectElement>("select")!;
     await act(async () => {
       select.value = provider;

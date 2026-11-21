@@ -1,4 +1,4 @@
-import type { CliLiveLogin, CliProvider } from "./ipc";
+import type { CliLiveLogin, SwitchableCliProvider } from "./ipc";
 
 /**
  * How long to wait before checking that a switch actually stuck.
@@ -18,7 +18,7 @@ export const SWITCH_REVERT_CHECK_MS = 8000;
  * mid-write, and a warning the user cannot act on is worse than silence.
  */
 export function switchWasReverted(
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   targetIdentityKey: string | null | undefined,
   live: CliLiveLogin[],
 ): boolean {

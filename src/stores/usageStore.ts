@@ -11,7 +11,7 @@ type UsageState = {
   lastError: string | null;
   lastFetchedAt: number | null;
   loading: boolean;
-  fetch: (refreshMetadata?: boolean, apiCommand?: ApiUsageCommand) => Promise<void>;
+  fetch: (refreshMetadata?: boolean, apiCommand?: ApiUsageCommand, options?: { afterSwitch: boolean }) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -21,9 +21,10 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-// Monotonic sequence counter guards against out-of-order responses: if a
-// slower, earlier fetch resolves after a newer one, its result is dropped.
+// Inventory follows request order. Gemini follows the snapshot actually
+// sampled, since a later account mutation may only read an older cache entry.
 let accountsSeq = 0;
+let geminiRevision = 0;
 
 export const useUsageStore = create<UsageState>((set) => ({
   accounts: [],
@@ -32,23 +33,39 @@ export const useUsageStore = create<UsageState>((set) => ({
   lastFetchedAt: null,
   loading: false,
 
-  fetch: async (refreshMetadata = false, apiCommand) => {
+  fetch: async (refreshMetadata = false, apiCommand, options) => {
     const mySeq = ++accountsSeq;
+    const cacheOnly = options?.afterSwitch || apiCommand === "account.switch";
     set({ loading: true });
     try {
-      const report = await (apiCommand ? getAccountUsage(refreshMetadata, apiCommand) : refreshMetadata ? getAccountUsage(true) : getAccountUsage());
-      if (mySeq !== accountsSeq) {
-        return;
-      }
-      // The backend answers with every row each time, including per-row
-      // failures, so the report replaces the list outright. Merging would keep
-      // showing a stale number next to a row that is telling us why it has none.
-      set({
-        accounts: report.accounts,
-        generatedAt: report.generated_at,
-        lastError: null,
-        lastFetchedAt: Date.now(),
-        loading: false,
+      const request = options?.afterSwitch
+        ? getAccountUsage(refreshMetadata, apiCommand, true)
+        : apiCommand ? getAccountUsage(refreshMetadata, apiCommand)
+        : refreshMetadata ? getAccountUsage(true) : getAccountUsage();
+      const report = await request;
+      const currentInventory = mySeq === accountsSeq;
+      const gemini = report.accounts.find((row) => row.provider === "gemini");
+      const revision = report.gemini_revision;
+      const updateGemini = gemini !== undefined && (revision === undefined
+        ? currentInventory && geminiRevision === 0
+        : revision > geminiRevision);
+      if (!currentInventory && !updateGemini) return;
+      if (updateGemini && revision !== undefined) geminiRevision = revision;
+
+      set((state) => {
+        const inventory = currentInventory && !report.inventory_error ? report.accounts : state.accounts;
+        const geminiRow = updateGemini ? gemini : state.accounts.find((row) => row.provider === "gemini");
+        return {
+          accounts: [...inventory.filter((row) => row.provider !== "gemini"), ...(geminiRow ? [geminiRow] : [])],
+          ...(currentInventory && {
+            generatedAt: report.generated_at,
+            lastError: report.inventory_error ?? null,
+            loading: false,
+          }),
+          // The regular poll tracks this timestamp. Cache-only reads must
+          // leave the next Gemini poll due even during repeated mutations.
+          ...(!cacheOnly && { lastFetchedAt: Date.now() }),
+        };
       });
     } catch (error) {
       if (mySeq !== accountsSeq) {
@@ -56,13 +73,14 @@ export const useUsageStore = create<UsageState>((set) => ({
       }
       // Stale-while-error: the whole call failed, so keep the last known-good
       // rows on screen and surface only the error.
-      set({ lastError: errorMessage(error), lastFetchedAt: Date.now(), loading: false });
+      set({ lastError: errorMessage(error), loading: false, ...(!cacheOnly && { lastFetchedAt: Date.now() }) });
     }
   },
 }));
 
 export function __resetUsageStoreForTests(): void {
   accountsSeq = 0;
+  geminiRevision = 0;
   useUsageStore.setState({
     accounts: [],
     generatedAt: null,

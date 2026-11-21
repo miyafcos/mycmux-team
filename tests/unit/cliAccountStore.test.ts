@@ -277,6 +277,30 @@ describe("cliAccountStore", () => {
     expect(useCliAccountStore.getState().busyByProvider.claude).toBeNull();
   });
 
+  it("releases capture for another Claude switch while Gemini HTTP is pending", async () => {
+    const gemini = deferred<void>();
+    usageFetch.mockImplementation((_, apiCommand, options) => {
+      return apiCommand === "account.switch" || options?.afterSwitch ? Promise.resolve() : gemini.promise;
+    });
+    mockedCapture.mockResolvedValue(profile);
+    mockedList.mockResolvedValue(snapshot([profile]));
+    const otherProfile = { ...profile, id: "claude-b", identity_key: "b" };
+    const switched = { ...switchResult, profile: otherProfile };
+    mockedSwitch.mockResolvedValue(switched);
+
+    const pendingPoll = usageFetch();
+    const capture = useCliAccountStore.getState().capture("claude");
+    try {
+      await vi.waitFor(() => expect(useCliAccountStore.getState().profiles).toEqual([profile]));
+      await vi.waitFor(() => expect(useCliAccountStore.getState().busyByProvider.claude).toBeNull());
+      expect(usageFetch).toHaveBeenCalledWith(false, undefined, { afterSwitch: true });
+      await expect(useCliAccountStore.getState().switchTo("claude", otherProfile.id)).resolves.toEqual(switched);
+    } finally {
+      gemini.resolve();
+      await Promise.all([capture, pendingPoll]);
+    }
+  });
+
   it("keeps an operation error until the user dismisses it even after fetch succeeds", async () => {
     mockedSwitch.mockRejectedValueOnce(new Error("cli_account.error.profile_not_found"));
     await useCliAccountStore.getState().switchTo("claude", profile.id);

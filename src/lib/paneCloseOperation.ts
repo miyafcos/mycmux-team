@@ -2,6 +2,7 @@ import type { Workspace } from "../types";
 import type { PaneCloseOwner, PaneCloseTarget } from "./paneClosePreflight";
 import { preflightPaneClose } from "./paneClosePreflight";
 import { confirmPaneClose } from "./paneCloseConfirmation";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "./layoutQuit";
 import { collectPaneCloseVictims } from "./paneCloseImpact";
 import { confirm } from "./appConfirmation";
 import { isDeclaredTab } from "./tabLifecycle";
@@ -10,6 +11,7 @@ import { evictTerminalCache } from "../components/terminal/terminalCache";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
+import { useComposerStore } from "../stores/composerStore";
 import { pushClosedTab } from "../stores/closedPaneStore";
 import { beforePaneClose } from "./paneCloseLifecycle";
 import { useToastStore } from "../stores/toastStore";
@@ -173,7 +175,10 @@ async function execute(op: CloseOperation): Promise<PaneCloseResult> {
     useUiStore.getState().setActivePaneId(nextTab?.sessionId ?? null);
   }
   for (const owner of closing) {
-    if (ownsPty(owner)) evictTerminalCache(owner.tab.sessionId);
+    if (ownsPty(owner)) {
+      evictTerminalCache(owner.tab.sessionId);
+      useComposerStore.getState().clearDraft(owner.tab.sessionId);
+    }
     usePaneMetadataStore.getState().removeMetadata(owner.tab.sessionId);
     terminatedSessions.delete(owner.tab.sessionId);
   }
@@ -201,6 +206,7 @@ async function observe(op: CloseOperation): Promise<PaneCloseResult> {
 
 /** GUI and explicit CLI closes share the same preflight and commit-after-kill path. */
 export async function closePaneOperation(target: PaneCloseTarget, source: PaneCloseSource, options: PaneCloseOptions = {}): Promise<PaneCloseResult> {
+  if (isPreparingLayoutQuit()) return { status: "refused", reason: "busy" };
   const key = keyOf(target);
   const existing = operations.get(key);
   if (existing) {
@@ -213,11 +219,18 @@ export async function closePaneOperation(target: PaneCloseTarget, source: PaneCl
   if (!plan.ok) return { status: "refused", reason: plan.reason };
   const overlap = [...operations.values()].some(op => op.owners.some(owner => plan.owners.some(candidate => candidate.tab.id === owner.tab.id)));
   if (overlap) return { status: "refused", reason: "busy" };
+  const finish = beginLayoutOperation()!;
   let startTermination!: () => void;
   const started = new Promise<void>(resolve => { startTermination = resolve; });
   const op: CloseOperation = { target, source, options, owners: plan.owners, phase: "confirming", started, startTermination, promise: Promise.resolve({ status: "pending" }) };
   operations.set(key, op);
-  op.promise = execute(op).catch(error => { showFailure(op, false); return { status: "failed", error } as PaneCloseResult; }).finally(() => { operations.delete(key); });
+  op.promise = execute(op).catch(error => {
+    showFailure(op, false);
+    return { status: "failed", error } as PaneCloseResult;
+  }).finally(() => {
+    operations.delete(key);
+    finish();
+  });
   return observe(op);
 }
 

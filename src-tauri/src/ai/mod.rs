@@ -1,3 +1,8 @@
+pub mod presend;
+
+pub const PRESEND_CLAUDE_MODEL: &str = "claude-haiku-5-5";
+pub const PRESEND_CODEX_MODEL: &str = "gpt-6-luna";
+
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
@@ -27,6 +32,7 @@ impl AiProvider {
             }
         }
     }
+    /// Settings presets live in src/lib/aiModels.ts; only the provider defaults are mirrored here.
     pub fn default_model(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-haiku-4-5-20251001",

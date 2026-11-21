@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chooseAutoSwitch, eligibleTargets, AUTO_SWITCH_COOLDOWN_MS } from "../../src/lib/accountAutoSwitch";
-import type { CliAccountProfile, CliLiveLogin, CliProvider, ProfileUsage } from "../../src/lib/ipc";
+import type { CliAccountProfile, CliLiveLogin, SwitchableCliProvider, ProfileUsage } from "../../src/lib/ipc";
 
 const mocks = vi.hoisted(() => ({ cli: {} as any, usage: {} as any, toast: vi.fn() }));
 vi.mock("../../src/stores/cliAccountStore", () => ({ useCliAccountStore: { getState: () => mocks.cli, subscribe: () => () => undefined } }));
@@ -15,17 +15,17 @@ import { useAccountAutoSwitch } from "../../src/hooks/useAccountAutoSwitch";
 
 const NOW = Date.parse("2026-09-08T12:00:00Z");
 const reset = "2026-09-08T15:00:00Z";
-function profile(id: string, provider: CliProvider = "claude"): CliAccountProfile {
+function profile(id: string, provider: SwitchableCliProvider = "claude"): CliAccountProfile {
   return { id, provider, label: id, email: null, identity_key: id, plan: null, org_name: null,
     captured_at: "", last_switched_at: null, needs_relogin: false };
 }
-function row(id: string, pct: number, provider: CliProvider = "claude"): ProfileUsage {
+function row(id: string, pct: number, provider: SwitchableCliProvider = "claude"): ProfileUsage {
   return { profile_id: id, provider, label: id, email: null, plan: null, registered: true,
     is_active: id === "a", needs_relogin: false, state: "ok", five_hour: { pct, resets_at: reset },
     seven_day: { pct: 10, resets_at: reset }, seven_day_sonnet: null, seven_day_opus: null,
     model_windows: [], error_code: null, retry_at: null, fetched_at: new Date(NOW).toISOString() };
 }
-function live(provider: CliProvider = "claude"): CliLiveLogin {
+function live(provider: SwitchableCliProvider = "claude"): CliLiveLogin {
   return { provider, present: true, email: null, identity_key: "a", matched_profile_id: "a",
     plan: null, org_name: null, error: null };
 }

@@ -1,35 +1,35 @@
 import { create } from "zustand";
 import { applyAutomaticStoreUpdate, syncedPersist } from "./syncedPersist";
-import type { CliProvider } from "../lib/ipc";
+import type { SwitchableCliProvider } from "../lib/ipc";
 import { AUTO_SWITCH_COOLDOWN_MS, chooseAutoSwitch } from "../lib/accountAutoSwitch";
-import { PROVIDER_ORDER, PROVIDER_TITLE } from "../lib/cliAccounts";
+import { SWITCHABLE_PROVIDERS, PROVIDER_TITLE } from "../lib/cliAccounts";
 import { useCliAccountStore } from "./cliAccountStore";
 import { useUsageStore } from "./usageStore";
 import { useToastStore } from "./toastStore";
 
 type Attempt = { source: string; target: string; at: number };
 interface AutoSwitchState {
-  enabled: Record<CliProvider, boolean>;
+  enabled: Record<SwitchableCliProvider, boolean>;
   /**
    * Profiles the user took out of the running as switch targets. Stored as the
    * exclusions so an account registered later starts out as a candidate, which
    * is how every registered account behaved before the choice existed.
    */
-  excludedTargets: Record<CliProvider, string[]>;
-  attempts: Partial<Record<CliProvider, Attempt>>;
-  status: Partial<Record<CliProvider, string>>;
-  setEnabled(provider: CliProvider, enabled: boolean): void;
-  setTargetIncluded(provider: CliProvider, profileId: string, included: boolean): void;
+  excludedTargets: Record<SwitchableCliProvider, string[]>;
+  attempts: Partial<Record<SwitchableCliProvider, Attempt>>;
+  status: Partial<Record<SwitchableCliProvider, string>>;
+  setEnabled(provider: SwitchableCliProvider, enabled: boolean): void;
+  setTargetIncluded(provider: SwitchableCliProvider, profileId: string, included: boolean): void;
   evaluate(): Promise<void>;
 }
-const running = new Set<CliProvider>();
+const running = new Set<SwitchableCliProvider>();
 // Evaluations asked for while the provider's own one was still running, e.g.
 // a candidate unticked while its switch waited in the queue. Replayed when the
 // run ends; otherwise the next candidate would wait for the next poll.
-const rerun = new Set<CliProvider>();
+const rerun = new Set<SwitchableCliProvider>();
 
 /** Tolerates a state saved before the field existed, or edited by hand. */
-export function excludedTargetsFor(state: Pick<AutoSwitchState, "excludedTargets">, provider: CliProvider): string[] {
+export function excludedTargetsFor(state: Pick<AutoSwitchState, "excludedTargets">, provider: SwitchableCliProvider): string[] {
   const list = state.excludedTargets?.[provider];
   return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
 }
@@ -51,7 +51,7 @@ export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist
     return { excludedTargets: { ...state.excludedTargets, [provider]: next } };
   }),
   evaluate: async () => {
-    for (const provider of PROVIDER_ORDER) {
+    for (const provider of SWITCHABLE_PROVIDERS) {
       if (get().enabled[provider] !== true) continue;
       if (running.has(provider)) {
         rerun.add(provider);
@@ -139,7 +139,7 @@ export const useAccountAutoSwitchStore = create<AutoSwitchState>()(syncedPersist
     const saved = (typeof persisted === "object" && persisted !== null ? persisted : {}) as Partial<AutoSwitchState>;
     // Saved before the picks existed, or damaged: every account is a candidate.
     const excludedTargets = { ...current.excludedTargets };
-    for (const provider of PROVIDER_ORDER) {
+    for (const provider of SWITCHABLE_PROVIDERS) {
       excludedTargets[provider] = excludedTargetsFor(saved as Pick<AutoSwitchState, "excludedTargets">, provider);
     }
     return { ...current, ...saved, excludedTargets };

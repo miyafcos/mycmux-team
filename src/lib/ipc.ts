@@ -8,6 +8,7 @@ export {
   type DshStartRequest, type DshPromptRequest, type DshPermissionAnswer,
 } from "./agentAdapterApi";
 import { PtyOutputChannel } from "./ptyOutputChannel";
+import { queueTerminalOutputObservation } from "../stores/terminalObservationStore";
 import { withTerminalDeadline, TERMINAL_ATTACH_TIMEOUT_MS } from "./terminalDeadline";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -87,8 +88,8 @@ interface SavePersistentDataArgs { data: PersistentData }
 interface SocketResponseArgs { id: number; result: any; error: string | null }
 interface CandidatesArgs { candidates: string[] }
 interface UriArgs { uri: string }
-interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
-interface SwitchCliAccountArgs { provider: CliProvider; profileId: string; apiRequest?: boolean }
+interface CaptureCliAccountArgs { provider: SwitchableCliProvider; label?: string }
+interface SwitchCliAccountArgs { provider: SwitchableCliProvider; profileId: string; apiRequest?: boolean }
 interface ProfileIdArgs { profileId: string }
 interface RenameCliAccountArgs extends ProfileIdArgs { label: string }
 interface ResolveCliAccountOrphanArgs {
@@ -97,7 +98,7 @@ interface ResolveCliAccountOrphanArgs {
   label?: string;
 }
 interface BeginCliLoginArgs {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   mode: CliLoginMode;
   expectedProfileId?: string;
   purpose?: CliLoginPurpose;
@@ -409,7 +410,11 @@ export async function createSession(
     }
     let staleNoticeCount = 0;
     const attach = beginSessionAttach(sessionId, {
-      deliver: onData,
+      deliver: (batch) => {
+        queueTerminalOutputObservation({ sessionId, epoch: batch.generation, startOffset: batch.scrollbackStart,
+          endOffset: batch.scrollbackEnd, data: batch.data, baseline: batch.resync });
+        onData(batch);
+      },
       ackStale: (batch, current) => {
         ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
           if (import.meta.env.DEV) {
@@ -1213,8 +1218,8 @@ export async function openMainDashboard(target: OpenDashboardTarget = {}): Promi
   });
 }
 
-export async function focusWindow(label: string): Promise<void> {
-  return invoke<void>("focus_window", { label });
+export async function focusWindow(label: string, options?: { focusPrimary?: boolean }): Promise<void> {
+  return invoke<void>("focus_window", { label, ...options });
 }
 
 /** A display-only projection: no terminal snapshots or launch secrets. */
@@ -1293,6 +1298,8 @@ export async function openChildWindow(
 export const WINDOW_REGISTRY_CHANGED_EVENT = "mycmux://window-registry-changed";
 /** Targeted at the window that has workspaces waiting in its adoption queue. */
 export const WINDOW_ADOPT_EVENT = "mycmux://window-adopt";
+/** Emitted after the receiver publishes and a dock has committed. */
+export const DOCK_SAVE_EVENT = "mycmux://dock-save";
 
 /** One window's published workspace list + its active selection. */
 export interface WindowFragment {
@@ -1350,8 +1357,8 @@ export const QUIT_PREPARE_EVENT = "mycmux://prepare-quit";
 export const QUIT_SAVE_EVENT = "mycmux://save-and-quit";
 
 /** This window has published everything it holds; the quit may proceed. */
-export async function quitPrepared(): Promise<void> {
-  return invoke<void>("quit_prepared");
+export async function quitPrepared(fragmentPublished: boolean): Promise<void> {
+  return invoke<void>("quit_prepared", { fragmentPublished });
 }
 
 /** data.json is written; the app may exit. */
@@ -1359,8 +1366,8 @@ export async function quitSaved(): Promise<void> {
   return invoke<void>("quit_saved");
 }
 
-export async function publishWindowFragment(fragment: WindowFragment): Promise<void> {
-  return invoke<void>("publish_window_fragment", { fragment });
+export async function publishWindowFragment(fragment: WindowFragment, requirePublished?: true): Promise<void> {
+  return invoke<void>("publish_window_fragment", { fragment, requirePublished });
 }
 
 /** Drain (and thereby claim) the workspaces queued for a window. */
@@ -1744,13 +1751,19 @@ export interface ProfileUsage {
 export interface AccountUsageReport {
   accounts: ProfileUsage[];
   generated_at: string;
+  inventory_error?: string;
+  gemini_revision?: number;
 }
 
 export type ApiUsageCommand = "account.switch" | "account.use_reset_ticket" | "account.usage";
 
-export async function getAccountUsage(refreshMetadata = false, apiCommand?: ApiUsageCommand): Promise<AccountUsageReport> {
-  if (apiCommand) return invoke<AccountUsageReport>("get_account_usage", {
-    ...(refreshMetadata ? { refreshMetadata: true } : {}), apiCommand,
+export async function getAccountUsage(
+  refreshMetadata = false, apiCommand?: ApiUsageCommand, afterSwitch = false,
+): Promise<AccountUsageReport> {
+  if (apiCommand || afterSwitch) return invoke<AccountUsageReport>("get_account_usage", {
+    ...(refreshMetadata ? { refreshMetadata: true } : {}),
+    ...(apiCommand ? { apiCommand } : {}),
+    ...(afterSwitch ? { afterSwitch: true } : {}),
   });
   return refreshMetadata
     ? invoke<AccountUsageReport>("get_account_usage", { refreshMetadata: true })
@@ -1762,18 +1775,19 @@ export async function claimResetTicket(profileId: string, requestId: string, exp
 }
 
 /** Same backend executor/state as PC, with API provider binding and logging policy. */
-export async function claimResetTicketForApi(provider: CliProvider, profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
+export async function claimResetTicketForApi(provider: SwitchableCliProvider, profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
   return invoke<ResetTicketOutcome>("use_reset_ticket", {
     profileId, requestId, expectedEmail, apiRequest: true, apiProvider: provider,
   });
 }
 
-export type CliProvider = "claude" | "codex" | "grok";
+export type SwitchableCliProvider = "claude" | "codex" | "grok";
+export type CliProvider = SwitchableCliProvider | "gemini";
 
 export interface CliAccountProfile {
   foreign_token_owner?: { account_uuid: string; email: string | null; detected_at: string } | null;
   id: string;
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   label: string;
   email: string | null;
   identity_key: string;
@@ -1785,7 +1799,7 @@ export interface CliAccountProfile {
 }
 
 export interface CliLiveLogin {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   present: boolean;
   email: string | null;
   identity_key: string | null;
@@ -1803,7 +1817,7 @@ export interface CliAccountActivePointers {
 
 export interface CliOrphanSnapshot {
   id: string;
-  provider: CliProvider | null;
+  provider: SwitchableCliProvider | null;
   captured_at: string | null;
   email: string | null;
   identity_key: string | null;
@@ -1843,7 +1857,7 @@ export interface CliLaunchTokenStatus {
 
 /** Session-only, non-secret proof of the login used at the PTY boundary. */
 export interface TabAccountEvidence {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profile_id: string;
   method: "claude_launch_token" | "account_home";
   result: CliLaunchTokenStatus["owner_check"] | "matched" | "stale";
@@ -1868,7 +1882,7 @@ export async function recheckTabAccount(sessionId: string): Promise<TabAccountEv
 export interface ClaudeSetupTokenEvent {
   login_id: string;
   profile_id: string;
-  state: "starting" | "waiting_browser" | "code_available" | "checking_owner" | "saved" | "mismatch" | "failed" | "cancelled" | "timeout";
+  state: "starting" | "waiting_browser" | "code_available" | "confirming" | "checking_owner" | "saved" | "mismatch" | "failed" | "cancelled" | "timeout";
   url?: string;
   reason?: string;
   status?: CliLaunchTokenStatus;
@@ -1909,11 +1923,11 @@ export async function listCliAccounts(): Promise<CliAccountsSnapshot> {
   return invoke<CliAccountsSnapshot>("list_cli_accounts");
 }
 
-export async function captureCliAccount(provider: CliProvider, label?: string): Promise<CliAccountProfile> {
+export async function captureCliAccount(provider: SwitchableCliProvider, label?: string): Promise<CliAccountProfile> {
   return invoke<CliAccountProfile>("capture_cli_account", { provider, label } satisfies CaptureCliAccountArgs);
 }
 
-export async function switchCliAccount(provider: CliProvider, profileId: string, apiRequest = false): Promise<CliSwitchResult> {
+export async function switchCliAccount(provider: SwitchableCliProvider, profileId: string, apiRequest = false): Promise<CliSwitchResult> {
   const args = apiRequest ? { provider, profileId, apiRequest: true } : { provider, profileId };
   return invoke<CliSwitchResult>("switch_cli_account", args satisfies SwitchCliAccountArgs);
 }
@@ -1946,7 +1960,7 @@ export type CliLoginMode = "new" | "reauth";
 export type CliLoginPurpose = { kind: "global_staging" } | { kind: "account_home"; profile_id: string };
 export type CliAccountHomeState = "created" | "awaiting_login" | "ready" | "needs_login";
 export interface CliAccountHomeStatus {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profile_id: string;
   state: CliAccountHomeState;
   owner: string;
@@ -1954,7 +1968,7 @@ export interface CliAccountHomeStatus {
 }
 export interface CliAccountHomeLoginStatus {
   login_id: string;
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profile_id: string;
   state: "pending" | "ready" | "failed";
   reason: string | null;
@@ -1966,7 +1980,7 @@ export async function listCliAccountHomes(): Promise<CliAccountHomeStatus[]> {
 export async function getCliAccountHomeLogin(loginId: string): Promise<CliAccountHomeLoginStatus> {
   return invoke<CliAccountHomeLoginStatus>("get_cli_account_home_login", { loginId });
 }
-export async function unregisterCliAccountHome(provider: CliProvider, profileId: string): Promise<void> {
+export async function unregisterCliAccountHome(provider: SwitchableCliProvider, profileId: string): Promise<void> {
   return invoke<void>("unregister_cli_account_home", { provider, profileId });
 }
 
@@ -1978,7 +1992,7 @@ export async function unregisterCliAccountHome(provider: CliProvider, profileId:
  */
 export interface CliLoginSession {
   login_id: string;
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -1987,7 +2001,7 @@ export interface CliLoginSession {
 
 export interface CliLoginSessionStatus {
   login_id: string;
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   mode: string;
   staging_dir: string;
   elapsed_secs: number;
@@ -2018,7 +2032,7 @@ export const CLI_LOGIN_IDENTITY_MISMATCH_EVENT = "mycmux://cli-login-identity-mi
 export const CLI_LOGIN_TIMEOUT_MS = 600_000;
 
 export async function beginCliLogin(
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   mode: CliLoginMode,
   expectedProfileId?: string,
   purpose?: CliLoginPurpose,

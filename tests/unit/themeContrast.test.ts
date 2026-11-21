@@ -144,6 +144,22 @@ const MINIMAP_CONTRAST_PAIRS_PER_THEME = 7;
 const LIGHT_CONTRAST_PAIRS_PER_THEME = LIGHT_NORMAL_ANSI_KEYS.length + LIGHT_BRIGHT_ANSI_KEYS.length + 1 + (LIGHT_STATUS_KEYS.length * 2) + 2 + 2 + 1;
 
 const ANSI_BASELINE: Record<string, Partial<Record<AnsiKey, number>>> = {
+  "hanabi": {
+    red: 8.3879,
+    green: 7.6965,
+    yellow: 10.8205,
+    blue: 8.0439,
+    magenta: 7.8107,
+    cyan: 9.3533,
+    white: 12.4138,
+    brightRed: 11.0061,
+    brightGreen: 10.5823,
+    brightYellow: 13.7893,
+    brightBlue: 11.1257,
+    brightMagenta: 10.6492,
+    brightCyan: 12.5662,
+    brightWhite: 16.3749,
+  },
   "mayonaka": {
     red: 7.4034,
     green: 11.4348,

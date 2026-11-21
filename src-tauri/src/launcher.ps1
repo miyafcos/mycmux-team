@@ -130,7 +130,7 @@ function global:claude-codex {
 }
 
 function global:codex {
-  $agentArgs = @($args)
+  $agentArgs = @("-c", "check_for_update_on_startup=false") + @($args)
   if (-not [string]::IsNullOrWhiteSpace($env:MYCMUX_PANE_SESSION_ID)) {
     $quotedPaneId = ConvertTo-Json -InputObject $env:MYCMUX_PANE_SESSION_ID -Compress
     $agentArgs = @("-c", "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=$quotedPaneId") + $agentArgs
@@ -1080,9 +1080,12 @@ $ClaudeModels = @(
   New-MycmuxModelChoice "Sonnet" "sonnet"
   New-MycmuxModelChoice "Haiku" "haiku"
 )
+# Codex CLI 0.169.0 models_cache.json (visibility=list), verified 2026-11-18.
 $CodexModels = @(
-  New-MycmuxModelChoice "Sol (6.1)" "gpt-6.1-sol"
+  New-MycmuxModelChoice "Sol (6.2)" "gpt-6.2-sol"
+  New-MycmuxModelChoice "Astra (6.2)" "gpt-6.2-astra"
   New-MycmuxModelChoice "Terra (6.1)" "gpt-6.1-terra"
+  New-MycmuxModelChoice "Sol (6.1)" "gpt-6.1-sol"
   New-MycmuxModelChoice "Astra (6 flagship)" "gpt-6-astra"
   New-MycmuxModelChoice "Sol (6)" "gpt-6-sol"
   New-MycmuxModelChoice "Luna (6 light)" "gpt-6-luna"
@@ -1090,20 +1093,25 @@ $CodexModels = @(
   New-MycmuxModelChoice "Terra (5.6)" "gpt-5.6-terra"
   New-MycmuxModelChoice "Luna (5.6)" "gpt-5.6-luna"
 )
-# agy 1.5.5: agy models, verified 2026-11-12.
+# agy 1.5.10: agy models, verified 2026-11-18.
 $AgyModels = @(
-  New-MycmuxModelChoice "Gemini 4 Argon (High)" "gemini-4-argon-high"
+  New-MycmuxModelChoice "Gemini 4 Carbon (Medium)" "gemini-4-carbon-medium"
+  New-MycmuxModelChoice "Gemini 4 Carbon (High)" "gemini-4-carbon-high"
+  New-MycmuxModelChoice "Gemini 4 Carbon (Low)" "gemini-4-carbon-low"
   New-MycmuxModelChoice "Gemini 4 Argon (Medium)" "gemini-4-argon-medium"
+  New-MycmuxModelChoice "Gemini 4 Argon (High)" "gemini-4-argon-high"
   New-MycmuxModelChoice "Gemini 4 Argon (Low)" "gemini-4-argon-low"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen (High)" "gemini-4-hydrogen-high"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen (XHigh)" "gemini-4-hydrogen-xhigh"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen (Medium)" "gemini-4-hydrogen-medium"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen (Low)" "gemini-4-hydrogen-low"
+  New-MycmuxModelChoice "Orchestrator (Carbon)" "gemini-pro-orchestrator"
+  New-MycmuxModelChoice "Orchestrator (Argon)" "gemini-pro-orchestrator-argon"
   New-MycmuxModelChoice "Gemini 3.8 Flash (High)" "gemini-3.8-flash-high"
   New-MycmuxModelChoice "Gemini 3.8 Flash (Medium)" "gemini-3.8-flash-medium"
   New-MycmuxModelChoice "Gemini 3.8 Flash (Low)" "gemini-3.8-flash-low"
-  New-MycmuxModelChoice "Claude Opus 5.5 (High)" "claude-opus-5-5-high"
-  New-MycmuxModelChoice "Claude Opus 5.5 (Medium)" "claude-opus-5-5-medium"
-  New-MycmuxModelChoice "Claude Opus 5.5 (Low)" "claude-opus-5-5-low"
-  New-MycmuxModelChoice "Claude Sonnet 5.5 (High)" "claude-sonnet-5-5-high"
-  New-MycmuxModelChoice "Claude Sonnet 5.5 (Medium)" "claude-sonnet-5-5-medium"
-  New-MycmuxModelChoice "Claude Sonnet 5.5 (Low)" "claude-sonnet-5-5-low"
+  New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
+  New-MycmuxModelChoice "Claude Opus 4.6 (Thinking)" "claude-opus-4-6-thinking"
   New-MycmuxModelChoice "GPT-OSS 120B (Medium)" "gpt-oss-120b-medium"
 )
 # Grok Build 1.0.77: ~/.grok/models_cache.json, verified 2026-11-12.
@@ -1113,30 +1121,48 @@ $GrokModels = @(
   New-MycmuxModelChoice "Grok 4.6" "grok-4.6"
   New-MycmuxModelChoice "Grok 4.5" "grok-4.5"
 )
+# omp 18.2.11: omp models openai-codex --no-extensions, verified 2026-11-18.
 $OmpModels = @(
+  New-MycmuxModelChoice "Luna (5.6)" "openai-codex/gpt-5.6-luna"
+  New-MycmuxModelChoice "Sol (5.6)" "openai-codex/gpt-5.6-sol"
+  New-MycmuxModelChoice "Terra (5.6)" "openai-codex/gpt-5.6-terra"
   New-MycmuxModelChoice "Astra (6 flagship)" "openai-codex/gpt-6-astra"
-  New-MycmuxModelChoice "Sol (6)" "openai-codex/gpt-6-sol"
   New-MycmuxModelChoice "Luna (6 light)" "openai-codex/gpt-6-luna"
+  New-MycmuxModelChoice "Sol (6)" "openai-codex/gpt-6-sol"
 )
-# Recheck unavailable 2026-11-12: cursor-agent 2026.01.28 reported "No models available for this account".
-# Public docs have names but no CLI ids; values remain as verified on 2026-10-15.
+# cursor-agent 2026.10.19-6bbf2c4: cursor-agent models, verified 2026-11-18.
 $CursorModels = @(
+  New-MycmuxModelChoice "Auto" "auto"
   New-MycmuxModelChoice "Composer 2.5" "composer-2.5"
-  New-MycmuxModelChoice "Grok 4.7 (Low)" "grok-4.7-low"
-  New-MycmuxModelChoice "Grok 4.7 (Medium)" "grok-4.7-medium"
-  New-MycmuxModelChoice "Grok 4.7 (High)" "grok-4.7-high"
-  New-MycmuxModelChoice "Grok 4.7 (Extra High)" "grok-4.7-xhigh"
-  New-MycmuxModelChoice "Claude Opus 5.5 (High)" "claude-opus-5-5-high"
-  New-MycmuxModelChoice "Claude Opus 5.5 (Max)" "claude-opus-5-5-max"
-  New-MycmuxModelChoice "Claude Sonnet 5.5 (High)" "claude-sonnet-5-5-high"
-  New-MycmuxModelChoice "GPT-5.6 Sol (High)" "gpt-5.6-sol-high"
-  New-MycmuxModelChoice "GPT-5.6 Sol (Extra High)" "gpt-5.6-sol-xhigh"
+  New-MycmuxModelChoice "Composer 2.5 Fast" "composer-2.5-fast"
+  New-MycmuxModelChoice "Claude Fable 5.2 1M High (NO ZDR)" "claude-fable-5-2-high"
+  New-MycmuxModelChoice "Claude Fable 5.2 1M Max (NO ZDR)" "claude-fable-5-2-max"
+  New-MycmuxModelChoice "Claude Opus 5.5 1M High" "claude-opus-5-5-high"
+  New-MycmuxModelChoice "Claude Opus 5.5 1M Max" "claude-opus-5-5-max"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 High" "claude-sonnet-5-5-high"
+  New-MycmuxModelChoice "Claude Sonnet 5.5 Max" "claude-sonnet-5-5-max"
+  New-MycmuxModelChoice "Claude Haiku 5.5 High No Thinking" "claude-haiku-5-5-high"
+  New-MycmuxModelChoice "Claude Haiku 5.5 Max No Thinking" "claude-haiku-5-5-max"
+  New-MycmuxModelChoice "GPT-5.6 Sol 1M High" "gpt-5.6-sol-high"
+  New-MycmuxModelChoice "GPT-5.6 Sol 1M Extra High" "gpt-5.6-sol-xhigh"
+  New-MycmuxModelChoice "GPT-5.6 Terra 1M High" "gpt-5.6-terra-high"
+  New-MycmuxModelChoice "GPT-5.6 Terra 1M Max" "gpt-5.6-terra-max"
+  New-MycmuxModelChoice "GPT-5.6 Luna 1M High" "gpt-5.6-luna-high"
+  New-MycmuxModelChoice "Grok 4.7 Low" "grok-4.7-low"
+  New-MycmuxModelChoice "Grok 4.7 Medium" "grok-4.7-medium"
+  New-MycmuxModelChoice "Grok 4.7 High" "grok-4.7-high"
+  New-MycmuxModelChoice "Grok 4.7 Extra High" "grok-4.7-xhigh"
+  New-MycmuxModelChoice "Gemini 4 Carbon High" "gemini-4-carbon-high"
+  New-MycmuxModelChoice "Gemini 4 Argon High" "gemini-4-argon-high"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen High" "gemini-4-hydrogen-high"
+  New-MycmuxModelChoice "Gemini 4 Hydrogen Extra High" "gemini-4-hydrogen-xhigh"
   New-MycmuxModelChoice "Gemini 3.1 Pro" "gemini-3.1-pro"
 )
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
 $CodexEfforts = @("low", "medium", "high", "xhigh", "max", "ultra")
-# agy 1.5.5 --help / Grok Build 1.0.77 models_cache.json, verified 2026-11-12.
+# agy 1.5.10 --help, verified 2026-11-18.
 $AgyEfforts = @("low", "medium", "high", "xhigh", "max")
+# Grok Build 1.0.77 models_cache.json, verified 2026-11-12.
 $GrokEfforts = @("low", "medium", "high", "xhigh")
 $OmpEfforts = @("low", "medium", "high", "xhigh", "max")
 
@@ -1507,13 +1533,16 @@ function Show-MycmuxSpecMenu {
   $rows += [pscustomobject]@{ Label = "Type it in..."; Value = $MYCMUX_SPEC_TYPE_IN }
 
   $selected = 0
+  $visibleRows = 12
   while ($true) {
     Clear-Host
     Write-Host ""
     Write-Host ("  {0}" -f $Title)
     if ($Note) { Write-Host ("  {0}" -f $Note) }
     Write-Host ""
-    for ($i = 0; $i -lt $rows.Count; $i++) {
+    $first = [Math]::Max(0, $selected - $visibleRows + 1)
+    $end = [Math]::Min($rows.Count, $first + $visibleRows)
+    for ($i = $first; $i -lt $end; $i++) {
       $num = if ($rows[$i].Value -eq $MYCMUX_SPEC_TYPE_IN) { "0" } elseif ($i -lt 9) { [string]($i + 1) } else { "-" }
       $suffix = ""
       if ($rows[$i].Value -notin @($MYCMUX_SPEC_DEFAULT, $MYCMUX_SPEC_TYPE_IN) -and $rows[$i].Label -ne $rows[$i].Value) {
@@ -1555,7 +1584,9 @@ function Show-MycmuxSpecMenu {
       if ($null -eq $typed) { continue }
       return $typed
     }
-    return $value
+    $validated = Get-MycmuxLaunchSpecValue $value
+    if (-not $validated) { return $null }
+    return $validated
   }
 }
 

@@ -73,12 +73,22 @@ export interface ThemeTweaks {
   enabled: boolean;
   colors: Partial<Record<ThemeTweakColorKey, string>>;
   background: ThemeBackgroundSettings;
+  /** Pre-Hanabi background, saved atomically with the auto-selected scene. */
+  hanabiBackgroundRestore?: ThemeBackgroundSettings;
 }
 
-export type ThemeBackgroundMode = "solid" | "preset" | "image";
+export type ThemeBackgroundMode = "solid" | "preset" | "image" | "scene";
+
+export type HanabiSceneId = "winter-night" | "summer-seaside" | "sakura-night" | "harbor-night" | "onsen-autumn";
 
 export interface ThemeBackgroundSettings {
   mode: ThemeBackgroundMode;
+  /** Unknown scene modes fall back to solid in older clients. */
+  sceneId?: HanabiSceneId;
+  /** Missing on older settings; enabled by default during normalization. */
+  completionFireworks?: boolean;
+  /** Set only by a user background/surface edit; prevents theme recommendations overwriting it. */
+  backgroundCustomized?: boolean;
   presetId: string;
   imagePath: string;
   imageOpacity: number;

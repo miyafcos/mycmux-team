@@ -17,17 +17,18 @@ export const PROVIDER_HUE: Record<string, number> = {
 };
 
 export const TIER_LADDER: Record<string, readonly string[]> = {
-  anthropic: ["fable-5.1", "opus-5.5", "sonnet-5.5", "haiku-4.5"],
-  openai: ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"],
+  anthropic: ["fable-5.2", "opus-5.5", "sonnet-5.5", "haiku-5.5"],
+  openai: ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-luna"],
   xai: ["grok-4.7"],
-  google: ["gemini-3.8-flash", "gemini-3.5-flash-lite"],
+  google: ["gemini-4-carbon", "gemini-4-hydrogen", "gemini-3.5-flash-lite"],
 };
 
 export const LEGACY_FAMILIES: Record<string, string> = {
-  "fable-5": "fable-5.1",
-  "mythos-5.1": "fable-5.1",
-  "mythos-5": "fable-5.1",
-  "mythos-preview": "fable-5.1",
+  "fable-5.1": "fable-5.2",
+  "fable-5": "fable-5.2",
+  "mythos-5.1": "fable-5.2",
+  "mythos-5": "fable-5.2",
+  "mythos-preview": "fable-5.2",
   "opus-5": "opus-5.5",
   "opus-4.8": "opus-5.5",
   "opus-4.7": "opus-5.5",
@@ -39,23 +40,28 @@ export const LEGACY_FAMILIES: Record<string, string> = {
   "sonnet-4.6": "sonnet-5.5",
   "sonnet-4.5": "sonnet-5.5",
   "sonnet-4.0": "sonnet-5.5",
-  "gpt-6-sol": "gpt-6.1-sol",
-  "gpt-5.6-sol": "gpt-6.1-sol",
-  "gpt-5.6-terra": "gpt-6.1-sol",
-  "gpt-5.5": "gpt-6.1-sol",
-  "gpt-5.4": "gpt-6.1-sol",
+  "haiku-4.5": "haiku-5.5",
+  "gpt-6-astra": "gpt-6.2-astra",
+  "gpt-6.1-sol": "gpt-6.2-sol",
+  "gpt-6-sol": "gpt-6.2-sol",
+  "gpt-5.6-sol": "gpt-6.2-sol",
+  "gpt-5.6-terra": "gpt-6.2-sol",
+  "gpt-5.5": "gpt-6.2-sol",
+  "gpt-5.4": "gpt-6.2-sol",
   "gpt-5.6-luna": "gpt-6-luna",
   "grok-4.6": "grok-4.7",
   "grok-4.6-build": "grok-4.7",
   "grok-4.7-build": "grok-4.7",
-  "gemini-3.7-flash": "gemini-3.8-flash",
-  "gemini-3.6-flash": "gemini-3.8-flash",
-  "gemini-3.5-flash": "gemini-3.8-flash",
+  "gemini-3.8-flash": "gemini-4-hydrogen",
+  "gemini-3.7-flash": "gemini-4-hydrogen",
+  "gemini-3.6-flash": "gemini-4-hydrogen",
+  "gemini-3.5-flash": "gemini-4-hydrogen",
   "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
 };
 
 /** Collapsed display families resolve to an explicitly chosen generation. */
 export const FAMILY_REPRESENTATIVE: Record<string, string> = {
+  "gpt-6.2": "gpt-6.2-astra",
   "gpt-6": "gpt-6-astra",
   "gpt-6.1": "gpt-6.1-sol",
   "gpt-5.6": "gpt-5.6-terra",
@@ -63,6 +69,7 @@ export const FAMILY_REPRESENTATIVE: Record<string, string> = {
 
 /** Mirrors price.rs FAMILY_STEMS; longest structural match wins. */
 export const FAMILY_STEMS: readonly (readonly [string, string])[] = [
+  ["claude-fable-5-2", "fable-5.2"],
   ["claude-fable-5-1", "fable-5.1"],
   ["claude-mythos-5-1", "mythos-5.1"],
   ["claude-opus-5-5", "opus-5.5"],
@@ -81,7 +88,9 @@ export const FAMILY_STEMS: readonly (readonly [string, string])[] = [
   ["claude-sonnet-4-6", "sonnet-4.6"],
   ["claude-sonnet-4-5", "sonnet-4.5"],
   ["claude-sonnet-4-0", "sonnet-4.0"],
+  ["claude-haiku-5-5", "haiku-5.5"],
   ["claude-haiku-4-5", "haiku-4.5"],
+  ["gpt-6.2", "gpt-6.2"],
   ["gpt-6.1", "gpt-6.1"],
   ["gpt-6", "gpt-6"],
   ["gpt-5.6", "gpt-5.6"],
@@ -89,6 +98,8 @@ export const FAMILY_STEMS: readonly (readonly [string, string])[] = [
   ["gpt-5.4", "gpt-5.4"],
   ["grok-4.7", "grok-4.7"],
   ["grok-4.6", "grok-4.6"],
+  ["gemini-4-carbon", "gemini-4-carbon"],
+  ["gemini-4-hydrogen", "gemini-4-hydrogen"],
   ["gemini-3.8-flash", "gemini-3.8-flash"],
   ["gemini-3.7-flash", "gemini-3.7-flash"],
   ["gemini-3.6-flash", "gemini-3.6-flash"],
@@ -177,7 +188,11 @@ export function modelPaint(name: string): SeriesPaint {
   // Only snapshot/context suffixes inherit an existing model's paint. A
   // future named variant must retain the provider's untiered treatment.
   const base = raw.replace(/(?:-(?:\d{8}|\d{4}-\d{2}-\d{2}))?(?:\[1m\])?$/, "");
-  const canonical = base.replace(/^(gpt-[^\[]+)\[([^\]]+)\]$/, "$1-$2");
+  const canonical = base
+    .replace(/^(gpt-[^\[]+)\[([^\]]+)\]$/, "$1-$2")
+    // Antigravity exposes these reasoning steps as IDs for the same model.
+    .replace(/^(gemini-4-(?:carbon|hydrogen))-(?:low|medium|high)$/, "$1")
+    .replace(/^(gemini-4-hydrogen)-xhigh$/, "$1");
   const knownFamily = FAMILY_STEMS.find(([stem]) => stem === canonical)?.[1];
   const provider = providerOf(raw);
   if (!provider || raw === "(unknown)" || raw === "(folded)") return { color: NEUTRAL_COLOR, tone: "neutral" };

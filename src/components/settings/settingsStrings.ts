@@ -93,6 +93,13 @@ export const notificationSettingsStrings = {
   conversationHistoryModeHint: "自動の切り替えは、質問・承認待ち、文字選択、修飾キー、状態を確認できないときには行いません。",
   terminalProgressDiagnosticsLabel: "端末の表示の進み具合を診断用に記録する",
   terminalProgressDiagnosticsHint: "画面が崩れるときの調査に使います。本文・入力・名前・パスは記録しません。記録量には上限があります。通常はオフです。",
+  presendReadingLabel: "送信前に補助 AI の読みを出す",
+  presendReadingHint: "入力欄に打った書きかけの文、そのタブの直前の返答の末尾、作業フォルダの名前を、送信の前に補助 AI へ渡します。読みは補助 AI の物で、送信先の AI の考えではありません。鍵やパスワードらしい値は伏せてから渡しますが、すべての書き方は見つけられません。鍵を打つタブでは、入力欄の「このタブで切る」を押してください。別のウィンドウへ移したタブは全体の設定に戻るので、移した先でもう一度切ってください。読みが出るのは、そのタブの端末の中で、見分けられるエージェント (Claude Code・Codex・Grok・Antigravity・Hermes など) が動いていることを確かめられたときだけです。Cursor Agent のプロセスは見分けられないので、Cursor Agent だけが動いている間は読みは出ません。エージェントと同じ名前のプログラム (codex.js など) が端末で動いていると、エージェントが動いていると見なします。",
+  presendReadingAiDisabled: "\u8a2d\u5b9a > AI \u3067\u300cAI\u6a5f\u80fd\u3092\u6709\u52b9\u306b\u3059\u308b\u300d\u304c\u30aa\u30d5\u306b\u306a\u3063\u3066\u3044\u307e\u3059",
+  presendReadingProviderLabel: "補助 AI",
+  presendReadingClaude: "Claude Haiku (速い・既定)",
+  presendReadingCodex: "Codex luna (Codex の枠を使う・遅め)",
+  presendReadingCodexHint: "Codex を選ぶと、補助 AI はこの PC のファイルを読める状態で動きます（読み取りをすべて止める設定がないため）。",
   paneComposerLabel: "タブの下に入力欄を出す",
   paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。タブの高さが足りないときは自動的に隠れます。",
 } as const;

@@ -1,4 +1,5 @@
 import type { GroupingPaneRole, GroupingScan, GroupingTab } from "./tabGrouping";
+import { scrubJevCredentials as scrub } from "../../lib/scrubCredentials";
 
 export type JevHealth = "normal" | "waiting" | "error" | "unknown";
 export type JevRelationKind = "same" | "related" | "different" | "unknown";
@@ -46,10 +47,6 @@ export function jevProjectDirectory(tab: Pick<GroupingTab, "cwd">): string | nul
   if (!path || /^(?:~|%USERPROFILE%|\$HOME|\/root)$/i.test(path)
     || /^(?:[A-Za-z]:)?\/(?:Users|home)(?:\/[^/]+)?$/i.test(path) || /^[A-Za-z]:$/.test(path)) return null;
   return path;
-}
-function scrub(value: string): string {
-  return value.replace(/(?:sk-or-|sk-proj-|github_pat_|ghp_)[A-Za-z0-9_-]{12,}/g, "[credential omitted]")
-    .replace(/-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?(?:-----END[^-]*PRIVATE KEY-----|$)/g, "[credential omitted]");
 }
 function paneState(scan: GroupingScan, index: number) {
   const tab = scan.tabs[index];

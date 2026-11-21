@@ -27,6 +27,7 @@ export function displayedPaneShortcutSource(tabId: string): PaneTab | undefined 
 }
 
 export const WEB_PANE_KEYDOWN_EVENT = "mycmux:web-pane-keydown";
+export const WEB_PANE_SHORTCUT_WAITING_EVENT = "mycmux:web-pane-shortcut-waiting";
 
 const FORWARDED_ACTIONS = new Set<KeybindingActionId>([
   "workspace.next",
