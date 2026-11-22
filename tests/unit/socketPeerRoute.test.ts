@@ -13,6 +13,7 @@ import { useSessionAttentionStore, type SessionAttention } from "../../src/store
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { resetPaneCloseOperationsForTests } from "../../src/lib/paneCloseOperation";
+import { resetLayoutQuitForTests, stopNewLayoutOperations } from "../../src/lib/layoutQuit";
 import { __resetHeadlessBufferCacheForTests } from "../../src/components/terminal/headlessBuffer";
 
 type Listener = { fn: (event: { payload: any }) => Promise<unknown> | void; label: string };
@@ -131,6 +132,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers(); vi.restoreAllMocks(); resetPaneCloseOperationsForTests();
+  resetLayoutQuitForTests();
   __resetHeadlessBufferCacheForTests();
 });
 
@@ -532,6 +534,27 @@ describe("owner-window execution with real socket handlers", () => {
     await expect(handleSocketCommand("close_workspace", { id: "peer-ws" })).rejects.toThrow("refuses the active workspace");
     expect(mocks.kill).not.toHaveBeenCalled();
   });
+  it.each([
+    ["workspace.select", "workspaceId"], ["select_workspace", "id"],
+  ])("returns %s selection from local and peer windows during quit preparation", async (command, argument) => {
+    const activePeer = workspace("peer-active");
+    const owner = await connectOwner(async () => {
+      useWorkspaceListStore.setState({ workspaces: [activePeer, workspace("peer")], activeWorkspaceId: activePeer.id });
+    });
+    const activeLocal = workspace("local");
+    const requestedLocal = workspace("local-background");
+    useWorkspaceListStore.setState({ workspaces: [activeLocal, requestedLocal], activeWorkspaceId: activeLocal.id });
+    await stopNewLayoutOperations();
+
+    await expect(handleSocketCommand(command, { [argument]: requestedLocal.id })).resolves.toEqual({
+      activeWorkspaceId: activeLocal.id, requestedWorkspaceId: requestedLocal.id, foregroundChanged: false,
+    });
+    await expect(handleSocketCommand(command, { [argument]: "peer-ws" })).resolves.toEqual({
+      activeWorkspaceId: activePeer.id, requestedWorkspaceId: "peer-ws", foregroundChanged: false,
+    });
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(activeLocal.id);
+    expect(owner().activeWorkspaceId).toBe(activePeer.id);
+  });
   it("executes explicit Web tab operations in the owner and keeps the original native budget", async () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     await connectOwner(async () => {
@@ -570,6 +593,34 @@ describe("owner-window execution with real socket handlers", () => {
     expect(mocks.kill.mock.calls.map(([id]) => id)).toEqual(["local-target-pty", "peer-target-pty"]);
     expect(owner().workspaces[0].panes[0].tabs).toHaveLength(1);
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toHaveLength(1);
+  });
+  it("reports closed and unexecuted tabs when a later owner prepares to quit", async () => {
+    let ownerRequests = 0;
+    const owner = await connectOwner(async () => {
+      if (++ownerRequests === 2) void stopNewLayoutOperations();
+    });
+    const later = "mycmux-w3";
+    mocks.fragments.mockResolvedValue([fragment(), fragment(later, "later")]);
+    const emit = mocks.emitTo.getMockImplementation()!;
+    mocks.emitTo.mockImplementation(async (target, event, payload) => {
+      if (event === REQUEST && target === later) {
+        expect(payload.preflightOnly).toBe(true);
+        return deliver("main", RESULT, { requestId: payload.requestId, ownerWindow: later, result: {} });
+      }
+      return emit(target, event, payload);
+    });
+
+    const result = await handleSocketCommand("pane.close_tabs", {
+      tabIds: ["local-target-tab", "peer-target-tab", "later-target-tab"],
+    }).catch((error: Error) => ({ error: error.message }));
+    expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("local-target-pty");
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs.map(({ id }) => id))
+      .toEqual(["local-keeper-tab"]);
+    expect(owner().workspaces[0].panes[0].tabs.map(({ id }) => id)).toEqual(["peer-target-tab", "peer-keeper-tab"]);
+    expect(result).toMatchObject({
+      closed: ["local-target-tab"], affectedWorkspaces: ["local-ws"], skipped: [],
+      unexecutedTabIds: ["peer-target-tab", "later-target-tab"], reason: "window_quitting",
+    });
   });
   it("checks the peer's last-tab guard before any part of a cross-window bulk close", async () => {
     await connectOwner(() => {

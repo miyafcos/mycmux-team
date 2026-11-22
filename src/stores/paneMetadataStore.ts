@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { clearPresendAttempts, forgetPresendTab } from "../lib/presendReading";
 import type { AgentSessionKind } from "../types";
 import { isolateSubscribers } from "../lib/isolatedStoreListeners";
 import { observationClockRolledBack } from "../lib/observationClock";
@@ -68,7 +69,7 @@ export interface PaneMetadataState {
   notifyWaiting: (sessionId: string, patternId: number) => boolean;
   notifyWorkDone: (sessionId: string) => boolean;
   clearNotification: (sessionId: string) => void;
-  removeMetadata: (sessionId: string) => void;
+  removeMetadata: (sessionId: string, disposition?: "moved") => void;
 }
 
 // Drop undefined-valued keys so a partial update never accidentally clears
@@ -377,18 +378,22 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     };
   }),
 
-  removeMetadata: (sessionId) => set((state) => {
-    const { [sessionId]: _, ...rest } = state.metadata;
-    const { [sessionId]: _volatile, ...volatileRest } = state.volatileMetadata;
-    const { [sessionId]: _lastLog, ...lastLogRest } = state.lastLog;
-    const { [sessionId]: _lastLogAt, ...lastLogAtRest } = state.lastLogAt;
-    return {
-      metadata: rest,
-      volatileMetadata: volatileRest,
-      lastLog: lastLogRest,
-      lastLogAt: lastLogAtRest,
-    };
-  }),
+  removeMetadata: (sessionId, disposition) => {
+    if (disposition === "moved") clearPresendAttempts(sessionId);
+    else forgetPresendTab(sessionId);
+    set((state) => {
+      const { [sessionId]: _, ...rest } = state.metadata;
+      const { [sessionId]: _volatile, ...volatileRest } = state.volatileMetadata;
+      const { [sessionId]: _lastLog, ...lastLogRest } = state.lastLog;
+      const { [sessionId]: _lastLogAt, ...lastLogAtRest } = state.lastLogAt;
+      return {
+        metadata: rest,
+        volatileMetadata: volatileRest,
+        lastLog: lastLogRest,
+        lastLogAt: lastLogAtRest,
+      };
+    });
+  },
 }));
 // A throwing background listener must not stop the metadata update that notified it half-way.
 isolateSubscribers(usePaneMetadataStore, "paneMetadata");

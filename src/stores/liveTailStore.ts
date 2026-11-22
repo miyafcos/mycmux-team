@@ -523,6 +523,10 @@ function liveTailObserver() {
   return observer;
 }
 
+/** Observe already acquired screens without adding work to the PTY transport. */
+export function subscribeLiveTailObservations(listener: (state: LiveTailState, previous: LiveTailState) => void): () => void {
+  return liveTailObserver().store.subscribe(listener);
+}
 export function acquireLiveTailConsumer(name: string): () => void { return liveTailObserver().acquireConsumer(name); }
 export function getLiveTailsForApi(): Promise<LiveTailsResponse> { return liveTailObserver().getForApi(); }
 export function useLiveTailStore<T>(selector: (state: LiveTailState) => T): T { return useStore(liveTailObserver().store, selector); }

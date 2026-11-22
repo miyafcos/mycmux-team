@@ -85,6 +85,26 @@ describe("useUsageStore", () => {
     expect(state.lastError).toBe("backend down");
   });
 
+  it("updates Gemini while showing the inventory error and keeping the last other rows", async () => {
+    const other = makeRow("a", 12);
+    const olderGemini: ProfileUsage = { ...makeRow("live:gemini", 10), provider: "gemini" };
+    const gemini: ProfileUsage = { ...makeRow("live:gemini", 30), provider: "gemini" };
+    mockedGetAccountUsage.mockResolvedValueOnce(makeReport([other, olderGemini]));
+    await useUsageStore.getState().fetch();
+
+    const partial = { ...makeReport([gemini]), inventory_error: "invalid account inventory" };
+    mockedGetAccountUsage.mockResolvedValueOnce(partial);
+    await useUsageStore.getState().fetch(true);
+    const state = useUsageStore.getState();
+    expect(state.accounts).toEqual([other, gemini]);
+    expect(state.lastError).toBe(partial.inventory_error);
+
+    mockedGetAccountUsage.mockResolvedValueOnce(makeReport([gemini]));
+    await useUsageStore.getState().fetch();
+    expect(useUsageStore.getState().accounts).toEqual([gemini]);
+    expect(useUsageStore.getState().lastError).toBeNull();
+  });
+
   it("drops an earlier response that resolves after a newer one", async () => {
     const slow = deferred<AccountUsageReport>();
     const fast = deferred<AccountUsageReport>();
@@ -101,6 +121,66 @@ describe("useUsageStore", () => {
     const state = useUsageStore.getState();
     expect(state.accounts.map((row) => row.profile_id)).toEqual(["newer"]);
     expect(state.generatedAt).toBe("2026-01-02T00:00:00Z");
+  });
+
+  it.each([false, true])("keeps the completed Gemini fetch after a cache-only switch (cached row: %s)", async (hasCachedRow) => {
+    const slow = deferred<AccountUsageReport>();
+    const previous = { ...makeRow("live:gemini", 10), provider: "gemini" as const, email: "old@example.test" };
+    const replacement = { ...previous, email: "new@example.test" };
+    const newInventory = makeRow("after-switch", 50);
+    const cached = hasCachedRow ? [previous] : [];
+    mockedGetAccountUsage.mockReturnValueOnce(slow.promise).mockResolvedValueOnce({
+      ...makeReport([newInventory, ...cached]), ...(hasCachedRow && { gemini_revision: 1 }),
+    });
+
+    const poll = useUsageStore.getState().fetch(true);
+    await useUsageStore.getState().fetch(false, undefined, { afterSwitch: true });
+    expect(useUsageStore.getState().accounts).toEqual([newInventory, ...cached]);
+    expect(useUsageStore.getState().lastFetchedAt).toBeNull();
+    const report = { ...makeReport([makeRow("before-switch", 10), replacement]), gemini_revision: 2 };
+    slow.resolve(report);
+    await poll;
+
+    expect(useUsageStore.getState().accounts).toEqual([newInventory, replacement]);
+  });
+
+  it("keeps a newer completed Gemini snapshot if an older inventory report returns late", async () => {
+    const slow = deferred<AccountUsageReport>();
+    const oldGemini = { ...makeRow("live:gemini", 10), provider: "gemini" as const, email: "old@example.test" };
+    const freshGemini = { ...oldGemini, email: "new@example.test" };
+    const inventory = makeRow("after-switch", 50);
+    mockedGetAccountUsage.mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce({ ...makeReport([inventory, freshGemini]), gemini_revision: 2 });
+    const poll = useUsageStore.getState().fetch();
+    await useUsageStore.getState().fetch(false, undefined, { afterSwitch: true });
+    const staleReport = { ...makeReport([makeRow("before-switch", 10), oldGemini]), gemini_revision: 1 };
+    slow.resolve(staleReport);
+    await poll;
+    expect(useUsageStore.getState().accounts).toEqual([inventory, freshGemini]);
+  });
+
+  it("replaces the inventory from a late cache-only switch and keeps the completed Gemini poll", async () => {
+    const pollReport = deferred<AccountUsageReport>();
+    const switchReport = deferred<AccountUsageReport>();
+    const oldGemini = { ...makeRow("live:gemini", 10), provider: "gemini" as const, email: "old@example.test" };
+    const freshGemini = { ...oldGemini, email: "new@example.test" };
+    const removed = makeRow("before-switch", 10);
+    const added = makeRow("after-switch", 50);
+    mockedGetAccountUsage
+      .mockResolvedValueOnce({ ...makeReport([removed, oldGemini]), gemini_revision: 1 })
+      .mockReturnValueOnce(pollReport.promise)
+      .mockReturnValueOnce(switchReport.promise);
+
+    await useUsageStore.getState().fetch();
+    const poll = useUsageStore.getState().fetch(true);
+    const afterSwitch = useUsageStore.getState().fetch(false, undefined, { afterSwitch: true });
+    pollReport.resolve({ ...makeReport([removed, freshGemini]), gemini_revision: 2 });
+    await poll;
+    expect(useUsageStore.getState().accounts).toEqual([removed, freshGemini]);
+
+    switchReport.resolve({ ...makeReport([added, oldGemini]), gemini_revision: 1 });
+    await afterSwitch;
+    expect(useUsageStore.getState().accounts).toEqual([added, freshGemini]);
   });
 
   it("drops a stale rejection so it cannot clobber a newer success", async () => {

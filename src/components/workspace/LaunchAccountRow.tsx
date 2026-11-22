@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEventHandler } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEventHandler, type Ref } from "react";
 import { getCliLaunchTokens, listCliAccountHomes, listCliAccounts, type CliAccountHomeStatus, type CliAccountProfile, type CliLaunchTokenStatus } from "../../lib/ipc";
 import { launcherStrings as S } from "./launcherStrings";
 import { ClaudeSetupTokenFlow } from "../settings/ClaudeSetupTokenFlow";
@@ -67,7 +67,7 @@ const chip: CSSProperties = {
 };
 
 /** One shared account row for the launcher and new-workspace setup. Selection is an ID only. */
-export function LaunchAccountRow({ accounts, surface = "launcher", ownerKey, value, onChange, highlighted = false, cursorId, onRegistrationStart, onRegistrationActivityChange, onRegistrationEnd, onMouseDown }: {
+export function LaunchAccountRow({ accounts, surface = "launcher", ownerKey, value, onChange, highlighted = false, cursorId, cursorChipRef, labelRef, onRegistrationStart, onRegistrationActivityChange, onRegistrationEnd, onMouseDown }: {
   accounts: LaunchAccounts;
   surface?: RegistrationOrigin["surface"];
   ownerKey: string;
@@ -75,6 +75,8 @@ export function LaunchAccountRow({ accounts, surface = "launcher", ownerKey, val
   onChange: (id: string) => void;
   highlighted?: boolean;
   cursorId?: string;
+  cursorChipRef?: Ref<HTMLButtonElement>;
+  labelRef?: Ref<HTMLDivElement>;
   onRegistrationStart?: () => void;
   onRegistrationActivityChange?: (active: boolean) => void;
   onRegistrationEnd?: (saved: boolean) => void;
@@ -127,16 +129,16 @@ export function LaunchAccountRow({ accounts, surface = "launcher", ownerKey, val
     <div ref={rowRef} data-launch-account-row="true" onClickCapture={event => {
       if ((!origin || ownsRegistration) && (event.target as HTMLElement).closest("[data-claude-setup-token], [data-launch-account-register]")) onRegistrationStart?.();
     }} style={{ display: "grid", gap: 4, minWidth: 0, fontSize: "var(--cmux-font-size-xs)" }}>
-      <div style={{ color: highlighted ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)" }}>{S.accountLabel}</div>
+      <div ref={labelRef} style={{ color: highlighted ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)" }}>{S.accountLabel}</div>
       {registrationFailed && <div role="alert">{S.accountRegistrationFailed}</div>}
       {accounts.failed && <div role="alert" style={{ color: "var(--cmux-text-secondary)" }}>{S.accountReadFailed}</div>}
       {accounts.loading && <div role="status" style={{ color: "var(--cmux-text-tertiary)" }}>{S.accountLoading}</div>}
       {/* Chips keep the model/effort chip size: a reason line under one chip must not stretch "default" taller or a chip wider. */}
       {showDefault ? <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 4, minWidth: 0 }}>
-        <button type="button" aria-pressed={value === ""} onMouseDown={onMouseDown} onClick={() => onChange("")} style={buttonStyle(value === "", highlighted && cursorId === "")}>{S.specDefault}</button>
+        <button ref={cursorId === "" ? cursorChipRef : undefined} type="button" aria-pressed={value === ""} onMouseDown={onMouseDown} onClick={() => onChange("")} style={buttonStyle(value === "", highlighted && cursorId === "")}>{S.specDefault}</button>
         {accounts.choices.map(choice => (
           <span key={choice.id} data-launch-account-choice={choice.id} style={{ display: "grid", justifyItems: "start", gap: 2, minWidth: 0, maxWidth: "100%" }}>
-            <button type="button" title={choice.label} disabled={!choice.available} aria-pressed={value === choice.id} aria-current={highlighted && cursorId === choice.id ? "true" : undefined}
+            <button ref={cursorId === choice.id ? cursorChipRef : undefined} type="button" title={choice.label} disabled={!choice.available} aria-pressed={value === choice.id} aria-current={highlighted && cursorId === choice.id ? "true" : undefined}
               onMouseDown={onMouseDown} onClick={() => onChange(choice.id)}
               style={{ ...buttonStyle(value === choice.id, highlighted && cursorId === choice.id), ...(!choice.available ? { color: "var(--cmux-text-dim)", cursor: "default" } : {}) }}>{choice.label}</button>
             {choice.reason && <span style={{ color: "var(--cmux-text-tertiary)" }}>{choice.reason}</span>}

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +20,24 @@ def assert_snippets(relative_path: str, snippets: list[str]) -> None:
     text = read_repo_text(relative_path)
     for snippet in snippets:
         assert_contains(text, snippet, relative_path)
+
+
+ACCOUNTS_PANEL = "src/components/layout/AccountsPanel.tsx"
+
+
+def assert_usage_badge_tracks_row_provider(source: str) -> None:
+    assert_contains(source, "const provider = row.provider;", ACCOUNTS_PANEL)
+    assert_contains(source, 'const usageOnly = provider === "gemini";', ACCOUNTS_PANEL)
+    assert_contains(source, "{usageOnly ? row.label : PROVIDER_SHORT[provider]}", ACCOUNTS_PANEL)
+
+
+def test_usage_badge_contract_rejects_a_substituted_provider() -> None:
+    source = read_repo_text(ACCOUNTS_PANEL)
+    mutated = source.replace('const provider = row.provider;', 'const provider = "codex";', 1)
+    assert mutated != source
+    assert_usage_badge_tracks_row_provider(source)
+    with pytest.raises(AssertionError, match="const provider = row.provider"):
+        assert_usage_badge_tracks_row_provider(mutated)
 
 
 def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
@@ -284,13 +304,13 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         ],
     )
     assert_snippets(
-        "src/components/layout/AccountsPanel.tsx",
+        ACCOUNTS_PANEL,
         [
             "export function AccountsPanel(",
-            "{PROVIDER_SHORT[row.provider]}",
             "switchWarningText(",
         ],
     )
+    assert_usage_badge_tracks_row_provider(read_repo_text(ACCOUNTS_PANEL))
     assert_snippets(
         "src-tauri/src/commands/usage.rs",
         [

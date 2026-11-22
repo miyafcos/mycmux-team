@@ -318,7 +318,7 @@ describe("Stage 2a single heading", () => {
     await mount(pane(3), true);
     await menu();
     expect([...host.querySelectorAll(".pane-actions-menu [data-pane-action]")].map((node) => node.getAttribute("data-pane-action")))
-      .toEqual(["new-tab", "rename", "reset-name", "search", "publish", "dashboard", "history", "duplicate", "split-right", "split-down", "zoom", "reopen", "close-pane"]);
+      .toEqual(["new-tab", "rename", "reset-name", "repaint-display", "search", "publish", "dashboard", "history", "duplicate", "split-right", "split-down", "zoom", "reopen", "close-pane"]);
     expect(readAgentSessionMappings).toHaveBeenCalledWith(["pty-0"]);
     await vi.waitFor(() => expect(host.querySelector(".pane-actions-menu [data-terminal-magnifier]")?.getAttribute("aria-disabled")).toBe("true"), { timeout: 10_000 });
     expect(item("close-pane")?.title).toBe(paneToolbarStrings.reopenActiveOnly);

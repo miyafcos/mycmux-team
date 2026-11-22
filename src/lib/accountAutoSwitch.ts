@@ -1,4 +1,4 @@
-import type { CliAccountProfile, CliLiveLogin, CliProvider, ProfileUsage, WindowStat } from "./ipc";
+import type { CliAccountProfile, CliLiveLogin, SwitchableCliProvider, ProfileUsage, WindowStat } from "./ipc";
 
 export const AUTO_SWITCH_FRESH_MS = 5 * 60_000;
 export const AUTO_SWITCH_COOLDOWN_MS = 5 * 60_000;
@@ -23,7 +23,7 @@ export interface AutoSwitchDecision {
  * `excluded` holds the profiles the user took out of the running as targets.
  */
 export function chooseAutoSwitch(
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   accounts: ProfileUsage[],
   profiles: CliAccountProfile[],
   live: CliLiveLogin[],
@@ -61,7 +61,7 @@ export function chooseAutoSwitch(
  * uses it to say up front that a switch would have nowhere to go.
  */
 export function eligibleTargets(
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   profiles: CliAccountProfile[],
   login: CliLiveLogin | undefined,
   excluded: readonly string[],

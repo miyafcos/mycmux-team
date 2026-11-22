@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CliAccountProfile, CliAccountsSnapshot, CliProvider } from "../../src/lib/ipc";
+import type { CliAccountProfile, CliAccountsSnapshot, SwitchableCliProvider } from "../../src/lib/ipc";
 
 // 設定 → アカウント・使用量, rendered with the real stores. Only the Tauri
 // boundary is mocked, so this checks how the pieces are put together.
@@ -23,8 +23,9 @@ import { UsageTab } from "../../src/components/settings/tabs/UsageTab";
 import { useAccountAutoSwitchStore } from "../../src/stores/accountAutoSwitchStore";
 import { useCliAccountStore } from "../../src/stores/cliAccountStore";
 import { useCliLoginStore } from "../../src/stores/cliLoginStore";
+import { useUsageStore } from "../../src/stores/usageStore";
 
-function profile(id: string, provider: CliProvider): CliAccountProfile {
+function profile(id: string, provider: SwitchableCliProvider): CliAccountProfile {
   return { id, provider, label: `label-${id}`, email: `${id}@example.test`, identity_key: id, plan: null,
     org_name: null, captured_at: "2026-09-01T00:00:00Z", last_switched_at: null, needs_relogin: false };
 }
@@ -95,6 +96,24 @@ describe("アカウント・使用量 tab", () => {
     // The old stand-alone section is gone; its caveat lives in the intro.
     expect(host.textContent).not.toContain("アカウントの自動切り替え");
     expect(host.textContent).toContain("新しく起動するセッションから反映");
+  });
+
+  it("shows Gemini quota in the usage table without adding a login or switch block", async () => {
+    const toggles = host.querySelectorAll('input[role="switch"]').length;
+    await act(async () => useUsageStore.setState({ accounts: [{
+      profile_id: "live:gemini", provider: "gemini", label: "Gemini", email: "agy@example.test", plan: null,
+      registered: false, is_active: false, needs_relogin: false, state: "ok",
+      five_hour: null, seven_day: null, seven_day_sonnet: null, seven_day_opus: null,
+      model_windows: [{ key: "Pro", window: { pct: 25, resets_at: "" } }],
+      error_code: null, retry_at: null, fetched_at: "2026-11-18T15:00:00Z",
+    }] }));
+    expect(host.querySelector("table")?.textContent).toContain("Gemini");
+    expect(host.querySelector("table")?.textContent).toContain("agy@example.test");
+    const quota = [...host.querySelectorAll("table span")].find((span) => span.textContent?.startsWith("Pro "));
+    expect(quota?.textContent).toBe("Pro 25%");
+    expect(host.querySelector('section[aria-label="Gemini"]')).toBeNull();
+    expect(host.querySelectorAll('input[role="switch"]')).toHaveLength(toggles);
+    await act(async () => useUsageStore.setState({ accounts: [] }));
   });
 
   it("changes only the ticked provider's candidates", async () => {

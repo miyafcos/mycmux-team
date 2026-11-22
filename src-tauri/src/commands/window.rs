@@ -188,15 +188,38 @@ fn valid_focus_window_label(label: &str) -> bool {
     label == "main" || is_valid_child_window_label(label)
 }
 
+fn may_focus_primary(caller_label: &str, caller_window_label: &str, label: &str) -> bool {
+    caller_label == label && caller_window_label == label
+}
+
 #[tauri::command]
-pub async fn focus_window(app: AppHandle, label: String) -> Result<(), String> {
+pub async fn focus_window(
+    app: AppHandle,
+    caller: tauri::Webview,
+    label: String,
+    focus_primary: Option<bool>,
+) -> Result<(), String> {
     if !valid_focus_window_label(&label) {
         return Err("Invalid application window label".into());
     }
+    let primary = if focus_primary == Some(true) {
+        if !may_focus_primary(caller.label(), caller.window().label(), &label) {
+            return Err("The primary webview must request its own input focus".into());
+        }
+        Some(caller)
+    } else {
+        None
+    };
     let window = app.get_window(&label).ok_or("Application window is unavailable")?;
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
-        let _ = send.send(restore_and_focus(&window));
+        let result = restore_and_focus(&window).and_then(|()| {
+            if let Some(primary) = primary {
+                primary.set_focus().map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        let _ = send.send(result);
     }).map_err(|error| error.to_string())?;
     receive.await.map_err(|error| error.to_string())?
 }
@@ -890,6 +913,14 @@ pub async fn watch_window_drag(window: tauri::Window) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_focus_requires_the_calling_windows_primary_webview() {
+        assert!(!may_focus_primary("mycmux-w2", "mycmux-w2", "main"));
+        assert!(!may_focus_primary("web-pane-browser", "main", "main"));
+        assert!(!may_focus_primary("main", "mycmux-w2", "main"));
+        assert!(may_focus_primary("main", "main", "main"));
+    }
 
     #[test]
     fn dashboard_focus_accepts_only_application_window_labels() {

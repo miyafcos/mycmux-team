@@ -1,4 +1,4 @@
-import { claimResetTicketForApi, getAccountUsage, type CliProvider } from "./ipc";
+import { claimResetTicketForApi, getAccountUsage, type SwitchableCliProvider } from "./ipc";
 import { parseAccountTarget } from "./accountSwitchApi";
 import type { ResetTicketOutcomeKind } from "./resetTickets";
 
@@ -9,7 +9,7 @@ const OUTCOMES = new Set<ResetTicketOutcomeKind>([
 ]);
 
 export interface AccountResetTicketResponse {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profile_id: string;
   status: "used" | "unconfirmed" | "no_ticket" | "not_usable" | "rejected" | "failed";
   outcome: ResetTicketOutcomeKind | null;
@@ -54,7 +54,7 @@ function date(value: unknown): string | null {
     && Number.isFinite(Date.parse(value)) ? value : null;
 }
 
-async function ticketInventory(provider: CliProvider, profileId: string, expectedEmail: string | null, deadline: number) {
+async function ticketInventory(provider: SwitchableCliProvider, profileId: string, expectedEmail: string | null, deadline: number) {
   // The current wire data has no verified owner ID for mutable live:* rows.
   // Preserve the claim's known result/count without mixing another login in.
   if (profileId.startsWith("live:") || Date.now() >= deadline) return null;

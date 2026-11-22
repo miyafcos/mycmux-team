@@ -667,6 +667,7 @@ export interface ResolveThemeResult {
 export function isMediaBackgroundActive(background: ThemeBackgroundSettings): boolean {
   return (
     background.mode === "preset" ||
+    background.mode === "scene" ||
     (background.mode === "image" && background.imagePath.length > 0)
   );
 }

@@ -44,6 +44,7 @@ import {
 import { PublishProgress } from "./PublishProgress";
 import { useSavepointDragSource } from "../../hooks/useSavepointDragSource";
 import { buildSavepointHandoffLaunchEnv } from "../../lib/savepointHandoff";
+import { beginLayoutOperation } from "../../lib/layoutQuit";
 import {
   chooseAndReceiveSavepointTransfer,
   SAVEPOINT_RECEIVED_EVENT,
@@ -309,6 +310,8 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     entry: OnlineSavepointEntry,
     targetKind: "claude" | "codex",
   ) => {
+    const finish = beginLayoutOperation();
+    if (!finish) return;
     setError(null);
     setJoinNotice(null);
     setCwdNotice(null);
@@ -331,10 +334,14 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     } catch (joinError) {
       console.error("[mycmux] failed to join online savepoint", joinError);
       setError(cliAccountSessionErrorMessage(joinError) ?? onlineStrings.loadError);
+    } finally {
+      finish();
     }
   }, [addPaneToWorkspaceWithOptions, paneId, workspaceId]);
 
   const joinFull = useCallback(async (entry: OnlineSavepointEntry) => {
+    const finish = beginLayoutOperation();
+    if (!finish) return;
     setError(null);
     setJoinNotice(onlineStrings.joinFullNotice);
     setCwdNotice(null);
@@ -354,6 +361,8 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       console.error("[mycmux] failed to fully join online savepoint", joinError);
       setJoinNotice(null);
       setError(cliAccountSessionErrorMessage(joinError) ?? onlineStrings.loadError);
+    } finally {
+      finish();
     }
   }, [addPaneToWorkspaceWithOptions, paneId, workspaceId]);
 

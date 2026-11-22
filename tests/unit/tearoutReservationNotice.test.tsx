@@ -21,6 +21,7 @@ import ToastHost from "../../src/components/common/ToastHost";
 import { toTransferConfig } from "../../src/components/layout/SocketListener";
 import { installTearoutRuntime, regrabTearoutWindow, tearoutTab } from "../../src/lib/tearout/runtime";
 import { beginTearoutOperation, endTearoutOperation, tearoutOperationBusy } from "../../src/lib/tearout/operation";
+import { resetLayoutQuitForTests, stopNewLayoutOperations } from "../../src/lib/layoutQuit";
 import { tearOutWorkspaceToNewWindow } from "../../src/lib/workspaceTearOut";
 import { createPaneMoveRequest, executePaneMove } from "../../src/lib/paneMoveOperation";
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
@@ -73,7 +74,7 @@ afterEach(async () => {
     if (incoming) dispatch("mycmux://tearout-revoke", { token: incomingToken, source: "A", ack: "cleanup" });
     await flush(); root.unmount(); stop();
   });
-  host.remove(); endTearoutOperation(); __resetToastStoreForTests();
+  host.remove(); endTearoutOperation(); resetLayoutQuitForTests(); __resetToastStoreForTests();
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 async function receivePending(): Promise<void> {
@@ -286,7 +287,7 @@ it.each(["detach", "regrab", "sidebar", "context-menu", "pane"] as const)(
 
 type OutgoingFault = "none" | "release-cleanup" | "geometry-restore" | "outgoing-cleanup" | "prepare";
 type ReceiptAlteration = "none" | "bare-string" | "wrong-delivery" | "wrong-source" | "not-preownership";
-async function releaseRegrab(reservation: "incoming" | "native" | "none", fault: OutgoingFault = "none", alteration: ReceiptAlteration = "none") {
+async function releaseRegrab(blocker: "incoming" | "native" | "quitting" | "none", fault: OutgoingFault = "none", alteration: ReceiptAlteration = "none") {
   const approval = { receiver: "C", token: `V2-painted-${serial}`, release_id: `V2-release-${serial}`,
     layout_revision: "C-current-view", target: { kind: "workspace" } };
   const original = { x: 30, y: 40, width: 600, height: 400 };
@@ -319,10 +320,11 @@ async function releaseRegrab(reservation: "incoming" | "native" | "none", fault:
   await act(async () => { await regrabTearoutWindow(); await flush(); });
   const start = boundary.invoke.mock.calls.find(([command]) => command === "tearout_start_move")![1];
   expect(start.mode).toBe("dock"); expect(tearoutOperationBusy()).toBe(true);
-  // The second gesture really started before A-to-B/native reservation appears.
-  if (reservation === "incoming") await receivePending();
-  if (reservation !== "none") boundary.reserved = true;
-  if (reservation === "native") boundary.refusePrepare = true;
+  // Start the gesture before the condition that refuses its outgoing request.
+  if (blocker === "incoming") await receivePending();
+  if (blocker === "incoming" || blocker === "native") boundary.reserved = true;
+  if (blocker === "native") boundary.refusePrepare = true;
+  if (blocker === "quitting") void stopNewLayoutOperations();
   const before = useWorkspaceListStore.getState().workspaces;
   await act(async () => {
     dispatch("mycmux://tearout-native", { ...start, source: "B", phase: "end", at: Date.now(), escaped: false,
@@ -336,8 +338,8 @@ async function releaseRegrab(reservation: "incoming" | "native" | "none", fault:
   expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
   expect(boundary.emitTo.mock.calls.some(([label, event]) => label === "C" && event === "mycmux://tearout-delivery")).toBe(false);
   expect(boundary.invoke.mock.calls.some(([command]) => command === "tearout_retire" || command === "tearout_finalize")).toBe(false);
-  if (reservation !== "none") expect(boundary.reserved).toBe(true);
-  if (reservation === "incoming") expect(tearoutOperationBusy()).toBe(true);
+  if (blocker === "incoming" || blocker === "native") expect(boundary.reserved).toBe(true);
+  if (blocker === "incoming") expect(tearoutOperationBusy()).toBe(true);
   return { outgoing, approval, original };
 }
 it.each(["incoming", "native"] as const)("V2 I1 keeps the late %s refusal yellow through real regrab/outgoing/receipt, with release and geometry cleanup", async reservation => {
@@ -348,6 +350,21 @@ it.each(["incoming", "native"] as const)("V2 I1 keeps the late %s refusal yellow
   expect(boundary.invoke).toHaveBeenCalledWith("tearout_release_cancel", { id: approval.release_id });
   expect(boundary.invoke).toHaveBeenCalledWith("tearout_restore_geometry", { label: "B", geometry: original });
   expect(boundary.invoke.mock.calls.some(([command, args]) => command === "tearout_phase" && args.id === outgoing.deliveryToken)).toBe(false);
+});
+it("reports quit preparation as a distinct pre-ownership docking refusal", async () => {
+  const { outgoing, approval, original } = await releaseRegrab("quitting");
+  expect(boundary.emitTo).toHaveBeenCalledWith("B", "mycmux://tearout-receipt", {
+    token: outgoing.token, ok: false, error: "window_quitting",
+    refusal: { kind: "window_quitting", pre_ownership: true, source: "B", deliveryToken: outgoing.deliveryToken },
+  });
+  expect(boundary.invoke).toHaveBeenCalledWith("tearout_release_cancel", { id: approval.release_id });
+  expect(boundary.invoke).toHaveBeenCalledWith("tearout_restore_geometry", { label: "B", geometry: original });
+  expect(boundary.invoke.mock.calls.some(([command]) => ["tearout_prepare", "tearout_phase", "tearout_forget"].includes(command))).toBe(false);
+  expect(boundary.emitTo.mock.calls.some(([, event]) => event === "mycmux://tearout-revoke")).toBe(false);
+  expect(visibleToasts()).toEqual([]);
+  expect(boundary.invoke).toHaveBeenCalledWith("tearout_log_record", {
+    record: expect.objectContaining({ result: "kept_window", failure_reason: "window_quitting" }),
+  });
 });
 it.each(["release-cleanup", "geometry-restore", "outgoing-cleanup", "prepare"] as const)(
   "V2 I1 keeps a genuine %s failure red through the real receipt path", async fault => {

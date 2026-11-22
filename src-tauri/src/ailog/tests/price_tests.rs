@@ -298,6 +298,12 @@ fn coverage_counts_priced_local_and_flat_but_not_internal_or_unknown() {
 fn current_generations_have_their_own_published_rates() {
     let table = PriceTable::from_defaults();
     for (raw, family, input, output, read, write) in [
+        ("claude-fable-5-2", "fable-5.2", 8.0, 40.0, 0.20, 10.0),
+        ("claude-haiku-5-5", "haiku-5.5", 0.10, 0.50, 0.01, 0.125),
+        ("gpt-6.2-astra", "gpt-6.2", 8.0, 40.0, 0.40, 10.0),
+        ("gpt-6.2-sol", "gpt-6.2", 2.0, 10.0, 0.10, 2.50),
+        ("gemini-4-carbon", "gemini-4-carbon", 4.0, 20.0, 0.20, 4.0),
+        ("gemini-4-hydrogen", "gemini-4-hydrogen", 1.50, 7.50, 0.075, 1.50),
         ("claude-fable-5-1", "fable-5.1", 10.0, 50.0, 0.25, 12.5),
         ("claude-mythos-5-1", "mythos-5.1", 10.0, 50.0, 0.25, 12.5),
         ("claude-opus-5-5", "opus-5.5", 4.0, 20.0, 0.2, 5.0),
@@ -339,6 +345,8 @@ fn snapshots_and_context_qualifiers_resolve_but_future_versions_do_not_inherit_p
     for (alias, base) in [
         ("claude-opus-5-5[1m]", "claude-opus-5-5"),
         ("claude-sonnet-5-5-20260928", "claude-sonnet-5-5"),
+        ("gpt-6.2[sol]", "gpt-6.2-sol"),
+        ("gpt-6.2-astra-2026-11-17", "gpt-6.2-astra"),
         ("gpt-6.1[sol]", "gpt-6.1-sol"),
         ("gpt-6.1-sol-2026-09-22", "gpt-6.1-sol"),
         ("gemini-3.8-flash-20260901", "gemini-3.8-flash"),
@@ -350,8 +358,9 @@ fn snapshots_and_context_qualifiers_resolve_but_future_versions_do_not_inherit_p
     }
     for raw in [
         "claude-opus-5-7",
-        "claude-fable-5-2",
+        "claude-fable-5-3",
         "claude-sonnet-5-55",
+        "gpt-6.2-nova",
         "gpt-6.1-nova",
         "gpt-5.5-pro",
         "gpt-5.5-future",
@@ -371,13 +380,23 @@ fn snapshots_and_context_qualifiers_resolve_but_future_versions_do_not_inherit_p
 #[test]
 fn long_context_rates_use_total_input_and_respect_the_boundary() {
     let table = PriceTable::from_defaults();
-    let short = table.price_for_input("gpt-6.1-sol", 272_000).unwrap();
-    let long = table.price_for_input("gpt-6.1-sol", 272_001).unwrap();
-    assert_eq!(short.input, 2.0);
-    assert_eq!(long.input, 4.0);
-    assert_eq!(long.cache_read, 0.2);
-    assert_eq!(long.cache_write_5m, 5.0);
-    assert_eq!(long.output, 15.0);
+    for (model, input, output, cache_read, short_write, long_write) in [
+        ("gpt-6.1-sol", 2.0, 10.0, 0.10, 2.50, 2.50),
+        ("gpt-6.2-sol", 2.0, 10.0, 0.10, 2.50, 5.00),
+        ("gpt-6.2-astra", 8.0, 40.0, 0.40, 10.0, 20.0),
+    ] {
+        let short = table.price_for_input(model, 272_000).unwrap();
+        let long = table.price_for_input(model, 272_001).unwrap();
+        assert_eq!(short, table.lookup(model).unwrap().price);
+        assert_eq!(short.input, input);
+        assert_eq!(long.input, 2.0 * input);
+        assert_eq!(long.cache_read, 2.0 * cache_read);
+        assert_eq!(short.cache_write_5m, short_write, "{model}, short context");
+        assert_eq!(short.cache_write_1h, long_write, "{model}, short context");
+        assert_eq!(long.cache_write_5m, 2.0 * short_write, "{model}, long context");
+        assert_eq!(long.cache_write_1h, 2.0 * long_write, "{model}, long context");
+        assert_eq!(long.output, 1.5 * output);
+    }
     assert_eq!(
         table
             .price_for_input("claude-opus-5-5", 500_000)
@@ -387,6 +406,40 @@ fn long_context_rates_use_total_input_and_respect_the_boundary() {
     );
     assert_eq!(table.classify("grok-4.7"), ModelClass::Reported);
     assert_eq!(table.provider("grok-4.7"), ModelProvider::Xai);
+}
+
+#[test]
+fn haiku_55_applies_the_published_price_above_100k_prompt_tokens() {
+    let table = PriceTable::from_defaults();
+    let short = table.price_for_input("claude-haiku-5-5", 100_000).unwrap();
+    assert_eq!(short, table.lookup("claude-haiku-5-5").unwrap().price);
+    assert_eq!(short.cache_write_1h, 0.20);
+    let long = table.price_for_input("claude-haiku-5-5", 100_001).unwrap();
+    assert_eq!(long.input, 0.50);
+    assert_eq!(long.output, 2.50);
+    assert!((long.cache_read - 0.05).abs() < 1e-12);
+    assert_eq!(long.cache_write_5m, 0.625);
+    assert_eq!(long.cache_write_1h, 1.0);
+    assert_eq!(table.lookup("claude-fable-5-2").unwrap().price.cache_write_1h, 16.0);
+}
+
+#[test]
+fn antigravity_effort_ids_gain_a_family_without_inheriting_api_prices() {
+    let table = PriceTable::from_defaults();
+    for (family, efforts) in [
+        ("gemini-4-carbon", &["low", "medium", "high"][..]),
+        ("gemini-4-hydrogen", &["low", "medium", "high", "xhigh"][..]),
+    ] {
+        for effort in efforts {
+            let raw = format!("{family}-{effort}");
+            assert_eq!(price::normalize(&raw).family, family);
+            assert_eq!(table.provider(&raw), ModelProvider::Google);
+            assert_eq!(table.classify(&raw), ModelClass::Unknown);
+            let rate = table.price_for_input(&raw, 250_000);
+            assert!(rate.is_none());
+            assert_eq!(price::cost_for_turn(rate.as_ref(), 100, 300, 100, 0, 0).total(), 0.0);
+        }
+    }
 }
 
 #[test]

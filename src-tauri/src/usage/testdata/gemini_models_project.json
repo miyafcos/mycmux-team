@@ -1,0 +1,32 @@
+{
+  "models": {
+    "gemini-4-pro": {
+      "displayName": "Gemini 4 Pro",
+      "quotaInfo": { "remainingFraction": 0.25, "resetTime": "2026-11-20T11:00:00Z" }
+    },
+    "gemini-4-flash": {
+      "displayName": "Gemini 4 Flash",
+      "quotaInfo": { "remainingFraction": 0.125, "resetTime": "2026-11-21T12:00:00Z" }
+    },
+    "gemini-2.5-pro": {
+      "displayName": "Gemini 2.5 Pro",
+      "quotaInfo": { "remainingFraction": 0.75 }
+    },
+    "gemini-pro-orchestrator-preview": {
+      "displayName": "Gemini Pro",
+      "quotaInfo": { "remainingFraction": 0.25, "resetTime": "2026-11-21T11:00:00Z" }
+    },
+    "claude-opus": {
+      "displayName": "Claude Opus",
+      "quotaInfo": { "remainingFraction": 0 }
+    },
+    "claude-sonnet": {
+      "displayName": "Claude Sonnet",
+      "quotaInfo": { "remainingFraction": 0.5, "resetTime": "2026-11-22T11:00:00Z" }
+    },
+    "gemini-4-no-quota": { "displayName": "Gemini 4" },
+    "gemini-4-invalid": { "quotaInfo": { "remainingFraction": -1 } },
+    "tab_gemini-4-flash": { "quotaInfo": { "remainingFraction": 0 } },
+    "chat_gemini-4-pro": { "quotaInfo": { "remainingFraction": 0 } }
+  }
+}

@@ -1,3 +1,4 @@
+import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
 import { useId } from "react";
 import { agentTabStrings } from "../../terminal/agentTabStrings";
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -10,6 +11,7 @@ import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "
 // split-button visibility toggles, now with pure Japanese labels.
 export function NotificationsLayoutTab() {
   const paneFocusDescriptionId = useId();
+  const codexDescriptionId = useId();
   const paneFocusMode = useSettingsStore((s) => s.paneFocusMode);
   const setPaneFocusMode = useSettingsStore((s) => s.setPaneFocusMode);
   const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
@@ -30,6 +32,11 @@ export function NotificationsLayoutTab() {
   const setGroupingApplyAnimationEnabled = useSettingsStore((s) => s.setGroupingApplyAnimationEnabled);
   const paneComposerEnabled = useSettingsStore((s) => s.paneComposerEnabled);
   const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
+  const aiEnabled = useAiSettingsStore(state => state.aiEnabled);
+  const presendReadingEnabled = useSettingsStore((s) => s.presendReadingEnabled);
+  const setPresendReadingEnabled = useSettingsStore((s) => s.setPresendReadingEnabled);
+  const presendReadingProvider = useSettingsStore((s) => s.presendReadingProvider);
+  const setPresendReadingProvider = useSettingsStore((s) => s.setPresendReadingProvider);
   const showTerminalHistoryButton = useSettingsStore((s) => s.showTerminalHistoryButton);
   const setShowTerminalHistoryButton = useSettingsStore((s) => s.setShowTerminalHistoryButton);
   const agentTabContent = useSettingsStore((s) => s.agentTabContent);
@@ -198,6 +205,32 @@ export function NotificationsLayoutTab() {
       <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
         {notificationSettingsStrings.paneComposerHint}
       </div>
+      <label style={checkboxLabelStyle}>
+        <input type="checkbox" checked={presendReadingEnabled} disabled={!aiEnabled}
+          onChange={event => setPresendReadingEnabled(event.target.checked)} />
+        <span>{notificationSettingsStrings.presendReadingLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)", marginTop: 4 }}>
+        {notificationSettingsStrings.presendReadingHint}
+      </div>
+      {!aiEnabled && <div style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)", marginTop: 4 }}>
+        {notificationSettingsStrings.presendReadingAiDisabled}
+      </div>}
+      {presendReadingEnabled && (
+        <>
+          <label style={checkboxLabelStyle}>
+            <span>{notificationSettingsStrings.presendReadingProviderLabel}</span>
+            <select value={presendReadingProvider} disabled={!aiEnabled} aria-describedby={codexDescriptionId}
+              onChange={event => setPresendReadingProvider(event.target.value as typeof presendReadingProvider)}>
+              <option value="claude">{notificationSettingsStrings.presendReadingClaude}</option>
+              <option value="codex">{notificationSettingsStrings.presendReadingCodex}</option>
+            </select>
+          </label>
+          <div id={codexDescriptionId} style={{ color: "var(--cmux-text-dim)", fontSize: "var(--cmux-font-size-xs)", marginTop: 4 }}>
+            {notificationSettingsStrings.presendReadingCodexHint}
+          </div>
+        </>
+      )}
     </div>
   );
 }

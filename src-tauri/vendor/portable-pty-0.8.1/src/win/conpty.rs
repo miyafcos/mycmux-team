@@ -3,6 +3,7 @@ use crate::win::psuedocon::PsuedoCon;
 use crate::{Child, MasterPty, PtyPair, PtySize, PtySystem, SlavePty};
 use anyhow::Error;
 use filedescriptor::{FileDescriptor, Pipe};
+use std::os::windows::io::BorrowedHandle;
 use std::sync::{Arc, Mutex};
 use winapi::um::wincon::COORD;
 
@@ -26,7 +27,7 @@ impl PtySystem for ConPtySystem {
         let master = ConPtyMasterPty {
             inner: Arc::new(Mutex::new(Inner {
                 con,
-                readable: stdout.read,
+                readable: Some(stdout.read),
                 writable: Some(stdin.write),
                 size,
             })),
@@ -45,7 +46,7 @@ impl PtySystem for ConPtySystem {
 
 struct Inner {
     con: PsuedoCon,
-    readable: FileDescriptor,
+    readable: Option<FileDescriptor>,
     writable: Option<FileDescriptor>,
     size: PtySize,
 }
@@ -93,7 +94,15 @@ impl MasterPty for ConPtyMasterPty {
     }
 
     fn try_clone_reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
-        Ok(Box::new(self.inner.lock().unwrap().readable.try_clone()?))
+        let inner = self.inner.lock().unwrap();
+        let reader = inner.readable.as_ref().ok_or_else(|| anyhow::anyhow!("reader already taken"))?;
+        Ok(Box::new(reader.try_clone()?))
+    }
+
+    fn take_reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+        let reader = self.inner.lock().unwrap().readable.take()
+            .ok_or_else(|| anyhow::anyhow!("reader already taken"))?;
+        Ok(Box::new(reader))
     }
 
     fn take_writer(&self) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
@@ -111,7 +120,17 @@ impl MasterPty for ConPtyMasterPty {
 impl SlavePty for ConPtySlavePty {
     fn spawn_command(&self, cmd: CommandBuilder) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
         let inner = self.inner.lock().unwrap();
-        let child = inner.con.spawn_command(cmd)?;
+        let child = inner.con.spawn_command(cmd, None)?;
+        Ok(Box::new(child))
+    }
+
+    fn spawn_command_in_job(
+        &self,
+        cmd: CommandBuilder,
+        job: BorrowedHandle<'_>,
+    ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
+        let inner = self.inner.lock().unwrap();
+        let child = inner.con.spawn_command(cmd, Some(job))?;
         Ok(Box::new(child))
     }
 }

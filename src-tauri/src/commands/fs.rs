@@ -1,4 +1,6 @@
 use serde::Serialize;
+#[cfg(any(test, target_os = "windows"))]
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -211,17 +213,29 @@ pub async fn open_path_with_default_app(
 /// Cross-platform; mycmux ships on Windows so that path is the one exercised
 /// in production.
 pub(super) fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
+    reveal_path_in_os_file_manager_with_original(path, path)
+}
+
+/// Reveal the checked path, preserving the original spelling for mapped-drive lookup.
+pub(super) fn reveal_path_in_os_file_manager_with_original(
+    path: &Path,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] original: &Path,
+) -> Result<(), String> {
     let uri = path.to_string_lossy().into_owned();
     if !path.exists() {
         let message = format!("path does not exist: {uri}");
         crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
         return Err(message);
     }
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize();
+    #[cfg(target_os = "windows")]
+    let original_for_shell = canonical.is_ok().then_some(original);
+    let canonical = canonical.unwrap_or_else(|_| path.to_path_buf());
     let is_dir = canonical.is_dir();
     #[cfg(target_os = "windows")]
     {
-        let command_line = windows_explorer_command_line(&canonical, is_dir);
+        let target = windows_explorer_target(original_for_shell, &canonical);
+        let command_line = windows_explorer_command_line(&target, is_dir);
         let mut cmd = std::process::Command::new("explorer.exe");
         {
             use std::os::windows::process::CommandExt;
@@ -318,10 +332,13 @@ fn open_path_with_default_app_impl(path: &Path) -> Result<(), String> {
         crate::diag::warn("open", &format!("uri={uri} error={message}"));
         return Err(message);
     }
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize();
+    #[cfg(target_os = "windows")]
+    let original_for_shell = canonical.is_ok().then_some(path);
+    let canonical = canonical.unwrap_or_else(|_| path.to_path_buf());
     #[cfg(target_os = "windows")]
     {
-        let target = windows_shell_path(&canonical);
+        let target = windows_shell_path(&windows_explorer_target(original_for_shell, &canonical));
         match std::process::Command::new("explorer.exe")
             .arg(&target)
             .spawn()
@@ -399,15 +416,43 @@ fn open_path_with_default_app_impl(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
+const WINDOWS_VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+
+// Inspect Windows path spelling without using the host OS's path parser.
+#[cfg(any(test, target_os = "windows"))]
+fn select_windows_explorer_path(
+    original_absolute: Option<PathBuf>,
+    canonical: &Path,
+) -> Cow<'_, Path> {
+    if let Some(absolute) = original_absolute {
+        let bytes = absolute.as_os_str().as_encoded_bytes();
+        if matches!(bytes, [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+            && canonical
+                .as_os_str()
+                .as_encoded_bytes()
+                .starts_with(WINDOWS_VERBATIM_UNC_PREFIX.as_bytes())
+        {
+            return Cow::Owned(absolute);
+        }
+    }
+    Cow::Borrowed(canonical)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_explorer_target<'a>(original: Option<&Path>, canonical: &'a Path) -> Cow<'a, Path> {
+    let absolute = original.and_then(|path| std::path::absolute(path).ok());
+    select_windows_explorer_path(absolute, canonical)
+}
+
 /// Preprocess a Windows path for handing to explorer.exe (open or reveal).
 /// Strips the `\\?\` long-path prefix (including UNC), normalizes separators,
 /// and drops trailing backslashes except for a drive root (`C:\`).
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 fn windows_shell_path(path: &Path) -> String {
     let mut value = path.to_string_lossy().into_owned();
-    const UNC_PREFIX: &str = r"\\?\UNC\";
     const LONG_PREFIX: &str = r"\\?\";
-    if let Some(rest) = value.strip_prefix(UNC_PREFIX) {
+    if let Some(rest) = value.strip_prefix(WINDOWS_VERBATIM_UNC_PREFIX) {
         value = format!(r"\\{rest}");
     } else if let Some(rest) = value.strip_prefix(LONG_PREFIX) {
         value = rest.to_string();
@@ -426,7 +471,7 @@ fn windows_shell_path(path: &Path) -> String {
     value
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 fn is_windows_drive_letter_colon(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
@@ -453,6 +498,79 @@ fn windows_explorer_command_line(path: &Path, is_dir: bool) -> String {
         format!("\"{shell_path}\"")
     } else {
         format!("/select,\"{shell_path}\"")
+    }
+}
+
+#[cfg(test)]
+mod windows_explorer_path_tests {
+    use super::*;
+
+    fn shell_path(original_absolute: Option<&str>, canonical: &str) -> String {
+        let target =
+            select_windows_explorer_path(original_absolute.map(PathBuf::from), Path::new(canonical));
+        windows_shell_path(&target)
+    }
+
+    #[test]
+    fn mapped_directory_keeps_drive_path_and_strips_trailing_separator() {
+        assert_eq!(
+            shell_path(Some(r"X:\dir\sub\"), r"\\?\UNC\server\Share-1\dir\sub"),
+            r"X:\dir\sub"
+        );
+    }
+
+    #[test]
+    fn mapped_file_keeps_spaces_and_japanese_and_normalizes_separators() {
+        assert_eq!(
+            shell_path(
+                Some("X:/dir/a b/ファイル.pdf"),
+                r"\\?\UNC\server\Share-1\dir\a b\ファイル.pdf",
+            ),
+            r"X:\dir\a b\ファイル.pdf"
+        );
+    }
+
+    #[test]
+    fn junction_to_mapped_drive_keeps_original_path() {
+        assert_eq!(
+            shell_path(
+                Some(r"C:\Users\u\会社 Dropbox\名前\dir"),
+                r"\\?\UNC\server\Share-1\dir",
+            ),
+            r"C:\Users\u\会社 Dropbox\名前\dir"
+        );
+    }
+
+    #[test]
+    fn original_unc_uses_canonical_unc_path() {
+        assert_eq!(
+            shell_path(Some(r"\\server\share\dir"), r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+        assert_eq!(
+            shell_path(Some(r"\\server\alias\dir"), r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+    }
+
+    #[test]
+    fn local_canonical_path_keeps_existing_shell_path() {
+        assert_eq!(shell_path(Some(r"C:\a\b"), r"\\?\C:\a\b"), r"C:\a\b");
+        assert_eq!(shell_path(Some(r"C:\a\b"), r"\\?\C:\target\b"), r"C:\target\b");
+    }
+
+    #[test]
+    fn mapped_drive_root_keeps_trailing_separator() {
+        assert_eq!(shell_path(Some(r"X:\"), r"\\?\UNC\server\Share-1\"), r"X:\");
+    }
+
+    #[test]
+    fn missing_absolute_candidate_keeps_fallback_shell_path() {
+        assert_eq!(shell_path(None, r"C:/a b/"), r"C:\a b");
+        assert_eq!(
+            shell_path(None, r"\\?\UNC\server\Share-1\dir"),
+            r"\\server\Share-1\dir"
+        );
     }
 }
 
@@ -604,6 +722,33 @@ mod tests {
     fn explorer_command_line_drive_root_unquoted() {
         let line = windows_explorer_command_line(Path::new(r"C:\"), true);
         assert_eq!(line, r"C:\");
+    }
+
+    #[test]
+    fn explorer_command_line_mapped_directory() {
+        let target = windows_explorer_target(
+            Some(Path::new(r"X:\dir\sub\")),
+            Path::new(r"\\?\UNC\server\Share-1\dir\sub"),
+        );
+        assert_eq!(windows_explorer_command_line(&target, true), r#""X:\dir\sub""#);
+
+        let root = windows_explorer_target(
+            Some(Path::new(r"X:\")),
+            Path::new(r"\\?\UNC\server\Share-1\"),
+        );
+        assert_eq!(windows_explorer_command_line(&root, true), r"X:\");
+    }
+
+    #[test]
+    fn explorer_command_line_mapped_file() {
+        let target = windows_explorer_target(
+            Some(Path::new("X:/dir/skip/../a b/ファイル.pdf")),
+            Path::new(r"\\?\UNC\server\Share-1\dir\a b\ファイル.pdf"),
+        );
+        assert_eq!(
+            windows_explorer_command_line(&target, false),
+            r#"/select,"X:\dir\a b\ファイル.pdf""#
+        );
     }
 
     #[test]

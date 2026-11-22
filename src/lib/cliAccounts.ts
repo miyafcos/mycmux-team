@@ -1,18 +1,20 @@
-import { CLI_LOGIN_TIMEOUT_MS, type CliAccountProfile, type CliLiveLogin, type CliLoginMode, type CliProvider } from "./ipc";
+import { CLI_LOGIN_TIMEOUT_MS, type CliAccountProfile, type CliLiveLogin, type CliLoginMode, type CliProvider, type SwitchableCliProvider } from "./ipc";
 import type { AgentSessionKind } from "../types";
 import { grokAccountStrings } from "./grokAccountStrings";
 
 export const CLI_ACCOUNT_POLL_INTERVAL_MS = 60_000;
 
-export const PROVIDER_ORDER: readonly CliProvider[] = ["claude", "codex", "grok"];
+export const SWITCHABLE_PROVIDERS = ["claude", "codex", "grok"] as const satisfies readonly SwitchableCliProvider[];
+export const PROVIDER_ORDER: readonly CliProvider[] = [...SWITCHABLE_PROVIDERS, "gemini"];
 
 export const PROVIDER_SHORT: Record<CliProvider, string> = {
   claude: "CC",
   codex: "CX",
   grok: "GK",
+  gemini: "GM",
 };
 
-export const PROVIDER_TITLE: Record<CliProvider, string> = {
+export const PROVIDER_TITLE: Record<SwitchableCliProvider, string> = {
   claude: "Claude Code",
   codex: "Codex",
   grok: "Grok Build",
@@ -170,12 +172,12 @@ export function cliAccountSessionErrorMessage(value: unknown): string | null {
  * name a provider without importing the grouping heading vocabulary the panel
  * deliberately dropped.
  */
-export function addAccountLabel(provider: CliProvider): string {
+export function addAccountLabel(provider: SwitchableCliProvider): string {
   return `${PROVIDER_TITLE[provider]} のアカウントを追加`;
 }
 
 /** Label of the pane tab the isolated login runs in. */
-export function loginTabLabel(provider: CliProvider, mode: CliLoginMode): string {
+export function loginTabLabel(provider: SwitchableCliProvider, mode: CliLoginMode): string {
   return `${PROVIDER_TITLE[provider]} ${mode === "reauth" ? "再ログイン" : "ログイン"}`;
 }
 
@@ -198,7 +200,7 @@ export function loginRemainingLabel(startedAt: number | null, nowMs: number): st
 
 export function liveForProvider(
   live: CliLiveLogin[],
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
 ): CliLiveLogin | undefined {
   return live.find((entry) => entry.provider === provider);
 }
@@ -272,7 +274,7 @@ export interface AgentPaneMetadataLike {
   processTitle?: string;
 }
 
-function paneMatchesProvider(meta: AgentPaneMetadataLike, provider: CliProvider): boolean {
+function paneMatchesProvider(meta: AgentPaneMetadataLike, provider: SwitchableCliProvider): boolean {
   if (!meta.agentKind || meta.processIsShell !== false) return false;
   return meta.agentKind === provider || (
     meta.agentKind === "claude-codex" && (provider === "claude" || provider === "codex")
@@ -289,7 +291,7 @@ type AccountWorkspaceLike = readonly { panes: readonly { tabs: readonly {
 }[] }[] }[];
 
 /** Missing, conflicting or metadata-only ownership stays in the warning. */
-function isPinnedProviderTab(sessionId: string, meta: AgentPaneMetadataLike, provider: CliProvider, workspaces: AccountWorkspaceLike): boolean {
+function isPinnedProviderTab(sessionId: string, meta: AgentPaneMetadataLike, provider: SwitchableCliProvider, workspaces: AccountWorkspaceLike): boolean {
   if (meta.agentKind !== provider) return false; // claude-codex still counts toward both.
   const tabs = workspaces.flatMap(workspace => workspace.panes.flatMap(pane => pane.tabs)).filter(tab => tab.sessionId === sessionId);
   if (tabs.length !== 1 || !tabs[0].agentAccountId) return false;
@@ -301,7 +303,7 @@ function isPinnedProviderTab(sessionId: string, meta: AgentPaneMetadataLike, pro
 
 export function runningAgentPaneDetails(
   metadata: Record<string, AgentPaneMetadataLike>,
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   volatileMetadata: Record<string, Pick<AgentPaneMetadataLike, "processTitle">> = {},
   workspaces: AccountWorkspaceLike = [],
 ): string[] {
@@ -325,10 +327,10 @@ export function runningAgentPaneDetails(
 export function runningAgentCounts(
   metadata: Record<string, AgentPaneMetadataLike>,
   workspaces: AccountWorkspaceLike = [],
-): Record<CliProvider, number> {
-  const counts: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
+): Record<SwitchableCliProvider, number> {
+  const counts: Record<SwitchableCliProvider, number> = { claude: 0, codex: 0, grok: 0 };
   for (const [sessionId, meta] of Object.entries(metadata)) {
-    for (const provider of PROVIDER_ORDER) {
+    for (const provider of SWITCHABLE_PROVIDERS) {
       if (paneMatchesProvider(meta, provider) && !isPinnedProviderTab(sessionId, meta, provider, workspaces)) counts[provider] += 1;
     }
   }
@@ -338,10 +340,10 @@ export function runningAgentCounts(
 export function pinnedAgentCounts(
   metadata: Record<string, AgentPaneMetadataLike>,
   workspaces: AccountWorkspaceLike = [],
-): Record<CliProvider, number> {
-  const counts: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
+): Record<SwitchableCliProvider, number> {
+  const counts: Record<SwitchableCliProvider, number> = { claude: 0, codex: 0, grok: 0 };
   for (const [sessionId, meta] of Object.entries(metadata)) {
-    for (const provider of PROVIDER_ORDER) {
+    for (const provider of SWITCHABLE_PROVIDERS) {
       if (paneMatchesProvider(meta, provider) && isPinnedProviderTab(sessionId, meta, provider, workspaces)) counts[provider] += 1;
     }
   }
@@ -350,7 +352,7 @@ export function pinnedAgentCounts(
 
 export function switchWarningText(
   count: number,
-  provider: CliProvider,
+  provider: SwitchableCliProvider,
   targetLabel?: string,
   paneDetails: readonly string[] = [],
   pinnedCount = 0,

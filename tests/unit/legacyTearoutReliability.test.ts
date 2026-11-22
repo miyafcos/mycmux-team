@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ open: vi.fn(), ready: vi.fn(), send: vi.fn(), invoke: vi.fn(), visit: vi.fn(), attachment: vi.fn() }));
+const mocks = vi.hoisted(() => ({ open: vi.fn(), ready: vi.fn(), send: vi.fn(), invoke: vi.fn(), visit: vi.fn(), attachment: vi.fn(), reading: vi.fn() }));
+vi.mock("../../src/lib/presendReadingClient", () => ({ requestPresendReading: mocks.reading, cancelPresendReading: vi.fn() }));
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: mocks.invoke }));
 vi.mock("../../src/lib/tearout/runtime", async original => ({ ...await original<typeof import("../../src/lib/tearout/runtime")>(),
   waitForTearoutReceiver: mocks.ready, sendTearoutWorkspaces: mocks.send, visitTearoutLocation: mocks.visit }));
@@ -8,6 +11,12 @@ vi.mock("../../src/components/terminal/XTermWrapper", () => ({ hasTerminalBuffer
 vi.mock("../../src/lib/tearout/sessionAttachment", async original => ({ ...await original<typeof import("../../src/lib/tearout/sessionAttachment")>(),
   expectTearoutAttachments: (ids: string[]) => ({ prepared: Promise.resolve(), ready: mocks.attachment(ids), dispose: () => {} }) }));
 import * as ipc from "../../src/lib/ipc";
+import { usePresendReading } from "../../src/components/composer/usePresendReading";
+import { ensurePresendTab, forgetPresendTab, presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
+import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
+import { useAiSettingsStore } from "../../src/stores/aiSettingsStore";
+import { useComposerStore } from "../../src/stores/composerStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { termCache, type CachedTerm } from "../../src/components/terminal/terminalCache";
 import { commitPaneDragDrop } from "../../src/hooks/usePaneDragSource";
 import { tearOutWorkspaceToNewWindow } from "../../src/lib/workspaceTearOut";
@@ -44,6 +53,61 @@ describe("legacy tear-out confirmation and rollback", () => {
     expect(mocks.invoke.mock.calls.some(([command]) => command === "kill_session" || command === "create_session")).toBe(false);
     useToastStore.getState().toasts.find(toast => toast.kind === "error")!.actions![0].run();
     expect(mocks.visit).toHaveBeenCalledWith("source", "pty-one");
+  });
+
+  it("keeps a tab off and sends no reading after its workspace returns", async () => {
+    const sessionId = "pty-two";
+    const draft = "A draft waiting in the original window";
+    const settings = useSettingsStore.getState();
+    const aiEnabled = useAiSettingsStore.getState().aiEnabled;
+    const remainder = { ...source(), id: "remainder", panes: [], splitColumns: [] };
+    useWorkspaceListStore.setState({ workspaces: [source(), remainder] });
+    setPresendTabEnabled(sessionId, false);
+    ensurePresendTab(sessionId).attempted.add("earlier-attempt");
+    useComposerStore.getState().setDraft(sessionId, draft);
+    mocks.reading.mockResolvedValue(null);
+    const root = createRoot(document.createElement("div"));
+    function ReturnedTab() {
+      usePresendReading(sessionId, draft, "claude");
+      return null;
+    }
+    try {
+      expect(await tearOutWorkspaceToNewWindow("source")).toBe("child");
+      expect(useWorkspaceListStore.getState().workspaces).toEqual([remainder]);
+      restoreWorkspaceConfigs(mocks.send.mock.calls[0][1]);
+      expect(useWorkspaceListStore.getState().getWorkspace("source")?.panes[0].tabs[1].sessionId).toBe(sessionId);
+      useSettingsStore.setState({ presendReadingEnabled: true, paneComposerEnabled: true });
+      useAiSettingsStore.setState({ aiEnabled: true });
+      vi.useFakeTimers();
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      act(() => root.render(createElement(ReturnedTab)));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(mocks.reading).not.toHaveBeenCalled();
+      expect(presendTab(sessionId)?.enabled).toBe(false);
+      expect(presendTab(sessionId)?.attempted.size).toBe(0);
+      expect(useComposerStore.getState().draftBySession[sessionId]).toBe(draft);
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      useSettingsStore.setState({ presendReadingEnabled: settings.presendReadingEnabled, paneComposerEnabled: settings.paneComposerEnabled });
+      useAiSettingsStore.setState({ aiEnabled });
+      forgetPresendTab(sessionId);
+      useComposerStore.getState().clearDraft(sessionId);
+    }
+  });
+
+  it("preserves the source tab's choice and attempts after a rejected workspace receipt", async () => {
+    const sessionId = "pty-two";
+    setPresendTabEnabled(sessionId, false);
+    ensurePresendTab(sessionId).attempted.add("earlier-attempt");
+    mocks.send.mockRejectedValueOnce(new Error("tearout_receive_failed"));
+    try {
+      await expect(tearOutWorkspaceToNewWindow("source")).rejects.toThrow("tearout_receive_failed");
+      expect(presendTab(sessionId)).toEqual({ enabled: false, attempted: new Set(["earlier-attempt"]) });
+    } finally {
+      forgetPresendTab(sessionId);
+    }
   });
   it("keeps source ownership until receiver is ready and waits for its receipt", async () => {
     let ready!: () => void, received!: () => void;

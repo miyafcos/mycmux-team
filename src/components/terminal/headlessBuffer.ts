@@ -10,6 +10,7 @@ import { HeadlessCheckpointState, HEADLESS_CHECKPOINT_MAX_CHARS, headlessReplayB
 import type { ScrollbackCursor, ScrollbackSnapshot } from "../../lib/ipc";
 import { TERMINAL_IPC_TIMEOUT_MS, withTerminalDeadline } from "../../lib/terminalDeadline";
 import { getSessionFrontendActivity } from "../../lib/agentDormancy";
+import { queueTerminalOutputObservation } from "../../stores/terminalObservationStore";
 import { currentPtyRead, ptyReadGeneration, retainPtyReads, subscribePtyReads, validatePtySnapshot, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import {
   TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
@@ -401,6 +402,12 @@ async function replayHeadlessBuffer<T>(
         await writeToTerminal(entry.terminal, parsed);
         if (!isCurrent()) throw new Error("pane read lifetime changed");
         validatePtySnapshot(sessionId, generation, snapshot.sessionEpoch);
+        if (purpose === "observation") {
+          const observedStart = Math.max(snapshot.startOffset, previous?.endOffset ?? snapshot.startOffset);
+          queueTerminalOutputObservation({ sessionId, epoch: snapshot.sessionEpoch ?? 0,
+            startOffset: observedStart, endOffset: snapshot.endOffset,
+            data: snapshot.data.subarray(observedStart - snapshot.startOffset), source: "snapshot" });
+        }
         entry.endOffset = snapshot.endOffset;
         entry.sessionEpoch = snapshot.sessionEpoch;
         entry.sizeRevision = snapshot.sizeRevision;

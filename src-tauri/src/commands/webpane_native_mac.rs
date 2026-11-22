@@ -5,7 +5,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 use block2::{Block, RcBlock};
 use objc2::{
     class, define_class, msg_send,
-    rc::Retained,
+    rc::{Retained, Weak},
     runtime::{AnyObject, NSObject, Sel},
     AnyThread, DefinedClass, MainThreadOnly, Message,
 };
@@ -21,6 +21,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use tokio::sync::oneshot;
 
+use super::input_activity::{unix_millis, InputAttempt};
 use super::{
     png_dimensions, screenshot_path, write_screenshot, NativeBudget, WebPaneClip, WebPaneFile,
     WebPaneScreenshotResult, WebPaneSetFileInputResult, WebPaneTrustedInput,
@@ -85,9 +86,17 @@ async fn evaluate(
     budget: &NativeBudget,
 ) -> Result<Value, String> {
     let view = webview(app, tab_id)?;
+    evaluate_on(&view, expression, budget).await
+}
+
+async fn evaluate_on(
+    view: &tauri::Webview,
+    expression: String,
+    budget: &NativeBudget,
+) -> Result<Value, String> {
     let timeout = budget.call_timeout()?;
     let (tx, rx) = oneshot::channel();
-    crate::mac_webview::with_webview(&view, move |platform| {
+    crate::mac_webview::with_webview(view, move |platform| {
         if tx.is_closed() {
             return;
         }
@@ -133,15 +142,13 @@ fn observed_generation(value: &Value) -> Option<u64> {
 }
 
 async fn check_generation(
-    app: &AppHandle,
-    tab_id: &str,
+    view: &tauri::Webview,
     expected: Option<u64>,
     budget: &NativeBudget,
 ) -> Result<(), String> {
     if let Some(expected) = expected {
-        let generation = evaluate(
-            app,
-            tab_id,
+        let generation = evaluate_on(
+            view,
             "window.__mycmux && window.__mycmux.generation".into(),
             budget,
         )
@@ -334,93 +341,128 @@ fn modifiers(values: &[String]) -> Result<NSEventModifierFlags, String> {
         })
 }
 
-/// USB/ANSI macOS virtual key codes, not Windows VK numbers.
+// macOS virtual key codes and the text sent with named keys.
+const NAMED_KEYS: &[(&str, &str, u16)] = &[
+    ("Enter", "\r", 36),
+    ("Tab", "\t", 48),
+    ("Escape", "\u{1b}", 53),
+    ("Backspace", "\u{7f}", 51),
+    ("Delete", "\u{f728}", 117),
+    ("ArrowLeft", "\u{f702}", 123),
+    ("ArrowUp", "\u{f700}", 126),
+    ("ArrowRight", "\u{f703}", 124),
+    ("ArrowDown", "\u{f701}", 125),
+    ("Home", "\u{f729}", 115),
+    ("End", "\u{f72b}", 119),
+    ("PageUp", "\u{f72c}", 116),
+    ("PageDown", "\u{f72d}", 121),
+    ("Space", " ", 49),
+];
+
+// Each entry starts with the unshifted character for that ANSI key.
+const PRINTABLE_KEYS: &[(u16, &str)] = &[
+    (0, "a"),
+    (1, "s"),
+    (2, "d"),
+    (3, "f"),
+    (4, "h"),
+    (5, "g"),
+    (6, "z"),
+    (7, "x"),
+    (8, "c"),
+    (9, "v"),
+    (11, "b"),
+    (12, "q"),
+    (13, "w"),
+    (14, "e"),
+    (15, "r"),
+    (16, "y"),
+    (17, "t"),
+    (18, "1"),
+    (19, "2"),
+    (20, "3"),
+    (21, "4"),
+    (22, "6"),
+    (23, "5"),
+    (24, "=+"),
+    (25, "9"),
+    (26, "7"),
+    (27, "-_"),
+    (28, "8"),
+    (29, "0"),
+    (30, "]}"),
+    (31, "o"),
+    (32, "u"),
+    (33, "[{"),
+    (34, "i"),
+    (35, "p"),
+    (37, "l"),
+    (38, "j"),
+    (39, "'\""),
+    (40, "k"),
+    (41, ";:"),
+    (42, "\\|"),
+    (43, ",<"),
+    (44, "/?"),
+    (45, "n"),
+    (46, "m"),
+    (47, ".>"),
+    (50, "`~"),
+];
+
 fn key_mapping(key: &str, code: Option<&str>) -> Result<(String, u16), String> {
-    let (text, default_code) = match key {
-        "Enter" => ("\r".into(), 36),
-        "Tab" => ("\t".into(), 48),
-        "Escape" => ("\u{1b}".into(), 53),
-        "Backspace" => ("\u{7f}".into(), 51),
-        "Delete" => ("\u{f728}".into(), 117),
-        "ArrowLeft" => ("\u{f702}".into(), 123),
-        "ArrowUp" => ("\u{f700}".into(), 126),
-        "ArrowRight" => ("\u{f703}".into(), 124),
-        "ArrowDown" => ("\u{f701}".into(), 125),
-        "Home" => ("\u{f729}".into(), 115),
-        "End" => ("\u{f72b}".into(), 119),
-        "PageUp" => ("\u{f72c}".into(), 116),
-        "PageDown" => ("\u{f72d}".into(), 121),
-        "Space" | " " => (" ".into(), 49),
-        _ => {
-            let mut chars = key.chars();
-            let ch = chars.next().filter(|ch| !ch.is_control()).ok_or_else(|| {
-                "trusted input key must not be empty or a control character".to_string()
-            })?;
-            if chars.next().is_some() {
-                return Err(format!("unsupported trusted input key: {key}"));
-            }
-            (key.to_string(), physical_key(ch).unwrap_or(0))
+    let named_key = if key == " " { "Space" } else { key };
+    let (text, default_code) = if let Some(&(_, text, code)) =
+        NAMED_KEYS.iter().find(|&&(name, _, _)| name == named_key)
+    {
+        (text.to_owned(), code)
+    } else {
+        let mut chars = key.chars();
+        let ch = chars.next().filter(|ch| !ch.is_control()).ok_or_else(|| {
+            "trusted input key must not be empty or a control character".to_string()
+        })?;
+        if chars.next().is_some() {
+            return Err(format!("unsupported trusted input key: {key}"));
         }
+        (key.to_string(), physical_key(ch).unwrap_or(0))
     };
-    let physical = code
-        .and_then(|c| c.strip_prefix("Key").or_else(|| c.strip_prefix("Digit")))
-        .and_then(|c| c.chars().next())
-        .and_then(physical_key)
-        .unwrap_or(default_code);
+    let physical = match code {
+        None => default_code,
+        Some(code) => crate::commands::webpane::physical_alphanumeric_code(code)
+            .map_err(|()| "invalid trusted input physical key code".to_string())?
+            .and_then(physical_key)
+            .unwrap_or(default_code),
+    };
     Ok((text, physical))
 }
 
 fn physical_key(ch: char) -> Option<u16> {
-    Some(match ch.to_ascii_lowercase() {
-        'a' => 0,
-        's' => 1,
-        'd' => 2,
-        'f' => 3,
-        'h' => 4,
-        'g' => 5,
-        'z' => 6,
-        'x' => 7,
-        'c' => 8,
-        'v' => 9,
-        'b' => 11,
-        'q' => 12,
-        'w' => 13,
-        'e' => 14,
-        'r' => 15,
-        'y' => 16,
-        't' => 17,
-        '1' => 18,
-        '2' => 19,
-        '3' => 20,
-        '4' => 21,
-        '6' => 22,
-        '5' => 23,
-        '=' | '+' => 24,
-        '9' => 25,
-        '7' => 26,
-        '-' | '_' => 27,
-        '8' => 28,
-        '0' => 29,
-        ']' | '}' => 30,
-        'o' => 31,
-        'u' => 32,
-        '[' | '{' => 33,
-        'i' => 34,
-        'p' => 35,
-        'l' => 37,
-        'j' => 38,
-        '\'' | '"' => 39,
-        'k' => 40,
-        ';' | ':' => 41,
-        '\\' | '|' => 42,
-        ',' | '<' => 43,
-        '/' | '?' => 44,
-        'n' => 45,
-        'm' => 46,
-        '.' | '>' => 47,
-        '`' | '~' => 50,
-        _ => return None,
-    })
+    let ch = ch.to_ascii_lowercase();
+    PRINTABLE_KEYS.iter().find_map(|&(code, keys)| keys.contains(ch).then_some(code))
+}
+
+fn physical_key_name(code: u16) -> Option<&'static str> {
+    if let Some(&(name, _, _)) = NAMED_KEYS.iter().find(|&&(_, _, key_code)| key_code == code) {
+        return Some(name);
+    }
+    PRINTABLE_KEYS.iter().find(|&&(key_code, _)| key_code == code)
+        .and_then(|&(_, keys)| keys.get(..1))
+}
+
+fn inserts_key_text(key: &str, flags: NSEventModifierFlags) -> bool {
+    flags.intersection(NSEventModifierFlags::Control | NSEventModifierFlags::Command
+        | NSEventModifierFlags::Option).is_empty()
+        && (key.chars().count() == 1 || key == "Space")
+}
+
+pub(in crate::commands) fn dispatched_physical_key(
+    key: &str, code: Option<&str>, mods: &[String],
+) -> Option<&'static str> {
+    if inserts_key_text(key, modifiers(mods).ok()?) {
+        return None;
+    }
+    let (_, code) = key_mapping(key, code).ok()?;
+    physical_key_name(code)
 }
 
 fn validate_input(action: &WebPaneTrustedInput) -> Result<&'static str, String> {
@@ -497,7 +539,7 @@ fn event_uptime() -> f64 {
     }
 }
 
-unsafe fn mouse(wk: &WKWebView, x: f64, y: f64, button: &str, count: u32) -> Result<(), String> {
+unsafe fn mouse(wk: &WKWebView, x: f64, y: f64, button: &str, count: u32, dispatched: &mut usize) -> Result<(), String> {
     let window = wk
         .window()
         .ok_or_else(|| "trusted input webview has no window".to_string())?;
@@ -511,6 +553,7 @@ unsafe fn mouse(wk: &WKWebView, x: f64, y: f64, button: &str, count: u32) -> Res
         let event=NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
             ty,point,NSEventModifierFlags::empty(),event_uptime(),window.windowNumber(),None,0,count as isize,if ty==down{1.0}else{0.0})
             .ok_or_else(||"trusted input could not create mouse event".to_string())?;
+        *dispatched += 1;
         match ty {
             NSEventType::MouseMoved => wk.mouseMoved(&event),
             NSEventType::LeftMouseDown => wk.mouseDown(&event),
@@ -542,7 +585,15 @@ extern "C" {
     fn CFRelease(object: *const std::ffi::c_void);
 }
 
-unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> Result<(), String> {
+unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> (Result<(), String>, usize) {
+    let mut dispatched = 0;
+    let result = dispatch_counted(wk, action, &mut dispatched);
+    (result, dispatched)
+}
+
+unsafe fn dispatch_counted(
+    wk: &WKWebView, action: &WebPaneTrustedInput, dispatched: &mut usize,
+) -> Result<(), String> {
     let window = wk
         .window()
         .ok_or_else(|| "trusted input webview has no window".to_string())?;
@@ -559,6 +610,7 @@ unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> Result<(), S
             *y,
             button.as_deref().unwrap_or("left"),
             click_count.unwrap_or(1),
+            dispatched,
         )?,
         WebPaneTrustedInput::InsertText { text, .. } => {
             let text = NSString::from_str(text);
@@ -575,9 +627,7 @@ unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> Result<(), S
             let flags = modifiers(mods.as_deref().unwrap_or(&[]))?;
             let chars = NSString::from_str(text.as_deref().unwrap_or(&base));
             let plain = NSString::from_str(&base);
-            if flags.intersection(NSEventModifierFlags::Control | NSEventModifierFlags::Command
-                | NSEventModifierFlags::Option).is_empty()
-                && (key.chars().count() == 1 || key == "Space") {
+            if inserts_key_text(key, flags) {
                 // Printable text must bypass the operator's selected IME.
                 let _: () = msg_send![wk,insertText:&*chars,replacementRange:NSRange::new(NSNotFound as usize,0)];
                 return Ok(());
@@ -586,6 +636,7 @@ unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> Result<(), S
                 let event=NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
                     ty,NSPoint::new(0.0,0.0),flags,event_uptime(),window.windowNumber(),None,&chars,&plain,false,code)
                     .ok_or_else(||"trusted input could not create key event".to_string())?;
+                *dispatched += 1;
                 if ty == NSEventType::KeyDown {
                     wk.keyDown(&event);
                 } else {
@@ -637,6 +688,7 @@ unsafe fn dispatch(wk: &WKWebView, action: &WebPaneTrustedInput) -> Result<(), S
                 CFRelease(cg);
                 let event = event
                     .ok_or_else(|| "trusted input could not create wheel event".to_string())?;
+                *dispatched += 1;
                 wk.scrollWheel(&event);
             }
         }
@@ -663,17 +715,56 @@ fn restore_focus(slot: &RefCell<Option<FocusRestore>>) {
     }
 }
 
+fn fence_count(dispatched_events: usize) -> usize {
+    dispatched_events + 1
+}
+
+type FenceReply = Box<dyn FnOnce(Result<(), String>)>;
+
+fn chain_fences(remaining: usize, send: Rc<dyn Fn(FenceReply)>, finish: FenceReply) {
+    let next = send.clone();
+    send(Box::new(move |result| {
+        if remaining == 1 || result.is_err() {
+            finish(result);
+        } else {
+            chain_fences(remaining - 1, next, finish);
+        }
+    }));
+}
+
+fn send_input_fences(wk: &WKWebView, dispatched_events: usize, finish: FenceReply) {
+    let view = Weak::new(wk);
+    let send = Rc::new(move |reply: FenceReply| {
+        let Some(wk) = view.load() else {
+            reply(Err("trusted input webview closed before the fence".into()));
+            return;
+        };
+        let reply_slot = RefCell::new(Some(reply));
+        let callback = RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
+            let reply = reply_slot.borrow_mut().take();
+            if let Some(reply) = reply {
+                let result = unsafe { error.as_ref() }
+                    .map_or(Ok(()), |error| Err(javascript_error("trusted input fence", error)));
+                reply(result);
+            }
+        });
+        unsafe { wk.evaluateJavaScript_completionHandler(&NSString::from_str("void 0"), Some(&callback)); }
+    });
+    chain_fences(fence_count(dispatched_events), send, finish);
+}
+
 pub(super) async fn input_trusted(
-    app: &AppHandle,
+    view: tauri::Webview,
     tab_id: String,
     action: WebPaneTrustedInput,
     budget: &NativeBudget,
+    input: InputAttempt<'static>,
 ) -> Result<WebPaneTrustedInputResult, String> {
-    check_generation(app, &tab_id, action.expected_generation(), budget).await?;
+    check_generation(&view, action.expected_generation(), budget).await?;
     let kind = validate_input(&action)?;
-    let view = webview(app, &tab_id)?;
     let timeout = budget.call_timeout()?;
     let (tx, rx) = oneshot::channel();
+    let receipt = input.receipt();
     crate::mac_webview::with_webview(&view, move |platform| {
         if tx.is_closed() { return; }
         let wk = unsafe { &*(platform.inner() as *const WKWebView) };
@@ -688,28 +779,30 @@ pub(super) async fn input_trusted(
         if matches!(action, WebPaneTrustedInput::Key { .. } | WebPaneTrustedInput::InsertText { .. }) {
             let _: bool = unsafe { msg_send![&*restore.borrow().as_ref().unwrap().window, makeFirstResponder: wk] };
         }
-        if let Err(error) = unsafe { dispatch(wk, &action) } {
+        if !receipt.begin_pending() {
             restore_focus(&restore);
-            let _ = tx.send(Err(error));
             return;
         }
-        // Restore even if the page hangs or the future is cancelled. The
-        // successful path waits for a WebKit IPC roundtrip after the input.
+        let (result, dispatched_events) = unsafe { dispatch(wk, &action) };
+        if result.is_err() && dispatched_events == 0 {
+            receipt.cancel_pending();
+            restore_focus(&restore);
+            let _ = tx.send(result);
+            return;
+        }
+
+        // Keep the existing upper bound on borrowed focus if WebKit hangs.
         let fallback = restore.clone();
         let timer = RcBlock::new(move |_: *mut AnyObject| restore_focus(&fallback));
         unsafe {
             let _: Retained<AnyObject> = msg_send![class!(NSTimer),
                 scheduledTimerWithTimeInterval: 0.25f64, repeats: false, block: &*timer];
         }
-        let sender = RefCell::new(Some(tx));
-        let finish = RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
+        send_input_fences(wk, dispatched_events, Box::new(move |fence| {
+            receipt.complete(unix_millis());
             restore_focus(&restore);
-            let result = unsafe { error.as_ref() }
-                .map_or(Ok(()), |error| Err(javascript_error("trusted input fence", error)));
-            // A WebKit completion handler is one-shot, but the Rust Block is Fn.
-            if let Some(tx) = sender.borrow_mut().take() { let _ = tx.send(result); }
-        });
-        unsafe { wk.evaluateJavaScript_completionHandler(&NSString::from_str("void 0"), Some(&finish)); }
+            let _ = tx.send(result.and(fence));
+        }));
     })
     .map_err(|error| format!("trusted input failed: {error}"))?;
     receive(rx, timeout, "trusted input").await?;
@@ -867,7 +960,9 @@ pub(super) async fn set_file_input(
     expected_generation: Option<u64>,
     budget: &NativeBudget,
 ) -> Result<WebPaneSetFileInputResult, String> {
-    check_generation(app, &tab_id, expected_generation, budget).await?;
+    if expected_generation.is_some() {
+        check_generation(&webview(app, &tab_id)?, expected_generation, budget).await?;
+    }
     let (paths, files) =
         tokio::task::spawn_blocking(move || input_files(&paths).map(|files| (paths, files)))
             .await
@@ -950,6 +1045,34 @@ mod tests {
         assert_eq!(validate_selection(2, false, false).unwrap_err(), "native file input does not allow multiple selection");
         assert!(validate_selection(1, true, true).unwrap_err().contains("directory selection"));
     }
+    #[test]
+    fn fences_count_native_events_and_one_more_round_trip() {
+        assert_eq!([0, 1, 2, 3].map(fence_count), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn fences_are_serial_and_finish_at_last_reply_or_first_error() {
+        use std::collections::VecDeque;
+
+        for fail_at in [None, Some(2)] {
+            let replies = Rc::new(RefCell::new(VecDeque::<FenceReply>::new()));
+            let outgoing = replies.clone();
+            let finished = Rc::new(RefCell::new(None));
+            let result = finished.clone();
+            chain_fences(fence_count(3), Rc::new(move |reply| outgoing.borrow_mut().push_back(reply)),
+                Box::new(move |reply| *result.borrow_mut() = Some(reply)));
+            let count = fail_at.unwrap_or(4);
+            for step in 1..=count {
+                assert!(finished.borrow().is_none(), "finished before reply {step}");
+                assert_eq!(replies.borrow().len(), 1);
+                let reply = replies.borrow_mut().pop_front().unwrap();
+                reply(if fail_at == Some(step) { Err("fixture error".into()) } else { Ok(()) });
+            }
+            assert!(replies.borrow().is_empty());
+            assert_eq!(*finished.borrow(), Some(if fail_at.is_some() { Err("fixture error".into()) } else { Ok(()) }));
+        }
+    }
+
     #[test]
     fn trusted_meta_keys_are_rejected_before_dispatch() {
         for mods in [json!(["meta"]), json!(["MeTa"]), json!(["shift", "meta"]), json!(["ctrl", "alt", "meta"])] {
@@ -1060,6 +1183,71 @@ mod tests {
         assert!(input_files(&[dir.path().join("missing").to_string_lossy().into_owned()]).is_err());
         assert!(input_files(&[]).unwrap().is_empty());
     }
+    #[test]
+    fn option_key_validation_rejects_malformed_physical_codes_before_dispatch() {
+        let label = "web-pane-mac-option-test";
+        let registry = dashmap::DashMap::new();
+        registry.insert(label.to_owned(), vec!["alt+1".into(), "alt+k".into()]);
+        let action = |code: &str| WebPaneTrustedInput::Key {
+            key: "z".into(), code: Some(code.into()), text: None,
+            modifiers: Some(vec!["alt".into()]), expected_generation: None,
+        };
+        for code in ["Key1", "Keyk", "Digit12", "Numpadk", "Numpad12"] {
+            let key = action(code);
+            assert!(validate_input(&key).is_err(), "{code} must not reach native dispatch");
+        }
+        for (code, keycode) in [("Digit1", 18), ("KeyK", 40), ("Numpad1", 18)] {
+            let key = action(code);
+            assert!(crate::commands::webpane::reject_registered_native_key(&registry, label, &key).is_err());
+            assert!(crate::commands::webpane::reject_registered_native_key(&registry, "web-pane-other", &key).is_ok());
+            assert_eq!(validate_input(&key).unwrap(), "key");
+            assert_eq!(key_mapping("z", Some(code)).unwrap(), ("z".into(), keycode));
+        }
+    }
+
+    #[test]
+    fn trusted_keys_are_checked_against_the_dispatched_physical_key() {
+        use crate::commands::webpane::reject_registered_native_key;
+
+        let registry = dashmap::DashMap::new();
+        let registered = "web-pane-registered";
+        let unregistered = "web-pane-unregistered";
+        registry.insert(registered.to_owned(), vec!["alt+a".into(), "a".into()]);
+        registry.insert(unregistered.to_owned(), vec!["alt+k".into()]);
+        let action = |key: &str, mods: &[&str]| WebPaneTrustedInput::Key {
+            key: key.into(),
+            code: None,
+            text: None,
+            modifiers: Some(mods.iter().map(|modifier| (*modifier).into()).collect()),
+            expected_generation: None,
+        };
+        for key in ["å", "!"] {
+            let input = action(key, &["alt"]);
+            assert_eq!(key_mapping(key, None).unwrap(), (key.into(), 0));
+            assert!(reject_registered_native_key(&registry, registered, &input).is_err(), "{key}");
+            assert!(reject_registered_native_key(&registry, unregistered, &input).is_ok(), "{key}");
+            assert_eq!(validate_input(&input).unwrap(), "key");
+        }
+        let plain_text = action("é", &[]);
+        assert!(reject_registered_native_key(&registry, registered, &plain_text).is_ok());
+        assert_eq!(validate_input(&plain_text).unwrap(), "key");
+    }
+
+    #[test]
+    fn named_numpad_codes_keep_the_existing_key_mapping() {
+        for (key, code) in [("+", "NumpadAdd"), (".", "NumpadDecimal"), ("Enter", "NumpadEnter")] {
+            let input = WebPaneTrustedInput::Key {
+                key: key.into(),
+                code: Some(code.into()),
+                text: None,
+                modifiers: Some(vec!["alt".into()]),
+                expected_generation: None,
+            };
+            assert_eq!(validate_input(&input), Ok("key"), "{code}");
+            assert_eq!(key_mapping(key, Some(code)).unwrap(), key_mapping(key, None).unwrap());
+        }
+    }
+
     #[test]
     fn key_mapping_and_validation_have_windows_errors() {
         assert_eq!(key_mapping("Enter", None).unwrap(), ("\r".into(), 36));

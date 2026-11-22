@@ -53,7 +53,10 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
   const launchAccounts = useLaunchAccounts(value.target);
   const models = useLaunchModels(entry);
   const model = value.model ?? "";
-  const efforts = getLaunchEfforts(entry, model);
+  const efforts = getLaunchEfforts(entry, model, models);
+  const savedEffort = entry?.cli === "codex" && value.effort && !efforts.includes(value.effort)
+    ? value.effort
+    : undefined;
   // Empty is the default (no flag). A non-empty value that could be read as a
   // flag is dropped at launch, so say so here rather than silently ignoring it.
   // Trimmed the same way the launch path trims it, or a trailing space would
@@ -101,7 +104,7 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
               value={model}
               onChange={(event) => {
                 const nextModel = event.target.value;
-                const nextEfforts = getLaunchEfforts(entry, nextModel);
+                const nextEfforts = getLaunchEfforts(entry, nextModel, models);
                 onChange({
                   ...value,
                   model: nextModel,
@@ -125,7 +128,7 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
                 </option>
               ))}
             </datalist>
-            {efforts.length > 0 && (
+            {(efforts.length > 0 || savedEffort) && (
               <select
                 value={value.effort ?? ""}
                 onChange={(event) => onChange({ ...value, effort: event.target.value })}
@@ -133,6 +136,7 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
                 style={{ ...controlStyle, flex: 1, minWidth: 0, cursor: "pointer" }}
               >
                 <option value="" style={optionStyle}>effort (default)</option>
+                {savedEffort && <option value={savedEffort} style={optionStyle}>{savedEffort}</option>}
                 {efforts.map((effort) => (
                   <option key={effort} value={effort} style={optionStyle}>
                     {effort}

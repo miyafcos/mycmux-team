@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { recordPerf } from "./lib/perfTimeline";
+import { connectOperatorFocusWindowNavigation } from "./lib/operatorFocusRequest";
 import { startAgentServiceDetectionOnStartup } from "./stores/agentServiceDetectionStore";
 import { startAutomaticUpdateChecks } from "./lib/updateAvailabilityScheduler";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -22,6 +23,7 @@ import {
   takePendingOpenPaths,
 } from "./lib/ipc";
 import { OPEN_PATHS_EVENT, openPathsInMainWindow } from "./lib/openWithPaths";
+import { isPreparingLayoutQuit } from "./lib/layoutQuit";
 import { isMainWindow, windowLabel, useWindowRole } from "./lib/windowContext";
 import { installChildWindowDevHook } from "./lib/multiWindowDev";
 import { useUiStore } from "./stores/uiStore";
@@ -169,6 +171,7 @@ function App() {
   const isMain = isMainWindow();
   useEffect(() => { if (ready) return startAgentServiceDetectionOnStartup(); }, [ready]);
   useEffect(() => { if (ready) return startAutomaticUpdateChecks(); }, [ready]);
+  useEffect(() => { if (ready) return connectOperatorFocusWindowNavigation(); }, [ready]);
   const hasRole = useWindowRole();
   // Selecting the workspace itself (not the array) keeps the main window off
   // this subscription entirely: it resolves to a stable null, so unrelated
@@ -231,6 +234,7 @@ function App() {
       // Child windows never bootstrap a workspace either: they start empty and
       // receive their workspaces by adoption (Phase 3b), so creating one here
       // would spawn a stray PTY on every tear-out.
+      if (isPreparingLayoutQuit()) return;
       if (isMain && listStore.workspaces.length === 0 && launchCwd) {
         createWorkspaceAtCwd(launchCwd);
       }

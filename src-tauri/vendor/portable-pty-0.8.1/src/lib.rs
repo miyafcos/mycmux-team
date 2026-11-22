@@ -95,6 +95,12 @@ pub trait MasterPty {
     /// Obtain a readable handle; output from the slave(s) is readable
     /// via this stream.
     fn try_clone_reader(&self) -> Result<Box<dyn std::io::Read + Send>, Error>;
+    /// Move the Windows output handle to a private reader so that dropping
+    /// the reader can release the pipe even while closing the pseudoconsole.
+    #[cfg(windows)]
+    fn take_reader(&self) -> Result<Box<dyn std::io::Read + Send>, Error> {
+        anyhow::bail!("taking the output handle is not supported")
+    }
     /// Obtain a writable handle; writing to it will send data to the
     /// slave end.
     /// Dropping the writer will send EOF to the slave end.
@@ -157,6 +163,16 @@ pub trait ChildKiller: std::fmt::Debug {
 pub trait SlavePty {
     /// Spawns the command specified by the provided CommandBuilder
     fn spawn_command(&self, cmd: CommandBuilder) -> Result<Box<dyn Child + Send + Sync>, Error>;
+
+    /// Assigns a ConPTY child to the given job at process creation.
+    #[cfg(windows)]
+    fn spawn_command_in_job(
+        &self,
+        _cmd: CommandBuilder,
+        _job: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> Result<Box<dyn Child + Send + Sync>, Error> {
+        anyhow::bail!("PTY does not support job-bound process creation")
+    }
 }
 
 /// Represents the exit status of a child process.

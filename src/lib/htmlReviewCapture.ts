@@ -1,9 +1,14 @@
 import { reviewScript } from "./htmlReviewScripts";
-import { evalWebPane, screenshotWebPane } from "../components/workspace/webPaneApi";
+import { evalWebPane as evaluateWebPane, screenshotWebPane } from "../components/workspace/webPaneApi";
 import {
   htmlReviewStrings, reviewDocumentClip, reviewReadScript, sameReviewFrame, sameReviewPage,
   type HtmlReviewCapture, type ReviewFrame, type ReviewPageRevision, type ReviewTarget,
 } from "./htmlReviewDraft";
+
+// These fixed preview scripts run on behalf of the review UI.
+function evalWebPane<T = unknown>(tabId: string, script: string) {
+  return evaluateWebPane<T>(tabId, script, undefined, false, false);
+}
 
 function validatePage(page: ReviewPageRevision): ReviewPageRevision {
   if (!page || typeof page.url !== "string" || !page.url || typeof page.documentId !== "string"

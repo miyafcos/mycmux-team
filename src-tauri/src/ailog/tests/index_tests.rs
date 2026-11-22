@@ -753,6 +753,82 @@ fn codex_sessions_index_and_aggregate() {
 }
 
 #[test]
+fn catalog_v3_prices_new_and_appended_sessions_without_repricing_untouched_history() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    conn.execute("DELETE FROM price WHERE model IN ('gpt-6.2-astra', 'gpt-6.2-sol')", []).unwrap();
+
+    let write_session = |id: &str, model: &str| {
+        let filename = format!("rollout-2026-08-04T00-00-00-{id}.jsonl");
+        let meta = CODEX_TOKEN_COUNTS[0].replace("CX1", id).replace("\"root\"", &format!("\"{id}\""));
+        let context = CODEX_TOKEN_COUNTS[1].replace("gpt-5.6-terra", model)
+            .replace("\"t1\"", &format!("\"{id}-t1\""));
+        fixture.write(&filename, &[&meta, &context, CODEX_TOKEN_COUNTS[2]]);
+        filename
+    };
+    write_session("N42-untouched", "gpt-6.2-astra");
+    let active_file = write_session("N42-active", "gpt-6.2-sol");
+    assert_eq!(fixture.index(KIND_CODEX, false).files_done, 2);
+
+    // Reproduce the v3 rows written before the new stems and prices existed.
+    conn.execute("UPDATE turn SET model_family=model, model_variant=NULL WHERE kind='codex'", [])
+        .unwrap();
+    crate::ailog::rollup::mark_all_dirty(&conn).unwrap();
+    crate::ailog::rollup::rebuild_dirty(&conn).unwrap();
+
+    let state = |key: &str| -> String {
+        conn.query_row("SELECT value FROM index_state WHERE key=?1", [key], |r| r.get(0))
+            .unwrap()
+    };
+    let generation = state("price_generation");
+    crate::ailog::schema::init(&conn).unwrap();
+    crate::ailog::migrate::apply(&conn).unwrap();
+    assert_eq!(state("price_catalog_version"), "3");
+    assert_eq!(state("price_generation"), generation);
+
+    let turns = |id: &str| -> Vec<(String, String, f64)> {
+        let mut stmt = conn.prepare(
+            "SELECT model, model_family, cost_usd FROM turn
+             WHERE kind='codex' AND session_id=?1 ORDER BY seq",
+        ).unwrap();
+        let rows = stmt.query_map([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    let untouched = vec![("gpt-6.2-astra".to_owned(), "gpt-6.2-astra".to_owned(), 0.0)];
+    assert_eq!(turns("N42-untouched"), untouched);
+    assert_eq!(turns("N42-active"), vec![("gpt-6.2-sol".to_owned(), "gpt-6.2-sol".to_owned(), 0.0)]);
+
+    write_session("N42-new", "gpt-6.2-astra");
+    assert_eq!(fixture.index(KIND_CODEX, false).files_done, 1);
+    let new = turns("N42-new");
+    assert_eq!(new.len(), 1);
+    assert_eq!((&*new[0].0, &*new[0].1), ("gpt-6.2-astra", "gpt-6.2"));
+    assert!((new[0].2 - 0.00896).abs() < 1e-12);
+
+    fixture.append(&active_file, &CODEX_TOKEN_COUNTS[3..]);
+    assert_eq!(fixture.index(KIND_CODEX, false).files_done, 1);
+    let active = turns("N42-active");
+    assert_eq!(active.len(), 2);
+    for ((model, family, cost), expected) in active.iter().zip([0.00224, 0.0041]) {
+        assert_eq!((model.as_str(), family.as_str()), ("gpt-6.2-sol", "gpt-6.2"));
+        assert!((cost - expected).abs() < 1e-12);
+    }
+    assert_eq!(turns("N42-untouched"), untouched);
+
+    // The series query groups by the persisted family; raw groups use model IDs.
+    for (group_by, expected) in [
+        ("model", "gpt-6.2"),
+        ("model_raw", "gpt-6.2-sol"),
+    ] {
+        let options = query::SeriesOptions { group_by: group_by.into(), ..Default::default() };
+        let series = query::series(&conn, &all_time(), &Filters::default(), &options, NOW).unwrap();
+        let groups = series.buckets.iter().flat_map(|bucket| &bucket.groups).collect::<Vec<_>>();
+        assert!(groups.iter().any(|group| group.group == "gpt-6.2-astra"));
+        assert!(groups.iter().any(|group| group.group == expected));
+    }
+}
+
+#[test]
 fn grok_indexes_updates_only_and_uses_provider_cost() {
     let fixture = Fixture::new();
     fixture.write("G1/updates.jsonl", GROK_UPDATES);

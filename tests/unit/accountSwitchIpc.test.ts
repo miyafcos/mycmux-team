@@ -25,6 +25,8 @@ describe("account switch command bridge", () => {
     expect(invoke).toHaveBeenLastCalledWith("get_account_usage", { refreshMetadata: true });
     await getAccountUsage(false, "account.switch");
     expect(invoke).toHaveBeenLastCalledWith("get_account_usage", { apiCommand: "account.switch" });
+    await getAccountUsage(false, undefined, true);
+    expect(invoke).toHaveBeenLastCalledWith("get_account_usage", { afterSwitch: true });
   });
 
   it("dispatches through the actual store and IPC with structured no-op", async () => {

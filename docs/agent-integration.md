@@ -34,6 +34,20 @@ Claude Codex の新規対話起動では、ランチャーが会話用の UUID �
 Claude Codex のキャラ (`#7A9DFF`) として識別される。通常版 Claude は変更しない。
 再開・継続・fork・明示された会話 ID・非対話出力は既存の起動処理に任せる。
 
+### ランチャーの起動候補
+
+ランチャーと新規ワークスペースでは、モデル ID と effort を指定できる。モデル欄の既定を選ぶと CLI の既定で立ち上がる。手入力欄は固定一覧にない ID も受け付ける。ID は英数字で始まり、英数字と `. _ / -` のみを含む128文字以内とする。
+
+2026-11-18 に確認した起動候補は次のとおり。シェル側の固定一覧は `launcher.ps1` と `launcher.sh`、GUI 側の固定一覧は `src/lib/agentCatalog.ts` にある。
+
+| CLI | 確認方法と起動候補 |
+| --- | --- |
+| Codex 0.169.0 | `models_cache.json` の `visibility=list` をファイル順で確認。`gpt-6.2-sol`、`gpt-6.2-astra`、`gpt-6.1-terra`、`gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`。Luna は `max`、他は `ultra` まで |
+| Antigravity 1.5.10 | `agy models` の18件。Gemini 4 Carbon / Argon / Hydrogen、Orchestrator 2種、Gemini 3.8 Flash、Claude Sonnet / Opus 4.6 Thinking、GPT-OSS 120B。effort 付き ID と `--effort` の指定をそれぞれ渡せる |
+| Claude Code 2.1.327 | 固定候補は `fable`、`opus`、`sonnet`、`haiku`。CLI が別名を解決する |
+| Oh My Pi 18.2.11 | `omp models openai-codex --no-extensions` の6件。GPT-5.6 の Luna / Sol / Terra と GPT-6 の Astra / Luna / Sol |
+| Cursor Agent 2026.10.19-6bbf2c4 | 検証環境の `cursor-agent models` から現行系列と従来候補の25件を選定。シェルの選択メニューは選択行に合わせて表示範囲を移す |
+
 ### CLI (`scripts/mycmux_agent_cli.py`)
 
 Web 操作: `web-open --url https://chatgpt.com/c/abc --background`、`web-read --tab <id>` (または `--preset <id>`)、`web-close --tab <id>`。結果は JSON で返す。
@@ -249,7 +263,7 @@ python scripts/mycmux_agent_cli.py spawn --target cursor --model composer-2.5 --
 
 Windows は `%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd`、次に PATH 上の `cursor-agent` を調べます。Mac / Linux は PATH、次に `~/.local/bin/cursor-agent` です。`agent` は Grok Build などの同名コマンドと衝突するため使いません。未導入の場合は[公式の導入コマンド](https://cursor.com/docs/cli/installation)を表示して止まり、自動では入れません。
 
-モデルは、2026-10-15 のログイン済みの `cursor-agent models` で確認した ID を `--model` で渡します。Composer 2.5、Grok 4.7 の各段、Claude Opus 5.5 / Sonnet 5.5、GPT-5.6 Sol、Gemini 3.1 Pro が選べます。思考の段階は ID に含まれるため、別の effort は付けません。
+固定候補は、2026-11-18 の `cursor-agent models` で確認した Auto、Composer 2.5、Claude 5 世代、GPT-5.6、Grok 4.7、Gemini 4 と従来の候補を合わせた25件です。一覧にない ID は新規ワークスペースのモデル欄やシェルの起動メニューで入力できます。思考の段階を含む ID を `--model` で渡します。
 
 Windows では Cursor 起動中だけ `SHELL=powershell` にし、Git Bash 由来の `MSYSTEM` / `EXEPATH` を外します。Cursor が取り込んだ Windows 用フックが PowerShell で動き、終了後は元の環境に戻ります。Mac / Linux のシェル指定は変えません。Claude Code、Cursor IDE、Orca の設定は書き換えません。
 

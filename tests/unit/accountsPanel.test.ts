@@ -34,12 +34,12 @@ describe("active account guard", () => {
       panelSource.indexOf("const handleClick = async"),
       panelSource.indexOf("const message =", panelSource.indexOf("const handleClick = async")),
     );
-    expect(handler).toContain("if (row.is_active) return;");
-    expect(panelSource).toContain("disabled={disabled}");
+    expect(handler).toContain('if (provider === "gemini" || row.is_active) return;');
+    expect(panelSource).toMatch(/"data-account-switch": "true"[\s\S]*?\bdisabled,/);
   });
 
   it("leaves an unregistered live login clickable so it can be captured in place", () => {
-    expect(panelSource).toContain("await capture(row.provider)");
+    expect(panelSource).toContain("await capture(provider)");
     // registered && needs_relogin is what disables a row, not "not registered".
     expect(panelSource).toContain("providerBusy || row.needs_relogin");
   });
@@ -49,7 +49,7 @@ describe("titlebar button", () => {
   it("keeps a compact form at narrow widths and exposes the warning reason", () => {
     expect(buttonSource).not.toContain('return "hidden"');
     expect(buttonSource).toContain('return "compact"');
-    expect(buttonSource).toContain("PROVIDER_SHORT.grok");
+    expect(buttonSource).toContain("PROVIDER_ORDER.map((provider) => PROVIDER_SHORT[provider])");
     expect(buttonSource).toContain('role="img"');
     expect(buttonSource).toContain("aria-label={attention}");
   });
@@ -88,7 +88,7 @@ describe("titlebar button", () => {
 
 describe("panel layout", () => {
   it("puts each account on one row of two lines with a provider badge", () => {
-    expect(panelSource).toContain("{PROVIDER_SHORT[row.provider]}");
+    expect(panelSource).toContain("{usageOnly ? row.label : PROVIDER_SHORT[provider]}");
     expect(panelSource).toContain("const windows = displayWindows(row)");
     expect(panelSource).toContain("windows.map(({ key, ...window })");
     // The provider headings the old panel grouped by are gone.
@@ -190,7 +190,7 @@ describe("add account entry points", () => {
     expect(footerSource).not.toContain("capture(");
     // An unregistered row can still be captured in place while the watcher
     // has not caught up yet.
-    expect(panelSource).toContain("await capture(row.provider)");
+    expect(panelSource).toContain("await capture(provider)");
   });
 
   it("offers add buttons and an in-place relogin in the settings panel", () => {
@@ -297,17 +297,48 @@ function countResetMarks(html: string): number {
   return (html.match(/↻/g) ?? []).length;
 }
 
+describe("Gemini usage row", () => {
+  it("shows the agy email, full quota group names and reset hover with no account actions", () => {
+    const resetAt = "2026-11-20T00:00:00Z";
+    const html = renderPanel(usageRow({
+      profile_id: "live:gemini",
+      provider: "gemini",
+      label: "Gemini",
+      email: "agy@example.test",
+      registered: false,
+      model_windows: [
+        { key: "Pro", window: stat(75, resetAt) },
+        { key: "Flash", window: stat(40, resetAt) },
+        { key: "Claude", window: { pct: 90, resets_at: "" } },
+      ],
+    }));
+    const holder = document.createElement("div");
+    holder.innerHTML = html;
+    const row = holder.querySelector('[title="agy@example.test"]')!;
+    expect(row.tagName).toBe("DIV");
+    expect(row.textContent).toContain("Gemini");
+    expect(row.textContent).toContain("agy@example.test");
+    expect(holder.querySelector("[data-account-switch]")).toBeNull();
+    expect(holder.querySelector("[data-account-subscription]")).toBeNull();
+    for (const [group, pct] of [["Pro", "75%"], ["Flash", "40%"], ["Claude", "90%"]]) {
+      const meter = [...row.querySelectorAll("span[title]")].find((span) => span.getAttribute("title")!.startsWith(group));
+      expect(meter?.textContent).toBe(group + pct);
+      expect(meter?.getAttribute("title")).toMatch(group === "Claude" ? /^Claude$/ : /リセット/);
+    }
+  });
+});
+
 describe("shared reset mark (render)", () => {
   const sharedIso = "2026-08-27T00:00:00Z";
 
-  it("T2: draws exactly one ↻ with the short date on a Grok-shaped shared row", () => {
+  it("draws only Grok's 7d meter and reset even when a product is exhausted", () => {
     const html = renderPanel(
       usageRow({
         provider: "grok",
         email: "grok-user@example.test",
         seven_day: stat(65, sharedIso),
         model_windows: [
-          { key: "GrokBuild", window: stat(59, sharedIso) },
+          { key: "GrokBuild", window: stat(100, sharedIso) },
           { key: "GrokHeavy", window: stat(4, sharedIso) },
           { key: "GrokFast", window: stat(2, sharedIso) },
         ],
@@ -317,6 +348,9 @@ describe("shared reset mark (render)", () => {
     expect(countResetMarks(html)).toBe(1);
     expect(html).toContain(`↻${label}`);
     expect(html).toContain(SHARED_RESET_TITLE);
+    expect(html).toContain(">7d<");
+    expect(html).not.toContain("GrokBuild");
+    expect(html).not.toContain("一部モデル制限");
   });
 
   it("T3: draws one ↻ per window when the dates differ, and no shared mark", () => {
@@ -339,7 +373,7 @@ describe("shared reset mark (render)", () => {
   it("T4: keeps one shared ↻ in tight rows and draws none when tight dates differ", () => {
     const sharedHtml = renderPanel(
       usageRow({
-        provider: "grok",
+        provider: "codex",
         seven_day: stat(65, sharedIso),
         model_windows: [
           { key: "a", window: stat(59, sharedIso) },

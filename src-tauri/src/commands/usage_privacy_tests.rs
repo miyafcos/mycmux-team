@@ -2,7 +2,10 @@
 //! failures -> physical OAuth/diagnostic files and OS stderr. No CAPTURE hook.
 use super::*;
 use crate::usage::logging::ApiUsageCommand;
+use chrono::DateTime;
 use std::{fs, path::Path, process::Command};
+
+const NO_GEMINI: Option<GeminiRequest<'static, oauth_gemini::Antigravity>> = None;
 
 const MARKERS: &[&str] = &[
     "PRIVATE-upstream-body", "PRIVATE-refresh-body", "PRIVATE-refresh-code",
@@ -44,6 +47,191 @@ fn fixture(base: &Path, endpoint: String, tag: &str) -> (UsageApp, String) {
     (app, profile_id)
 }
 
+#[derive(Default)]
+struct GeminiFixture {
+    reads: std::sync::atomic::AtomicUsize,
+    posts: std::sync::atomic::AtomicUsize,
+    stalled: bool,
+    expiry: Option<DateTime<Utc>>,
+    clock: Mutex<Option<DateTime<Utc>>>,
+    started: tokio::sync::Notify,
+}
+
+impl GeminiFixture {
+    fn request(&self) -> Option<GeminiRequest<'_, Self>> {
+        Some(GeminiRequest { source: self, after_switch: false })
+    }
+
+    fn calls(&self) -> (usize, usize) {
+        (self.reads.load(Ordering::Relaxed), self.posts.load(Ordering::Relaxed))
+    }
+}
+
+impl oauth_gemini::Source for GeminiFixture {
+    fn now(&self) -> DateTime<Utc> {
+        self.clock.lock().unwrap().unwrap_or_else(Utc::now)
+    }
+
+    fn credentials(&self) -> Result<oauth_gemini::Credentials, oauth_gemini::UsageError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let expiry = self.expiry.map(|at| at.to_rfc3339())
+            .unwrap_or_else(|| "2099-01-01T00:00:00Z".into());
+        oauth_gemini::parse_credentials(&serde_json::to_vec(&serde_json::json!({
+            "token":{"access_token":"fixture-only","expiry":expiry},
+            "id_token_email":"gemini@example.test"
+        })).unwrap())
+    }
+
+    async fn post(&self, method: &'static str, _: &str, _: serde_json::Value)
+        -> Result<serde_json::Value, oauth_gemini::UsageError>
+    {
+        self.posts.fetch_add(1, Ordering::Relaxed);
+        self.started.notify_one();
+        if self.stalled { std::future::pending::<()>().await; }
+        Ok(if method == "loadCodeAssist" { serde_json::json!({}) }
+            else { serde_json::json!({"models":{"gemini-4-pro":{"quotaInfo":{"remainingFraction":0.5}}}}) })
+    }
+}
+
+fn empty_inventory(base: &Path) -> UsageApp {
+    let (app, _) = fixture(base, String::new(), "gemini");
+    fs::write(base.join("cli_accounts.json"), r#"{"version":1,"profiles":[],"active":{}}"#).unwrap();
+    app
+}
+
+#[test]
+fn gemini_profile_gate_uses_initialized_profile_at_the_command() {
+    const CHILD: &str = "MYCMUX_GEMINI_PROFILE_TEST_CHILD";
+    if let Ok(mode) = std::env::var(CHILD) {
+        crate::test_profile::init_from_args().unwrap();
+        let isolated = mode == "isolated";
+        assert_eq!(crate::test_profile::name(), isolated.then_some("fix2-gemini"));
+        let base = tempfile::tempdir().unwrap();
+        let source = GeminiFixture::default();
+        let state = UsageState::new();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            for command in [None, Some(ApiUsageCommand::Switch)] {
+                let report = get_account_usage_command(empty_inventory(base.path()), &state, Some(true),
+                    command, source.request()).await.unwrap();
+                let row = report.accounts.iter().find(|row| row.provider == UsageProvider::Gemini).unwrap();
+                assert_eq!(source.calls(), if isolated { (0, 0) } else { (1, 2) });
+                assert_eq!(row.state, if isolated { UsageRowState::Unsupported } else { UsageRowState::Ok });
+            }
+        });
+        return;
+    }
+    for mode in ["normal", "isolated"] {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args(["gemini_profile_gate_uses_initialized_profile_at_the_command", "--nocapture"]).env(CHILD, mode);
+        if mode == "isolated" {
+            child.args(["--", "--profile", "fix2-gemini"]);
+        }
+        let output = child.output().unwrap();
+        assert!(output.status.success(), "{mode} child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+}
+
+#[tokio::test]
+async fn gemini_expiry_is_checked_after_the_inventory_finishes() {
+    let mut results = Vec::new();
+    for cache_only in [false, true] {
+        let base = tempfile::tempdir().unwrap();
+        let state = UsageState::new();
+        let before_expiry = DateTime::from_timestamp(946_684_800, 0).unwrap();
+        let expiry = before_expiry + chrono::TimeDelta::seconds(1);
+        let source = GeminiFixture {
+            expiry: Some(expiry),
+            clock: Mutex::new(Some(before_expiry)),
+            ..GeminiFixture::default()
+        };
+        let command = cache_only.then_some(ApiUsageCommand::Switch);
+        if cache_only {
+            get_account_usage_command(empty_inventory(base.path()), &state, None, None,
+                source.request()).await.unwrap();
+        }
+        // The inventory waits on this lock while Gemini completes independently.
+        let hold_inventory = state.deferred_priority.lock().await;
+        let report = get_account_usage_command(empty_inventory(base.path()), &state, None,
+            command, source.request());
+        tokio::pin!(report);
+        tokio::select! {
+            biased;
+            _ = &mut report => panic!("the inventory should still be held"),
+            _ = std::future::ready(()) => {}
+        }
+        let (live_revision, live_row) = state.gemini_usage.snapshot().unwrap().report_at(before_expiry);
+        assert_eq!(live_row.fetched_at, before_expiry.to_rfc3339());
+        assert!(!live_row.model_windows.is_empty(), "cache_only={cache_only}");
+        assert_eq!(source.calls(), (1, 2));
+        *source.clock.lock().unwrap() = Some(expiry);
+        drop(hold_inventory);
+        let mut report = report.await.unwrap();
+        let row = report.accounts.pop().unwrap();
+        assert_eq!(source.calls(), (1, 2), "expiry at report time must not read or post again");
+        assert_eq!(report.gemini_revision, Some(live_revision + 1));
+        assert_eq!(report.generated_at, expiry.to_rfc3339());
+        assert_eq!(row.fetched_at, report.generated_at);
+        results.push((cache_only, row));
+    }
+    for (cache_only, row) in results {
+        assert_eq!(row.error_code.as_deref(), Some("usage.error.gemini_expired"), "cache_only={cache_only}");
+        assert_eq!(row.email.as_deref(), Some("gemini@example.test"));
+        assert!(row.model_windows.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn gemini_switch_uses_only_the_cache_even_while_a_poll_waits_for_http() {
+    let base = tempfile::tempdir().unwrap();
+    let state = UsageState::new();
+    let slow = GeminiFixture { stalled: true, ..GeminiFixture::default() };
+    let poll = get_account_usage_command(empty_inventory(base.path()), &state, None, None, slow.request());
+    tokio::pin!(poll);
+    tokio::select! {
+        _ = &mut poll => panic!("poll must be waiting for the fixture HTTP response"),
+        _ = slow.started.notified() => {}
+    }
+    let source = GeminiFixture::default();
+    for command in [None, Some(ApiUsageCommand::Switch)] {
+        let request = GeminiRequest { source: &source, after_switch: command.is_none() };
+        let switched = tokio::time::timeout(std::time::Duration::from_millis(500),
+            get_account_usage_command(empty_inventory(base.path()), &state, None,
+                command, Some(request))).await.unwrap().unwrap();
+        assert!(switched.accounts.iter().all(|row| row.provider != UsageProvider::Gemini));
+    }
+    assert_eq!(source.calls(), (0, 0));
+
+    let state = UsageState::new();
+    let report = get_account_usage_command(empty_inventory(base.path()), &state, None, None, source.request()).await.unwrap();
+    let switched = get_account_usage_command(empty_inventory(base.path()), &state, None,
+        Some(ApiUsageCommand::Switch), slow.request()).await.unwrap();
+    assert_eq!(switched.accounts.last().unwrap().email, report.accounts.last().unwrap().email);
+    assert_eq!(slow.calls(), (1, 1));
+}
+
+#[tokio::test]
+async fn gemini_is_available_when_other_account_inventory_cannot_be_read() {
+    let base = tempfile::tempdir().unwrap();
+    let app = empty_inventory(base.path());
+    fs::write(base.path().join("cli_accounts.json"), "broken inventory").unwrap();
+    let state = UsageState::new();
+    let source = GeminiFixture::default();
+    let report = get_account_usage_command(app, &state, None, None, source.request()).await.unwrap();
+    let row = report.accounts.iter().find(|row| row.provider == UsageProvider::Gemini).unwrap();
+    assert_eq!(row.state, UsageRowState::Ok);
+    assert_eq!(row.email.as_deref(), Some("gemini@example.test"));
+    assert_eq!(report.inventory_error.as_deref(), Some("cli_account.error.accounts_unavailable"));
+    let api = get_account_usage_command(empty_inventory(base.path()), &state, None,
+        Some(ApiUsageCommand::Usage), source.request());
+    assert_eq!(source.calls(), (1, 2));
+    // The inventory API still errors on an unreadable inventory without touching Gemini.
+    fs::write(base.path().join("cli_accounts.json"), "broken inventory").unwrap();
+    assert_eq!(api.await.unwrap_err(), "cli_account.error.accounts_unavailable");
+    assert_eq!(source.calls(), (1, 2));
+}
+
 fn owner(account: &str) -> String {
     serde_json::json!({"account":{"uuid":account, "email":"PRIVATE-owner@example.invalid"},
         "organization":{"uuid":"org-a"}}).to_string()
@@ -82,7 +270,7 @@ async fn run_failures(root: &Path, api: bool) {
             // The actual command implementation installs the invocation policy.
             // These are the three API usage IPCs, including switch/reset followups.
             let report = tokio::time::timeout(std::time::Duration::from_secs(5),
-                get_account_usage_command(app, &state, Some(false), policy)).await.unwrap().unwrap();
+                get_account_usage_command(app, &state, Some(false), policy, NO_GEMINI)).await.unwrap().unwrap();
             assert_eq!(report.accounts.len(), 1);
             assert_eq!(report.accounts[0].profile_id, id);
             assert_eq!(report.accounts[0].error_code.as_deref(), Some(match failure {
@@ -183,7 +371,7 @@ async fn run_ineligible_api_then_pc(root: &Path) {
         let (app, id) = fixture(&base, endpoint.clone(), reason);
         let state = UsageState::new();
         let report = get_account_usage_command(app, &state, Some(false),
-            Some(ApiUsageCommand::Usage)).await.unwrap();
+            Some(ApiUsageCommand::Usage), NO_GEMINI).await.unwrap();
         assert_eq!(report.accounts.len(), 1);
         assert_eq!(report.accounts[0].state, UsageRowState::Ok);
         assert!(!report.accounts[0].reset_tickets.as_ref().unwrap().usable_now);
@@ -193,7 +381,7 @@ async fn run_ineligible_api_then_pc(root: &Path) {
         for _ in 0..2 {
             stale_reset_usage(&state, &id).await;
             let (app, _) = fixture(&base, endpoint.clone(), reason);
-            let report = get_account_usage_command(app, &state, Some(false), None).await.unwrap();
+            let report = get_account_usage_command(app, &state, Some(false), None, NO_GEMINI).await.unwrap();
             assert_eq!(report.accounts[0].state, UsageRowState::Ok);
             let logs = physical_logs(&base);
             let count = logs.matches("claude_reset_ticket_ineligible").count();

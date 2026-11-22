@@ -2,6 +2,8 @@ import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import type { PaneTab, Workspace } from "../../types";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import { codexRestoreNoticeEpoch, ptyExitConfirmed } from "../../lib/codexRestoreLifecycle";
+import { isRestorableTab } from "../../lib/tabLifecycle";
 import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
 import { aiSettingsStrings } from "../settings/settingsStrings";
 import {
@@ -168,10 +170,6 @@ const STATUS_LINE_PATTERNS: readonly RegExp[] = [
 
 function isTerminalTab(tab: PaneTab): boolean {
   return tab.type === undefined || tab.type === "terminal";
-}
-
-function isDeadReason(reason: string | null): boolean {
-  return reason === "no_live_pty_session" || reason === "snapshot_unavailable";
 }
 
 export function isIgnoredPromptDecoration(line: string): boolean {
@@ -493,11 +491,15 @@ export async function scanTabs(
           lastOutputAt: source.lastOutputBySession[tab.sessionId] ?? null,
         };
 
-        if (isTerminalTab(tab) && isDeadReason(processStatusReason)) {
+        if (isTerminalTab(tab) && (!source.processMetadata[tab.sessionId] || !isRestorableTab(tab))) {
+          // A restored tab may never have opened a PTY. Only a confirmed exit
+          // of this tab's current PTY makes it safe to preselect for cleanup.
+          const exited = processStatusReason === "no_live_pty_session" && isRestorableTab(tab)
+            && ptyExitConfirmed(tab.sessionId, codexRestoreNoticeEpoch(tab.sessionId));
           tabs.push({
             ...base,
-            category: "DEAD",
-            lockReasons: [],
+            category: exited ? "DEAD" : "LOCKED",
+            lockReasons: exited ? [] : ["buffer_unavailable"],
             unnamed: false,
             tail: [],
           });
@@ -583,13 +585,7 @@ export async function scanNamingContext(): Promise<NamingPaneGroup[]> {
         : pane.tabs[0]?.id;
       const tabs: NamingTab[] = [];
       for (const tab of pane.tabs) {
-        if (!isTerminalTab(tab)) continue;
-        const reason = processStatusReasonForTab(
-          tab.type,
-          source.processMetadata[tab.sessionId],
-          source.processMetadataAvailable,
-        );
-        if (isDeadReason(reason)) continue;
+        if (!isTerminalTab(tab) || !source.processMetadata[tab.sessionId]) continue;
         let tail: string[] = [];
         try {
           tail = await source.readTail(tab.sessionId, TAB_NAMING_TAIL_LINES);

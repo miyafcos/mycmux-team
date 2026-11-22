@@ -9,16 +9,14 @@ use crate::cli_accounts::{
     CliAccountProfile, CliLiveLogin, CliProvider, ForeignTokenOwner, SnapshotUpdate,
 };
 use crate::usage::{
-    credentials, oauth_claude, oauth_codex, oauth_grok, refresh, AccountUsageReport, CachedWindows, Cooldown,
-    ProfileUsage, UsageRowState, UsageState, USAGE_CACHE_TTL_MS,
+    credentials, oauth_claude, oauth_codex, oauth_gemini, oauth_grok, refresh, AccountUsageReport, CachedWindows, Cooldown,
+    ProfileUsage, UsageProvider, UsageRowState, UsageState, ERROR_DEFERRED, ERROR_RATE_LIMITED, USAGE_CACHE_TTL_MS,
 };
 use crate::usage::reset_tickets::{self, ResetTickets, CachedCredits, UnsettledReset};
 use crate::usage::reset_tickets::{ResetStep, ResetTicketOutcome, ResetTicketOutcomeKind};
 use tauri::Manager;
 use crate::usage::subscription::{self, CachedSubscription, SubscriptionSource};
 
-const COOLDOWN_BASE_MS: i64 = 300_000;
-const COOLDOWN_MAX_MS: i64 = 1_800_000;
 /// Ceiling on outbound requests per poll, counted separately for each provider
 /// (see `RoundBudget`). Counted in requests, not rows: a row that has to
 /// refresh spends two (refresh + usage), and one that refreshes after a 401
@@ -40,7 +38,6 @@ const DEFERRED_STALE_MAX_MS: i64 = 600_000;
 const REMEMBERED_STATUS_MAX_MS: i64 = 600_000;
 const ERROR_FOREIGN_TOKEN: &str = "usage.error.foreign_token";
 const ERROR_LIVE_TOKEN_FOREIGN: &str = "usage.error.live_token_foreign";
-const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
 const ERROR_NEEDS_RELOGIN: &str = "usage.error.needs_relogin";
 const ERROR_TOKEN_EXPIRED_ACTIVE: &str = "usage.error.token_expired_active";
 const ERROR_CODEX_UNSUPPORTED: &str = "usage.error.codex_unsupported";
@@ -53,7 +50,6 @@ const ERROR_NETWORK: &str = "usage.error.network";
 const ERROR_UPSTREAM: &str = "usage.error.upstream";
 const ERROR_SNAPSHOT_UNAVAILABLE: &str = "usage.error.snapshot_unavailable";
 const ERROR_SNAPSHOT_CONFLICT: &str = "usage.error.snapshot_conflict";
-const ERROR_DEFERRED: &str = "usage.error.deferred";
 
 /// Anthropic rate-limits by IP, so a second 429 in the same round is evidence
 /// about the address rather than about one account. Pausing the whole provider
@@ -162,7 +158,7 @@ fn profile_usage(
 ) -> ProfileUsage {
     ProfileUsage {
         profile_id: row.profile_id.clone(),
-        provider: row.provider,
+        provider: UsageProvider::Cli(row.provider),
         label: row.label.clone(),
         email: row.email.clone(),
         plan: row.plan.clone(),
@@ -1008,15 +1004,58 @@ async fn claim_codex_verified(
 pub async fn get_account_usage(
     app: tauri::AppHandle, state: tauri::State<'_, UsageState>,
     refresh_metadata: Option<bool>, api_command: Option<crate::usage::logging::ApiUsageCommand>,
+    after_switch: Option<bool>,
 ) -> Result<AccountUsageReport, String> {
-    get_account_usage_command(UsageApp::Native(app), &state, refresh_metadata, api_command).await
+    get_account_usage_command(UsageApp::Native(app), &state, refresh_metadata, api_command,
+        Some(GeminiRequest {
+            source: &oauth_gemini::Antigravity,
+            after_switch: after_switch == Some(true),
+        })).await
+}
+
+struct GeminiRequest<'a, S> {
+    source: &'a S,
+    after_switch: bool,
 }
 
 async fn get_account_usage_command(
     app: UsageApp, state: &UsageState, refresh_metadata: Option<bool>,
     api_command: Option<crate::usage::logging::ApiUsageCommand>,
+    gemini: Option<GeminiRequest<'_, impl oauth_gemini::Source>>,
 ) -> Result<AccountUsageReport, String> {
-    crate::usage::logging::scope(api_command.is_some(), get_account_usage_inner(app, state, refresh_metadata)).await
+    use crate::usage::logging::{scope, ApiUsageCommand};
+    let inventory = scope(api_command.is_some(), get_account_usage_inner(app, state, refresh_metadata));
+    let Some(gemini) = gemini.filter(|_| matches!(api_command, None | Some(ApiUsageCommand::Switch))) else {
+        return inventory.await;
+    };
+    let isolated = crate::test_profile::is_active();
+    let now = || gemini.source.now();
+    let gemini_snapshot = async {
+        if isolated {
+            None
+        } else if gemini.after_switch || matches!(api_command, Some(ApiUsageCommand::Switch)) {
+            state.gemini_usage.snapshot()
+        } else {
+            Some(state.gemini_usage.fetch_snapshot_with(gemini.source, &now, refresh_metadata == Some(true)).await)
+        }
+    };
+    let (inventory, gemini_snapshot) = tokio::join!(inventory, gemini_snapshot);
+    let mut report = inventory.unwrap_or_else(|error| AccountUsageReport {
+        accounts: Vec::new(),
+        generated_at: String::new(),
+        inventory_error: Some(error),
+        gemini_revision: None,
+    });
+    let now = now();
+    if isolated {
+        report.accounts.push(oauth_gemini::unsupported_row(now));
+    } else if let Some(snapshot) = gemini_snapshot {
+        let (revision, row) = snapshot.report_at(now);
+        report.gemini_revision = Some(revision);
+        report.accounts.push(row);
+    }
+    report.generated_at = now.to_rfc3339();
+    Ok(report)
 }
 
 async fn get_account_usage_inner(
@@ -1203,6 +1242,8 @@ async fn get_account_usage_inner(
             usage
         }).collect(),
         generated_at: Utc::now().to_rfc3339(),
+        inventory_error: None,
+        gemini_revision: None,
     })
 }
 
@@ -2466,10 +2507,7 @@ async fn refresh_failure(
 
 pub(crate) async fn apply_429_cooldown(state: &UsageState, account_id: &str, now_ms: i64) {
     let mut cooldowns = state.cooldowns.lock().await;
-    let backoff_ms = cooldowns
-        .get(account_id)
-        .map(|cooldown| cooldown.backoff_ms.saturating_mul(2).min(COOLDOWN_MAX_MS))
-        .unwrap_or(COOLDOWN_BASE_MS);
+    let backoff_ms = crate::usage::next_429_backoff_ms(cooldowns.get(account_id).map(|entry| entry.backoff_ms));
     cooldowns.insert(
         account_id.to_string(),
         Cooldown {
@@ -4074,7 +4112,7 @@ mod tests {
         assert!(seen >= PROVIDER_PAUSE_THRESHOLD);
         apply_429_cooldown(&state, &key, now).await;
         let paused = active_cooldown(&state, &key, now).await.expect("paused");
-        assert_eq!(paused.until_ms, now + COOLDOWN_BASE_MS);
+        assert_eq!(paused.until_ms, now + 300_000);
         // Other providers are unaffected.
         assert!(
             active_cooldown(&state, &provider_cooldown_key(CliProvider::Codex), now)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -41,6 +42,10 @@ WINDOWS_KITS_BIN = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
 MIN_BUILD_RAM_GB = 5.0
 LOW_RAM_JOBS_GB = 12.0
 RAM_POLL_SECONDS = 60
+TEST_SUMMARY = re.compile(
+    r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; "
+    r"\d+ ignored; \d+ measured; \d+ filtered out(?:; finished in .+)?"
+)
 
 
 def available_ram_gb() -> float | None:
@@ -160,6 +165,26 @@ def embed_manifest(exe: Path, mt_exe: Path) -> None:
         sys.exit(f"mt.exe failed for {exe.name}:\n{proc.stdout}\n{proc.stderr}")
 
 
+def run_test_binary(exe: Path) -> tuple[int, tuple[int, int] | None]:
+    totals = None
+    failed = 0
+    with subprocess.Popen(
+        [str(exe)],
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            summary = TEST_SUMMARY.fullmatch(line.rstrip("\r\n"))
+            if summary:
+                failed = max(failed, int(summary[2]))
+                totals = (int(summary[1]), failed)
+        return proc.wait(), totals
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -186,6 +211,8 @@ def main() -> int:
     print(f"using {mt_exe}", flush=True)
 
     failed: list[str] = []
+    tests_run = 0
+    has_lib_summary = False
     for exe in executables:
         if not exe.is_file():
             failed.append(f"{exe} (missing)")
@@ -193,14 +220,23 @@ def main() -> int:
         embed_manifest(exe, mt_exe)
         print(f"\n=== running {exe.name} ===", flush=True)
         # cargo を介さず直接実行する (cargo test 経由だと再リンクで manifest が剥がれる)
-        result = subprocess.run([str(exe)])
-        if result.returncode != 0:
-            failed.append(f"{exe.name} (exit {result.returncode})")
+        code, totals = run_test_binary(exe)
+        if totals is not None:
+            tests_run += sum(totals)
+            has_lib_summary |= exe.stem.partition("-")[0] == "mycmux_lib"
+        if code != 0:
+            failed.append(f"{exe.name} (exit {code})")
+        elif totals is not None and totals[1] > 0:
+            failed.append(f"{exe.name} (summary reports {totals[1]} failed)")
 
+    if tests_run == 0:
+        failed.append("no Rust tests ran")
+    if not has_lib_summary:
+        failed.append("missing mycmux_lib test summary")
     if failed:
         print("\nFAILED: " + ", ".join(failed), file=sys.stderr)
         return 1
-    print(f"\nall {len(executables)} test binaries passed", flush=True)
+    print(f"\nall {len(executables)} test binaries passed ({tests_run} Rust tests ran)", flush=True)
     return 0
 
 

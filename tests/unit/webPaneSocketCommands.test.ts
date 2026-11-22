@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
+import { evalWebPane } from "../../src/components/workspace/webPaneApi";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
@@ -392,6 +393,41 @@ describe("web automation routing", () => {
     expect(tauriMocks.invoke).toHaveBeenCalledTimes(2);
   });
 
+  it("marks direct target-only evaluations as automation", async () => {
+    await evalWebPane("browser", 'return window.__mycmux.target({"target":{"ref":"r1"}});', 5000, true);
+
+    const [command, args] = tauriMocks.invoke.mock.calls[0];
+    expect(command).toBe("webpane_eval");
+    expect(args?.direct).toBe(true);
+    expect(args?.automation ?? true).toBe(true);
+  });
+
+  it("marks the browser tab while preparing a trusted click that fails on a disabled target", async () => {
+    tauriMocks.invoke.mockRejectedValueOnce(new Error("target is disabled"));
+
+    await expect(handleSocketCommand("web.click", { tabId: "browser", selector: "#disabled", trusted: true }))
+      .rejects.toThrow("target is disabled");
+
+    expect(tauriMocks.invoke).toHaveBeenCalledTimes(1);
+    const [command, args] = tauriMocks.invoke.mock.calls[0];
+    expect(command).toBe("webpane_eval");
+    expect(args).toMatchObject({ tabId: "browser", direct: true });
+    expect(args?.automation ?? true).toBe(true);
+  });
+
+  it("exempts internal reads but marks all target preparation", async () => {
+    tauriMocks.invoke.mockResolvedValueOnce({ value: { ready: true, url: "https://example.test/" } });
+    await handleSocketCommand("web.wait", { tabId: "browser" });
+    await handleSocketCommand("web.click", { tabId: "browser", ref: "r1", trusted: true });
+    await handleSocketCommand("web.key", { tabId: "browser", key: "a", trusted: true });
+    await handleSocketCommand("web.key", { tabId: "browser", ref: "r1", key: "a", trusted: true });
+    await handleSocketCommand("web.eval", { tabId: "browser", script: "return 42", direct: true, automation: false });
+    const evaluations = tauriMocks.invoke.mock.calls.filter(([command]) => command === "webpane_eval");
+    expect(evaluations.map(([, args]) => [args?.direct, args?.automation])).toEqual([
+      [true, false], [true, undefined], [true, false], [true, undefined], [undefined, undefined],
+    ]);
+  });
+
   it("resolves a ref to CSS viewport coordinates for trusted click", async () => {
     await handleSocketCommand("web.click", { tabId: "browser", ref: "r1", trusted: true, clickCount: 2 });
     expect(tauriMocks.invoke).toHaveBeenNthCalledWith(1, "webpane_eval", { tabId: "browser", script: 'return window.__mycmux.target({"target":{"ref":"r1"}});', timeoutMs: 5000, direct: true });
@@ -480,7 +516,7 @@ describe("web automation routing", () => {
 
   it("binds an unaddressed trusted key to the current generation", async () => {
     await handleSocketCommand("web.key", {tabId:"browser", key:"Enter", trusted:true});
-    expect(tauriMocks.invoke).toHaveBeenNthCalledWith(1, "webpane_eval", {tabId:"browser", script:"return window.__mycmux.generation;", timeoutMs:5000, direct:true});
+    expect(tauriMocks.invoke).toHaveBeenNthCalledWith(1, "webpane_eval", {tabId:"browser", script:"return window.__mycmux.generation;", timeoutMs:5000, direct:true, automation:false});
     expect(tauriMocks.invoke).toHaveBeenLastCalledWith("webpane_input_trusted", {...nativeBudgetExpectation("web.key"), tabId:"browser", action:{kind:"key", key:"Enter", expectedGeneration:123}});
   });
 

@@ -8,7 +8,7 @@ use shared_library::shared_library;
 use std::ffi::OsString;
 use std::io::Error as IoError;
 use std::os::windows::ffi::OsStringExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle};
 use std::path::Path;
 use std::sync::Mutex;
 use std::{mem, ptr};
@@ -109,7 +109,7 @@ impl PsuedoCon {
         Ok(())
     }
 
-    pub fn spawn_command(&self, cmd: CommandBuilder) -> anyhow::Result<WinChild> {
+    pub fn spawn_command(&self, cmd: CommandBuilder, job: Option<BorrowedHandle<'_>>) -> anyhow::Result<WinChild> {
         let mut si: STARTUPINFOEXW = unsafe { mem::zeroed() };
         si.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
         // Explicitly set the stdio handles as invalid handles otherwise
@@ -127,8 +127,13 @@ impl PsuedoCon {
         si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
         si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
 
-        let mut attrs = ProcThreadAttributeList::with_capacity(1)?;
+        // Keep the job-handle array live until the attribute list is destroyed.
+        let jobs = job.map(|handle| [handle.as_raw_handle() as HANDLE]);
+        let mut attrs = ProcThreadAttributeList::with_capacity(if jobs.is_some() { 2 } else { 1 })?;
         attrs.set_pty(self.con)?;
+        if let Some(jobs) = &jobs {
+            attrs.set_jobs(jobs)?;
+        }
         si.lpAttributeList = attrs.as_mut_ptr();
 
         let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };

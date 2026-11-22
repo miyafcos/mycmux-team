@@ -1,6 +1,9 @@
+import { beginLayoutOperation } from "../layoutQuit";
+
 type Phase = "idle" | "moving" | "restoring";
 let phase: Phase = "idle";
 let phaseOwner: string | null = null;
+let finishLayoutOperation: (() => void) | undefined;
 export type TearoutRefusalSource = "band" | "pointer" | "phase" | "observed_move" | "incoming"
   | "backend_pre_ownership" | "backend_release" | "backend_transfer";
 const operationStarts = new Set<() => void>();
@@ -12,14 +15,14 @@ const observedMoves = new Set<string>();
 const finishedMoves = new Set<string>();
 // A receiver's restored store is provisional until the source completes the
 // transaction. Pointer-up and release escrow cleanup cannot unlock it.
-const incomingTransfers = new Set<string>();
+const incomingTransfers = new Map<string, () => void>();
 const displayActivity = new Set<string>();
 const displayListeners = new Set<() => void>();
 let displayBusy = false;
 export const tearoutDisplayBusy = (): boolean => tearoutOperationBusy() || displayActivity.size > 0;
 export const tearoutDisplayReasons = () => ({ phase, observedMoves: observedMoves.size,
   incomingTransfers: incomingTransfers.size, displayActivity: [...displayActivity].sort() });
-export const incomingTearoutTokens = (): string[] => [...incomingTransfers];
+export const incomingTearoutTokens = (): string[] => [...incomingTransfers.keys()];
 function notifyDisplay(): void {
   const next = tearoutDisplayBusy();
   if (next === displayBusy) return;
@@ -37,8 +40,20 @@ export function setTearoutDisplayActivity(key: string, active: boolean): void {
   if (active) displayActivity.add(key); else displayActivity.delete(key);
   notifyDisplay();
 }
-export function reserveIncomingTearout(token: string): void { incomingTransfers.add(token); notifyDisplay(); }
-export function finishIncomingTearout(token: string): void { incomingTransfers.delete(token); notifyDisplay(); }
+export function reserveIncomingTearout(token: string): boolean {
+  if (incomingTransfers.has(token)) return true;
+  const finish = beginLayoutOperation();
+  if (!finish) return false;
+  incomingTransfers.set(token, finish);
+  notifyDisplay();
+  return true;
+}
+export function finishIncomingTearout(token: string): void {
+  const finish = incomingTransfers.get(token);
+  incomingTransfers.delete(token);
+  notifyDisplay();
+  finish?.();
+}
 
 /** A local refusal made before this request owns or changes anything. */
 export class LocalTearoutRefusal extends Error {
@@ -55,7 +70,7 @@ export function localTearoutRefusal(): LocalTearoutRefusal | null {
   return current === "idle" ? null : new LocalTearoutRefusal(current,
     current === "moving" && incomingTransfers.size ? "reservation" : "overlap",
     phase !== "idle" ? "phase" : observedMoves.size ? "observed_move" : "incoming",
-    phase !== "idle" ? phaseOwner : (observedMoves.values().next().value ?? incomingTransfers.values().next().value ?? null));
+    phase !== "idle" ? phaseOwner : (observedMoves.values().next().value ?? incomingTransfers.keys().next().value ?? null));
 }
 // The child also sees moves started by another WebView. Receiver-only samples
 // do not lock an unrelated window's local operations.
@@ -74,6 +89,9 @@ export function finishObservedTearoutMove(id: string): void {
 export function clearObservedTearoutMoves(): void { observedMoves.clear(); finishedMoves.clear(); notifyDisplay(); }
 export function beginTearoutOperation(owner?: string): boolean {
   if (tearoutOperationBusy()) return false;
+  const finish = beginLayoutOperation();
+  if (!finish) return false;
+  finishLayoutOperation = finish;
   phase = "moving";
   phaseOwner = owner ?? null;
   for (const listener of operationStarts) {
@@ -82,4 +100,11 @@ export function beginTearoutOperation(owner?: string): boolean {
   notifyDisplay(); return true;
 }
 export function restoringTearoutOperation(): void { phase = "restoring"; notifyDisplay(); }
-export function endTearoutOperation(): void { phase = "idle"; phaseOwner = null; notifyDisplay(); }
+export function endTearoutOperation(): void {
+  const finish = finishLayoutOperation;
+  finishLayoutOperation = undefined;
+  phase = "idle";
+  phaseOwner = null;
+  notifyDisplay();
+  finish?.();
+}

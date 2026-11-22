@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { appendPresendLine } from "../../lib/presendReading";
+import { usePresendReading } from "./usePresendReading";
+import { PresendReadingPanel } from "./PresendReadingPanel";
 
 import {
   buildComposerPayload,
@@ -49,10 +52,12 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
   const clearDraft = useComposerStore((state) => state.clearDraft);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const appendedCaret = useRef<number | null>(null);
   /** True between issuing an adopt's erase and that erase landing. */
   const adoptingRef = useRef(false);
 
   const resolved = resolveComposerTarget(target);
+  const presend = usePresendReading(sessionId, draft, resolved, target);
   // The badge names the agent; the payload follows the input shape it shares.
   const label = TARGET_LABEL[resolveComposerAgentLabelKind(target)];
   const payload = buildComposerPayload({ text: draft, target: resolved });
@@ -74,6 +79,27 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
     window.addEventListener("mycmux:composer-focus", focus);
     return () => window.removeEventListener("mycmux:composer-focus", focus);
   }, [sessionId]);
+
+  useLayoutEffect(() => {
+    if (appendedCaret.current === null) return;
+    const caret = appendedCaret.current;
+    appendedCaret.current = null;
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(caret, caret);
+  }, [draft]);
+
+  const editDraft = (next: string): void => {
+    if (next === (useComposerStore.getState().draftBySession[sessionId] ?? "")) return;
+    presend.recordEdit(next);
+    setDraft(sessionId, next);
+  };
+
+  const appendReading = (kind: "assumption" | "missing", value: string): void => {
+    const current = useComposerStore.getState().draftBySession[sessionId] ?? "";
+    const next = appendPresendLine(current, kind, value);
+    appendedCaret.current = next.length;
+    editDraft(next);
+  };
 
   /** Every byte this composer puts into the pane goes through here. */
   const writeToPane = (text: string, submit = false): Promise<PaneSendOutcome> =>
@@ -201,6 +227,10 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
       data-composer-session={sessionId}
       className="cmux-composer-root"
     >
+      {presend.enabled ? (
+        <PresendReadingPanel reading={presend.reading} pending={presend.pending}
+          tabEnabled={presend.tabEnabled} onToggle={presend.toggle} onAppend={appendReading} />
+      ) : null}
       <div className={`cmux-composer-shell${focused ? " is-focused" : ""}`}>
         <span className="cmux-composer-badge">{label}</span>
         <textarea
@@ -209,7 +239,9 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
           value={draft}
           aria-label={`${label} へ送るメッセージ`}
           placeholder={COMPOSER_PLACEHOLDER}
-          onChange={(event) => setDraft(sessionId, event.target.value)}
+          onChange={(event) => editDraft(event.target.value)}
+          onCompositionStart={presend.compositionStart}
+          onCompositionEnd={presend.compositionEnd}
           onFocus={() => { setFocused(true); adoptPendingLine(); }}
           onBlur={() => setFocused(false)}
           onKeyDown={(event) => {

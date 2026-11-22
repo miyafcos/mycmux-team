@@ -309,7 +309,8 @@ def test_window_registry_commands_are_exposed() -> None:
 
     for snippet in [
         'invoke<string>("open_workspace_window", {',
-        'invoke<void>("publish_window_fragment", { fragment })',
+        'invoke<void>("publish_window_fragment", { fragment, requirePublished })',
+        'invoke<void>("quit_prepared", { fragmentPublished })',
         'invoke<WorkspaceConfig[]>("take_pending_adoption", { label })',
         'invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel })',
         'invoke<WindowFragment[]>("get_window_fragments")',
@@ -412,11 +413,16 @@ def test_registry_reclaims_workspaces_from_a_destroyed_window() -> None:
     start = commands.index("pub fn handle_window_destroyed(")
     end = commands.index("pub fn reclaim_destroyed_window(", start)
     handler = commands[start:end]
-    assert handler.index("take_close_intent(label)") < handler.index("forget_window(label)") < handler.index("} else {") < handler.index("reclaim_destroyed_window(app, label)")
+    close_intent = handler.index("take_close_intent(label)")
+    explicit_close = handler.index("forget_closed_window(label)")
+    crash_branch = handler.index("} else {")
+    assert close_intent < explicit_close < crash_branch < handler.index("reclaim_destroyed_window(app, label)")
     crash = commands[end:]
     assert "all_window_labels(app)" in crash
     assert "rescue_target(label, &live)" in crash
     assert "release_all(label, &target)" in crash
+    assert "forget_window(label)" in crash
+    assert "forget_closed_window(label)" not in crash
     assert "MAIN_WINDOW_LABEL" not in crash
     assert "kill_all" not in crash and "kill_session" not in crash
     assert "emit_to(target.as_str(), WINDOW_ADOPT_EVENT, payload)" in commands

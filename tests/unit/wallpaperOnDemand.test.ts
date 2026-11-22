@@ -93,6 +93,8 @@ describe("a stored wallpaper choice survives the move to on-demand", () => {
     const normalized = normalizeThemeBackground(STORED_WALLPAPER_CHOICE);
     expect(normalized).toEqual({
       mode: "preset",
+      sceneId: "winter-night",
+      completionFireworks: true,
       presetId: "jellyfish",
       imagePath: "",
       imageOpacity: 0.9,

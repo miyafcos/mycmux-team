@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { confirm } from "../../lib/appConfirmation";
 import type { ProfileUsage, WindowStat } from "../../lib/ipc";
 import {
-  PROVIDER_ORDER,
+  SWITCHABLE_PROVIDERS,
   addAccountLabel,
   canSwitchCliAccount,
   cliAccountMessage,
@@ -69,6 +69,10 @@ export function AccountsPanel({
   const generatedAt = useUsageStore((state) => state.generatedAt);
   const ticketHeader = resetTicketHeaderLabel(resetTicketTotals(rows));
   const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const panelRows = rows.map((row) => row.provider === "grok"
+    ? { ...row, five_hour: null, seven_day_sonnet: null, seven_day_opus: null, model_windows: [] }
+    : row);
 
   useEffect(() => {
     if (closing) return;
@@ -148,8 +152,11 @@ export function AccountsPanel({
         </div>
       ) : (
         <div>
-          {groupAccountRows(rows).map((group) => (
+          {groupAccountRows(panelRows.filter((row) => row.provider !== "gemini")).map((group) => (
             <AccountGroup key={group.id} group={group} onClose={onClose} />
+          ))}
+          {rows.filter((row) => row.provider === "gemini").map((row) => (
+            <AccountRow key={row.profile_id} row={row} onClose={onClose} />
           ))}
         </div>
       )}
@@ -260,8 +267,11 @@ function AccountRow({
   row: ProfileUsage;
   onClose: () => void;
 }) {
+  const provider = row.provider;
+  const usageOnly = provider === "gemini";
+  const RowContent = usageOnly ? "div" : "button";
   const busyProfileId = useCliAccountStore(
-    (state) => state.busyByProvider[row.provider],
+    (state) => provider === "gemini" ? null : state.busyByProvider[provider],
   );
   const switchTo = useCliAccountStore((state) => state.switchTo);
   const capture = useCliAccountStore((state) => state.capture);
@@ -269,7 +279,7 @@ function AccountRow({
   const volatilePaneMetadata = usePaneMetadataStore((state) => state.volatileMetadata);
   const providerBusy = busyProfileId !== null;
   const isBusy = busyProfileId === row.profile_id;
-  const tickets = visibleResetTickets(row);
+  const tickets = usageOnly ? null : visibleResetTickets(row);
   const ticketBusy = useResetTicketStore((state) => Boolean(state.inFlight[row.profile_id]));
   const useTicket = useResetTicketStore((state) => state.useTicket);
   const ticketMessage = useResetTicketStore((state) => state.message);
@@ -309,29 +319,29 @@ function AccountRow({
 
   // An unregistered live login is offered as a one-click capture instead of a
   // switch: it is already the account in use, it just is not saved yet.
-  const disabled = row.is_active
+  const disabled = !usageOnly && (row.is_active
     ? true
     : row.registered
       ? providerBusy || row.needs_relogin
-      : providerBusy;
+      : providerBusy);
 
   const handleClick = async () => {
-    if (row.is_active) return;
+    if (provider === "gemini" || row.is_active) return;
     if (!row.registered) {
-      await capture(row.provider);
+      await capture(provider);
       return;
     }
     if (!canSwitchCliAccount(row.is_active, providerBusy, row.needs_relogin))
       return;
     const workspaces = useWorkspaceListStore.getState().workspaces;
-    const count = runningAgentCounts(paneMetadata, workspaces)[row.provider];
-    const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider, volatilePaneMetadata, workspaces);
+    const count = runningAgentCounts(paneMetadata, workspaces)[provider];
+    const paneDetails = runningAgentPaneDetails(paneMetadata, provider, volatilePaneMetadata, workspaces);
     const warning = switchWarningText(
       count,
-      row.provider,
+      provider,
       row.label,
       paneDetails,
-      pinnedAgentCounts(paneMetadata, workspaces)[row.provider],
+      pinnedAgentCounts(paneMetadata, workspaces)[provider],
     );
     const result = await executeCliAccountSwitch(
       row.is_active,
@@ -344,12 +354,12 @@ function AccountRow({
           okLabel: "切り替える",
           cancelLabel: "キャンセル",
         }).catch(() => false),
-      () => switchTo(row.provider, row.profile_id),
+      () => switchTo(provider, row.profile_id),
     );
     if (result && result.warnings.length === 0) onClose();
   };
 
-  const limitLabel = accountLimitLabel(row);
+  const limitLabel = usageOnly ? null : accountLimitLabel(row);
   const message = rowMessage(row);
   const staleNote = staleWindowsNote(row);
   const windows = displayWindows(row);
@@ -361,7 +371,7 @@ function AccountRow({
   const cells = dense === "tight" ? 3 : dense === "snug" ? 5 : 10;
   const sharedReset = sharedResetAt(windows.map((window) => window.stat));
   const sharedResetLabel = sharedReset ? formatResetShort(sharedReset) : "";
-  const collapseReset = Boolean(sharedResetLabel);
+  const collapseReset = !usageOnly && Boolean(sharedResetLabel);
   const action = row.is_active
     ? "使用中"
     : isBusy
@@ -372,11 +382,13 @@ function AccountRow({
 
   return (
     <div ref={containerRef} style={{ position: "relative", borderBottom: "1px solid var(--cmux-border-hairline)" }}>
-    <button
-      data-account-switch="true"
-      type="button"
-      onClick={handleClick}
-      disabled={disabled}
+    <RowContent
+      {...(!usageOnly && {
+        "data-account-switch": "true",
+        type: "button" as const,
+        onClick: handleClick,
+        disabled,
+      })}
       title={row.email ?? row.label}
       style={{
         display: "grid",
@@ -386,13 +398,14 @@ function AccountRow({
         gridTemplateColumns: "minmax(0, 1fr)",
         gap: "var(--cmux-space-1)",
         width: "100%",
+        boxSizing: usageOnly ? "border-box" : undefined,
         padding: "var(--cmux-space-3) var(--cmux-space-5)",
         border: 0,
         background: "none",
         color: "inherit",
         font: "inherit",
         textAlign: "left",
-        cursor: disabled ? "default" : "pointer",
+        cursor: usageOnly || disabled ? "default" : "pointer",
         opacity: disabled && !row.is_active ? 0.6 : 1,
       }}
     >
@@ -412,7 +425,7 @@ function AccountRow({
         }}
       >
         <span
-          aria-hidden="true"
+          aria-hidden={!usageOnly}
           style={{
             flexShrink: 0,
             fontSize: "var(--cmux-font-size-xs)",
@@ -420,9 +433,9 @@ function AccountRow({
             color: "var(--cmux-text-tertiary)",
           }}
         >
-          {PROVIDER_SHORT[row.provider]}
+          {usageOnly ? row.label : PROVIDER_SHORT[provider]}
         </span>
-        <span
+        {(!usageOnly || row.email) && <span
           style={{
             flex: 1,
             minWidth: 0,
@@ -435,7 +448,7 @@ function AccountRow({
           }}
         >
           {row.email ?? row.label}
-        </span>
+        </span>}
         {tickets && (
           <span ref={placeholderRef} aria-hidden="true"
             style={{ ...chipBoxStyle, visibility: "hidden", flexShrink: 0 }}>
@@ -454,7 +467,7 @@ function AccountRow({
             {row.plan}
           </span>
         )}
-        <span
+        {!usageOnly && <span
           style={{
             flexShrink: 0,
             fontSize: "var(--cmux-font-size-xs)",
@@ -464,7 +477,7 @@ function AccountRow({
           }}
         >
           {action}
-        </span>
+        </span>}
       </span>
 
       {staleNote ? (
@@ -517,6 +530,7 @@ function AccountRow({
             gap: dense === "roomy" ? "var(--cmux-space-5)" : "var(--cmux-space-3)",
             alignItems: "center",
             minWidth: 0,
+            flexWrap: usageOnly ? "wrap" : undefined,
           }}
         >
           {windows.length > 0 ? (
@@ -526,7 +540,7 @@ function AccountRow({
                 {...window}
                 cells={cells}
                 dense={dense}
-                showReset={!collapseReset}
+                showReset={!usageOnly && !collapseReset}
               />
             ))
           ) : (
@@ -549,10 +563,12 @@ function AccountRow({
           </span>
         </span>
       )}
-    </button>
-      <div style={{ padding: "0 var(--cmux-space-5) var(--cmux-space-3)" }}>
-        <AccountSubscriptionDetails row={row} />
-      </div>
+    </RowContent>
+      {!usageOnly && (
+        <div style={{ padding: "0 var(--cmux-space-5) var(--cmux-space-3)" }}>
+          <AccountSubscriptionDetails row={row} />
+        </div>
+      )}
       {tickets && (
         <button
           data-reset-ticket-chip="true"
@@ -705,7 +721,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   // Logins made outside the app are picked up by the backend live-sync watcher
   // and registered automatically, so the footer offers no capture button.
   const loginProvider =
-    PROVIDER_ORDER.find((provider) => loginByProvider[provider]) ?? null;
+    SWITCHABLE_PROVIDERS.find((provider) => loginByProvider[provider]) ?? null;
   const loginEntry = loginProvider ? loginByProvider[loginProvider] : null;
   const loginInProgress = loginEntry !== null;
 
@@ -788,7 +804,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
                 zIndex: 110,
               }}
             >
-              {PROVIDER_ORDER.map((provider) => (
+              {SWITCHABLE_PROVIDERS.map((provider) => (
                 <button
                   key={provider}
                   type="button"

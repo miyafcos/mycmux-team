@@ -160,6 +160,51 @@ describe("terminal cache eviction (FE-N1)", () => {
 });
 
 describe("terminal scrollback tail search", () => {
+  it("keeps an owned, ordered 32 KiB suffix across wraps, oversized input and replacement", () => {
+    const limit = 32 * 1024;
+    const session = "wrapped-tail";
+    replaceTerminalRawTail(session, new Uint8Array());
+    let expected = new Uint8Array();
+    for (const size of [0, 13, limit - 15, 5, 17, limit, 2, limit + 23, 39]) {
+      const retained = terminalRawTailBySession.get(session)!.snapshot();
+      const bytes = Uint8Array.from({ length: size }, (_, index) => (index + size) % 251);
+      const next = new Uint8Array(expected.length + size);
+      next.set(expected);
+      next.set(bytes, expected.length);
+      rememberTerminalRawTail(session, bytes);
+      bytes.fill(255);
+      expect(retained).toEqual(expected);
+      expected = next.slice(-limit);
+      const current = terminalRawTailBySession.get(session)!.snapshot();
+      expect(current).toEqual(expected);
+      current.fill(254);
+    }
+    const saved = terminalRawTailBySession.get(session)!.snapshot();
+    replaceTerminalRawTail(session, Uint8Array.of(1, 2));
+    expect(saved).toEqual(expected);
+    expect(terminalRawTailBySession.get(session)!.snapshot()).toEqual(Uint8Array.of(1, 2));
+    replaceTerminalRawTail(session, new Uint8Array());
+    expect(terminalRawTailBySession.get(session)!.snapshot()).toEqual(new Uint8Array());
+  });
+
+  it("copies only incoming bytes when appending to a full recovery tail", () => {
+    const limit = 32 * 1024;
+    replaceTerminalRawTail("small-writes", new Uint8Array(limit));
+    const chunk = Uint8Array.of(10);
+    let bytesWritten = 0;
+    const originalSet = Uint8Array.prototype.set;
+    const observed = vi.spyOn(Uint8Array.prototype, "set").mockImplementation(function (this: Uint8Array, source, offset) {
+      bytesWritten += source.length;
+      originalSet.call(this, source, offset);
+    });
+    try {
+      for (let count = 0; count < 1024; count++) rememberTerminalRawTail("small-writes", chunk);
+    } finally {
+      observed.mockRestore();
+    }
+    expect(bytesWritten).toBe(1024);
+  });
+
   it("returns the last overlapping match", () => {
     expect(findLastSubarray(
       new Uint8Array([1, 2, 1, 2, 1]),

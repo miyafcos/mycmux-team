@@ -1,8 +1,8 @@
-import { listCliAccounts, type CliProvider } from "./ipc";
+import { listCliAccounts, type SwitchableCliProvider } from "./ipc";
 import { useCliAccountStore } from "../stores/cliAccountStore";
 
 export interface AccountTarget {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profileId: string;
 }
 
@@ -53,7 +53,7 @@ export function switchErrorCode(error: unknown): string {
 }
 
 export interface AccountSwitchResponse {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   profile_id: string;
   status: "switched" | "already_active" | "rejected" | "failed";
   applied: boolean;

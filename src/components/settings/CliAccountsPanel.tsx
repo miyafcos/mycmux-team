@@ -8,9 +8,9 @@ import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
-import { revealInExplorer, type CliAccountProfile, type CliOrphanSnapshot, type CliProvider } from "../../lib/ipc";
+import { revealInExplorer, type CliAccountProfile, type CliOrphanSnapshot, type SwitchableCliProvider } from "../../lib/ipc";
 import {
-  PROVIDER_ORDER,
+  SWITCHABLE_PROVIDERS,
   PROVIDER_TITLE,
   addAccountLabel,
   canSwitchCliAccount,
@@ -121,7 +121,7 @@ export function CliAccountsPanel() {
       </div>
 
       <div style={{ display: "grid" }}>
-        {PROVIDER_ORDER.map((provider, index) => (
+        {SWITCHABLE_PROVIDERS.map((provider, index) => (
           <ProviderPanel key={provider} provider={provider} divided={index > 0} />
         ))}
       </div>
@@ -184,7 +184,7 @@ export function CliAccountsPanel() {
  * the CLI login in a pane whose config directory points at a staging copy, so
  * the account that is currently logged in is never disturbed.
  */
-function ProviderPanel({ provider, divided }: { provider: CliProvider; divided: boolean }) {
+function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider; divided: boolean }) {
   // Stable-reference selectors; derive per-provider views outside (see
   // CliAccountMenu.tsx for the rationale).
   const allLive = useCliAccountStore((state) => state.live);

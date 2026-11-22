@@ -121,8 +121,8 @@ impl Price {
     }
 
     const fn openai_cached(input: f64, output: f64, cache_read: f64) -> Self {
-        // GPT-5.6 and later publish a separate 1.25x cache-write rate. The
-        // reported write counter has no TTL split, so both columns use it.
+        // Use the published 1.25x rate for the short write column.
+        // Catalog entries with a distinct long write rate set it explicitly.
         Self {
             cache_write_5m: input * 1.25,
             cache_write_1h: input * 1.25,
@@ -142,6 +142,9 @@ impl Price {
 /// cache storage, tool fees, regional uplifts and nonstandard tiers are excluded.
 /// Grok Build retains its provider-reported costs instead of a catalog rate.
 pub const DEFAULT_PRICES: &[(&str, Price)] = &[
+    // Claude Platform pricing verified 2026-11-18; Haiku's >100K rate is applied below.
+    ("fable-5.2", Price::anthropic_cached(8.0, 40.0, 0.025)),
+    ("haiku-5.5", Price::anthropic(0.10, 0.50)),
     ("fable-5.1", Price::anthropic_cached(10.0, 50.0, 0.025)),
     ("mythos-5.1", Price::anthropic_cached(10.0, 50.0, 0.025)),
     ("opus-5.5", Price::anthropic_cached(4.0, 20.0, 0.05)),
@@ -155,6 +158,24 @@ pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     ("sonnet-5", Price::anthropic(2.0, 10.0)),
     ("sonnet-4.6", Price::anthropic(3.0, 15.0)),
     ("haiku-4.5", Price::anthropic(1.0, 5.0)),
+    // OpenAI Standard rates verified 2026-11-18:
+    // https://developers.openai.com/api/docs/models/gpt-6.2-astra
+    // https://developers.openai.com/api/docs/models/gpt-6.2-sol
+    // The existing short and long write columns represent 30 minutes and 12 hours here.
+    (
+        "gpt-6.2-astra",
+        Price {
+            cache_write_1h: 20.0,
+            ..Price::openai_cached(8.0, 40.0, 0.40)
+        },
+    ),
+    (
+        "gpt-6.2-sol",
+        Price {
+            cache_write_1h: 5.0,
+            ..Price::openai_cached(2.0, 10.0, 0.10)
+        },
+    ),
     ("gpt-6-astra", Price::openai_cached(10.0, 50.0, 1.0)),
     ("gpt-6.1-sol", Price::openai_cached(2.0, 10.0, 0.10)),
     ("gpt-6-sol", Price::openai_cached(2.0, 10.0, 0.20)),
@@ -164,6 +185,14 @@ pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     ("gpt-5.6-luna", Price::openai_cached(0.20, 1.20, 0.02)),
     ("gpt-5.5", Price::openai(5.0, 30.0, 0.50)),
     ("gpt-5.4", Price::openai(2.50, 15.0, 0.25)),
+    // Carbon uses regular Gemini Developer API Standard pricing from
+    // 2026-12-01, after the introductory period. Verified 2026-11-18.
+    // https://aistudio.google.com/docs/pricing#gemini-4-carbon
+    ("gemini-4-carbon", Price::openai(4.0, 20.0, 0.20)),
+    // Hydrogen Standard pricing, verified 2026-11-18:
+    // https://aistudio.google.com/docs/pricing#gemini-4-hydrogen
+    // Both rates cover the bare API IDs and implicit caching.
+    ("gemini-4-hydrogen", Price::openai(1.50, 7.50, 0.075)),
     ("gemini-3.8-flash", Price::openai(0.75, 3.75, 0.075)),
     ("gemini-3.7-flash", Price::openai(0.75, 3.75, 0.075)),
     ("gemini-3.6-flash", Price::openai(0.75, 3.75, 0.075)),
@@ -175,6 +204,7 @@ pub const DEFAULT_PRICES: &[(&str, Price)] = &[
 /// Stem -> display family. Longest matching stem wins; a raw string that
 /// matches no stem is left completely alone (spec §4.4: never guess).
 const FAMILY_STEMS: &[(&str, &str)] = &[
+    ("claude-fable-5-2", "fable-5.2"),
     ("claude-fable-5-1", "fable-5.1"),
     ("claude-mythos-5-1", "mythos-5.1"),
     ("claude-opus-5-5", "opus-5.5"),
@@ -193,7 +223,9 @@ const FAMILY_STEMS: &[(&str, &str)] = &[
     ("claude-sonnet-4-6", "sonnet-4.6"),
     ("claude-sonnet-4-5", "sonnet-4.5"),
     ("claude-sonnet-4-0", "sonnet-4.0"),
+    ("claude-haiku-5-5", "haiku-5.5"),
     ("claude-haiku-4-5", "haiku-4.5"),
+    ("gpt-6.2", "gpt-6.2"),
     ("gpt-6.1", "gpt-6.1"),
     ("gpt-6", "gpt-6"),
     ("gpt-5.6", "gpt-5.6"),
@@ -201,6 +233,8 @@ const FAMILY_STEMS: &[(&str, &str)] = &[
     ("gpt-5.4", "gpt-5.4"),
     ("grok-4.7", "grok-4.7"),
     ("grok-4.6", "grok-4.6"),
+    ("gemini-4-carbon", "gemini-4-carbon"),
+    ("gemini-4-hydrogen", "gemini-4-hydrogen"),
     ("gemini-3.8-flash", "gemini-3.8-flash"),
     ("gemini-3.7-flash", "gemini-3.7-flash"),
     ("gemini-3.6-flash", "gemini-3.6-flash"),
@@ -433,16 +467,25 @@ impl PriceTable {
             .max_by_key(|row| row.model.len())
     }
 
-    /// Resolve the published long-context standard rate for supported GPT
-    /// models. User overrides already describe the operator's chosen rate.
+    /// Apply the published long-context Standard rates for GPT and Haiku 5.5.
+    /// A user price already describes the operator's chosen rate.
     pub fn price_for_input(&self, raw: &str, context_tokens: i64) -> Option<Price> {
         let row = self.lookup(raw)?;
         let mut price = row.price;
-        if row.source == "default"
-            && context_tokens > 272_000
+        if row.source != "default" {
+            return Some(price);
+        }
+        if row.model == "haiku-5.5" && context_tokens > 100_000 {
+            // Claude's >100K tier uses $0.50 / $2.50 per MTok, with its
+            // published cache hit and write prices at this input rate.
+            return Some(Price::anthropic(0.50, 2.50));
+        }
+        if context_tokens > 272_000
             && matches!(
                 row.model.as_str(),
-                "gpt-6-astra"
+                "gpt-6.2-astra"
+                    | "gpt-6.2-sol"
+                    | "gpt-6-astra"
                     | "gpt-6.1-sol"
                     | "gpt-6-sol"
                     | "gpt-6-luna"

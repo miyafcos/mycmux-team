@@ -44,7 +44,7 @@ describe("usage grass ordinal scale", () => {
     });
   }
   it("preserves the common empty wash on every other authored theme", () => {
-    for (const theme of THEMES.filter(theme => !["yoi-ai", "yogiri", "synthwave"].includes(theme.id))) {
+    for (const theme of THEMES.filter(theme => !["yoi-ai", "yogiri", "synthwave", "hanabi"].includes(theme.id))) {
       expect(grassScale(theme.colorScheme, theme.id)[0]).toBe(GRASS_EMPTY);
     }
   });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentKindIcon } from "../../src/components/icons/AgentIcons";
-import { AGENT_CATALOG, getCatalogEntry, getLaunchEfforts } from "../../src/lib/agentCatalog";
+import { AGENT_CATALOG, getCatalogEntry, getLaunchEfforts, isValidLaunchSpecValue } from "../../src/lib/agentCatalog";
 import {
   cycleChoice,
   dirSections,
@@ -84,6 +84,20 @@ describe("launcher spec keyboard navigation", () => {
 
   it.each(["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "", undefined, "custom-grok"])("offers xhigh for Grok model %s", (model) => {
     expect(getLaunchEfforts(getCatalogEntry("grok"), model)).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
+  it("accepts every fixed model ID at the launch value boundary", () => {
+    for (const entry of AGENT_CATALOG) {
+      for (const model of entry.models) {
+        expect(isValidLaunchSpecValue(model.value), model.value).toBe(true);
+      }
+    }
+  });
+
+  it("offers ultra for every fixed Codex model except the two Luna models", () => {
+    const codex = getCatalogEntry("codex")!;
+    expect(codex.models.filter((model) => !getLaunchEfforts(codex, model.value).includes("ultra"))
+      .map((model) => model.value)).toEqual(["gpt-6-luna", "gpt-5.6-luna"]);
   });
 
   it("offers all five agy effort steps", () => {

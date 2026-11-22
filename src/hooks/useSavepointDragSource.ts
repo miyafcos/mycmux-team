@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { joinSavepointFull, joinSavepointSummary } from "../lib/ipc";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "../lib/layoutQuit";
 import { cliAccountSessionErrorMessage } from "../lib/cliAccounts";
 import {
   prepareSavepointDropOpen,
@@ -139,6 +140,8 @@ async function commitSavepointDrop(
     useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
     return;
   }
+  const finish = beginLayoutOperation();
+  if (!finish) return;
   const openingToastId = useToastStore
     .getState()
     .pushToast(onlineStrings.dragDropSpawning, "info");
@@ -224,6 +227,7 @@ async function commitSavepointDrop(
       "error",
     );
   } finally {
+    finish();
     useToastStore.getState().dismissToast(openingToastId);
   }
 }
@@ -268,7 +272,7 @@ export function useSavepointDragSource() {
       hoverWorkspaceIdRef.current = null;
       if (!dragStore.item || dragStore.owner !== dragOwnerRef.current) return;
       const latest = useWorkspaceListStore.getState();
-      if (latest.getWorkspace(workspaceId)) latest.setActiveWorkspace(workspaceId);
+      if (!isPreparingLayoutQuit() && latest.getWorkspace(workspaceId)) latest.setActiveWorkspace(workspaceId);
       dragStore.setHoverWorkspaceId(null);
     }, WORKSPACE_HOVER_DELAY_MS);
   }, [clearHoverTimer]);

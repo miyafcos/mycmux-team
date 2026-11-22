@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "../lib/appConfirmation";
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 import {
   beginCliLogin,
   cancelCliLogin,
@@ -12,10 +13,10 @@ import {
   type CliLoginMode,
   type CliLoginPurpose,
   type CliLoginSession,
-  type CliProvider,
+  type SwitchableCliProvider,
 } from "../lib/ipc";
 import {
-  PROVIDER_ORDER,
+  SWITCHABLE_PROVIDERS,
   cliAccountMessage,
   cliAccountHomeLoginMessage,
   loginIdentityMismatchMessage,
@@ -49,10 +50,10 @@ export interface CliLoginEntry {
 }
 
 export interface CliLoginState {
-  byProvider: Record<CliProvider, CliLoginEntry | null>;
-  start(provider: CliProvider, mode: CliLoginMode, expectedProfileId?: string, purpose?: CliLoginPurpose): Promise<void>;
+  byProvider: Record<SwitchableCliProvider, CliLoginEntry | null>;
+  start(provider: SwitchableCliProvider, mode: CliLoginMode, expectedProfileId?: string, purpose?: CliLoginPurpose): Promise<void>;
   startAccountHome(provider: "codex" | "grok", profileId: string): Promise<void>;
-  cancel(provider: CliProvider): Promise<void>;
+  cancel(provider: SwitchableCliProvider): Promise<void>;
   handleCompleted(payload: CliLoginCompletedPayload): Promise<void>;
   handleFailed(payload: CliLoginFailedPayload): void;
   handleIdentityMismatch(payload: CliLoginIdentityMismatchPayload): void;
@@ -64,7 +65,7 @@ export interface CliLoginState {
   handleTabsChanged(liveSessionIds: ReadonlySet<string>): void;
 }
 
-const EMPTY_BY_PROVIDER: Record<CliProvider, CliLoginEntry | null> = { claude: null, codex: null, grok: null };
+const EMPTY_BY_PROVIDER: Record<SwitchableCliProvider, CliLoginEntry | null> = { claude: null, codex: null, grok: null };
 
 const NO_HOST_PANE_MESSAGE =
   "原因: ログイン画面を開くタブを用意できませんでした。次にすること: ターミナルのタブをひとつ開いてから、もう一度お試しください。";
@@ -126,6 +127,7 @@ async function openLoginTab(
   // `hasTrustDialogAccepted: false` into the staging config and greet the user
   // with a trust prompt before the login can even start.
   const home = await homeDir().catch(() => undefined);
+  if (isPreparingLayoutQuit()) return null;
   const before = new Set(tabsOf(host).map((tab) => tab.id));
   useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(host.workspaceId, host.paneId, {
     // Plain shell: the agent presets inject resume/handoff variables that have
@@ -142,6 +144,7 @@ async function openLoginTab(
 }
 
 function closeLoginTab(sessionId: string): void {
+  if (isPreparingLayoutQuit()) return;
   for (const workspace of useWorkspaceListStore.getState().workspaces) {
     for (const pane of workspace.panes) {
       const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
@@ -157,7 +160,7 @@ function closeLoginTab(sessionId: string): void {
   }
 }
 
-function offerSwitch(provider: CliProvider, profile: CliAccountProfile): void {
+function offerSwitch(provider: SwitchableCliProvider, profile: CliAccountProfile): void {
   let switching = false;
   useToastStore.getState().pushToast(
     `「${profile.label}」に切り替えられます。`,
@@ -199,7 +202,7 @@ function offerSwitch(provider: CliProvider, profile: CliAccountProfile): void {
 }
 
 export const useCliLoginStore = create<CliLoginState>((set, get) => {
-  const setEntry = (provider: CliProvider, entry: CliLoginEntry | null) =>
+  const setEntry = (provider: SwitchableCliProvider, entry: CliLoginEntry | null) =>
     set((state) => ({ byProvider: { ...state.byProvider, [provider]: entry } }));
 
   /**
@@ -207,15 +210,15 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
    * must never be skipped: a login left holding `busyByProvider` locks switch
    * and capture for the rest of the session.
    */
-  const finalize = (provider: CliProvider, options: { closeTab: boolean }) => {
+  const finalize = (provider: SwitchableCliProvider, options: { closeTab: boolean }) => {
     const entry = get().byProvider[provider];
     setEntry(provider, null);
     useCliAccountStore.getState().setLoginBusy(provider, null);
     if (options.closeTab && entry?.sessionId) closeLoginTab(entry.sessionId);
   };
 
-  const providerForLogin = (loginId: string): CliProvider | null =>
-    PROVIDER_ORDER.find((provider) => get().byProvider[provider]?.loginId === loginId) ?? null;
+  const providerForLogin = (loginId: string): SwitchableCliProvider | null =>
+    SWITCHABLE_PROVIDERS.find((provider) => get().byProvider[provider]?.loginId === loginId) ?? null;
 
   return {
     byProvider: { ...EMPTY_BY_PROVIDER },
@@ -305,7 +308,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         );
       await Promise.all([
         useCliAccountStore.getState().fetch(),
-        useUsageStore.getState().fetch(),
+        useUsageStore.getState().fetch(false, undefined, { afterSwitch: true }),
       ]);
       // Release before offering the switch: `switchTo` refuses to run while the
       // provider is busy.
@@ -333,7 +336,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
     },
 
     handleTabsChanged: (liveSessionIds) => {
-      for (const provider of PROVIDER_ORDER) {
+      for (const provider of SWITCHABLE_PROVIDERS) {
         const entry = get().byProvider[provider];
         if (!entry?.sessionId || liveSessionIds.has(entry.sessionId)) continue;
         const loginId = entry.loginId;

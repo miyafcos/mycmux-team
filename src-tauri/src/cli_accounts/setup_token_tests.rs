@@ -1,9 +1,11 @@
 use super::*;
 use crate::cli_accounts::{registry, CliAccountProfile, CliProvider,
     claude::{ClaudePaths, CredentialStore}};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::cli_accounts::token_owner::{OwnerCheck, TokenOwner};
 use std::{cell::RefCell, collections::HashMap, fs};
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 #[cfg(unix)]
 use std::sync::Arc;
 const ID: &str = "claude-1a2b3c4d";
@@ -29,7 +31,7 @@ fn fixture_token(base: &Path) -> String {
     let seed: String = base.file_name().unwrap().to_string_lossy().chars().filter(char::is_ascii_alphanumeric).collect();
     format!("sk-ant-oat01-{}", seed.chars().cycle().take(95).collect::<String>())
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn owner(mismatch: bool) -> LaunchOwnerCheck {
     OwnerCheck::Owner(TokenOwner { account_uuid: if mismatch { "other" } else { "owner-1" }.into(),
         email: None, organization_uuid: None }).into()
@@ -91,6 +93,33 @@ fn setup_token_sensitive_storage_is_overwritten_before_release() {
     assert!(bytes.0.iter().all(|byte| *byte == 0));
 }
 
+#[test]
+fn setup_token_reader_wipes_the_buffer_before_each_read_with_or_without_capture() {
+    struct CheckedReads { read: usize, capture: bool }
+    impl Read for CheckedReads {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert!(buffer.iter().all(|byte| *byte == 0),
+                "capture={}, read={}", self.capture, self.read);
+            let count = [17, 3, 0][self.read];
+            buffer[..count].fill(b'x');
+            self.read += 1;
+            Ok(count)
+        }
+    }
+    for capture in [true, false] {
+        let (sender, receiver) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
+        let receiver = capture.then_some(receiver);
+        read_pty_output(CheckedReads { read: 0, capture }, sender, &AtomicBool::new(false));
+        if let Some(receiver) = receiver {
+            for count in [17, 3] {
+                let PtyOutput::Data(chunk) = receiver.recv().unwrap() else { panic!("data expected"); };
+                assert_eq!(chunk.as_slice(), vec![b'x'; count].as_slice());
+            }
+            assert!(matches!(receiver.recv(), Ok(PtyOutput::Eof)));
+        }
+    }
+}
+
 #[cfg(unix)]
 fn fixture(mode: &str) -> (tempfile::TempDir, CommandBuilder, ClaudePaths) {
     use std::os::unix::fs::PermissionsExt;
@@ -112,6 +141,9 @@ with open(report, 'w') as f: json.dump(info, f)
 print('fixture ' + json.dumps(info), flush=True)
 token = {token:?}
 if mode == 'code_separate': tty.setraw(0)
+if mode == 'browser_before_code':
+    tty.setraw(0)
+    while not os.path.exists(report + '.approved'): time.sleep(0.01)
 print('\033[32mOpen https://example.test/oauth/authorize?state=fixture\033[0m', flush=True)
 if mode in ('descendant', 'escaped_descendant'):
     r, w = os.pipe()
@@ -153,6 +185,11 @@ else:
         os.write(1, (screen + '\033[2K' + screen).encode())
     elif mode != 'no_marker': print('\033[1mYour OAuth token:\033[0m', flush=True)
     if mode == 'conpty': pass
+    elif mode == 'cursor_visibility_eof': os.write(1, token[:50].encode() + b'\033[?25h')
+    elif mode == 'overwrite_last_byte': os.write(1, token.encode() + b'\033[Dz\n')
+    elif mode == 'erase_display_eof': os.write(1, token[:50].encode() + b'\033[0J')
+    elif mode == 'same_row_eof': os.write(1, b'\033[5;1H' + token[:50].encode() + b'\033[5;1H')
+    elif mode == 'normal_crlf': os.write(1, token.encode() + b'\r\n')
     elif mode == 'extra': print('prefix ' + token, flush=True)
     elif mode == 'two':
         print(token, flush=True); time.sleep(0.04); print(token + 'b', flush=True)
@@ -160,6 +197,35 @@ else:
     elif mode == 'ansi_split':
         os.write(1, token[:30].encode()); os.write(1, b'\033[33m'); os.write(1, token[30:].encode() + b'\033[0m\n')
     else: print(token, flush=True)
+    if mode == 'partial_wrap': sys.stdout.write('abcdef'); sys.stdout.flush()
+    if mode == 'unreadable_after_candidate': os.write(1, b'\xff')
+    if mode == 'partial_prefix': sys.stdout.write('sk-ant-'); sys.stdout.flush()
+    if mode == 'heading_value': print('Your OAuth token: ' + token + 'b', flush=True)
+    if mode == 'malformed_oauth_error':
+        os.write(1, b'OAuth error: see https://example.test/oauth/authorize?state=fixture \xe3\x81')
+    if mode == 'malformed_conflicting_token': os.write(1, token.encode() + b'b\xe3\x81')
+    if mode == 'cr_error':
+        os.write(1, b'Checking authorization...\rOAuth error: invalid grant\n')
+    suffix = {{
+        'short_prefix': b'sk',
+        'short_prefix_invalid': b'sk\xe3\x81',
+        'retry': b'Press Enter to retry.',
+        'retry_invalid': b'Press Enter to retry.\xff',
+        'retry_quoted': b'Press Enter to retry. (quoted)',
+        'retry_quoted_invalid': b'Press Enter to retry. (quoted)\xff',
+        'revoked': b'Anthropic reported the token revoked; it was not shown.',
+        'revoked_invalid': b'Anthropic reported the token revoked; it was not shown.\xff',
+        'revoked_quoted': b'Anthropic reported the token revoked; it was not shown. (quoted)',
+        'revoked_quoted_invalid': b'Anthropic reported the token revoked; it was not shown.\xff (quoted)',
+    }}.get(mode)
+    if suffix is not None:
+        os.write(1, b'Press Enter to continue.\n' + suffix)
+    if mode == 'browser_before_code':
+        open(report + '.screen', 'w').close()
+        received = b''
+        while not received.endswith(b'\r'): received += os.read(0, 4096)
+        with open(report + '.input', 'wb') as f: f.write(received)
+    if mode == 'natural_after_confirmation_error': time.sleep(0.5)
     if mode == 'bad_exit': sys.exit(1)
     if mode == 'linger': time.sleep(30)
 "#, keys=AUTH_ENV_KEYS, token=fixture_token(base.path()));
@@ -199,7 +265,9 @@ fn run_fake(mode: &str, mismatch: bool) -> (tempfile::TempDir, MemoryStore, Vec<
     } else { None };
     let mut events = vec![initial.clone()];
     let audit = run_attempt(&registry, initial, control, base.path(), &live, cmd,
-        RunOptions { timeout: Duration::from_secs(if mode == "timeout" { 2 } else { 20 }), token_exit_grace: Duration::from_millis(150), fallback_after: Duration::from_millis(50) },
+        RunOptions { timeout: Duration::from_secs(if mode == "timeout" { 2 } else { 20 }),
+            token_exit_grace: Duration::from_millis(150), confirm_exit_grace: Duration::from_millis(150),
+            fallback_after: Duration::from_millis(50) },
         &store, |_| owner(mismatch), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
         |event| events.push(event));
     if let Some(actor) = actor { actor.join().unwrap(); }
@@ -343,14 +411,208 @@ fn setup_token_cancelled_before_spawn_never_runs_the_command() {
 #[test]
 fn setup_token_cursor_sequences_separate_lines_but_colors_join() {
     let token = fake_token();
-    for boundary in ["\x1b[5;1H", "\x1b[B", "\x1b[5d"] {
-        let output = format!("Your OAuth token:{boundary}{token}{boundary}");
+    for (start, end) in [
+        ("\x1b[5;1H", "\x1b[6;1H"), ("\x1b[5;1f", "\x1b[6;1f"),
+        ("\x1b[B", "\x1b[B"), ("\x1b[E", "\x1b[E"),
+        ("\x1b[5d", "\x1b[4d"), ("\x1b[5d", "\x1b[A"), ("\x1b[5d", "\x1b[F"),
+    ] {
+        let output = format!("Your OAuth token:{start}{token}{end}");
         let plain = strip_controls(output.as_bytes());
         assert_eq!(extract_token(plain.as_slice()).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
-        let split = format!("OAuth token\n{}{boundary}{}\n", &token[..50], &token[50..]);
+        let split = format!("OAuth token{start}{}{end}{}\n", &token[..50], &token[50..]);
         assert!(extract_token(strip_controls(split.as_bytes()).as_slice()).is_none());
     }
 }
+
+#[test]
+fn setup_token_line_edits_cannot_supply_a_candidate() {
+    let token = fake_token();
+    for edit in ["\x1b[C", "\x1b[D", "\x1b[G", "\x1b[1\x60",
+        "\x1b[P", "\x1b[@", "\x1b[X", "\x08", "\r", "\x1b[5;1H", "\x1b[5;1f"] {
+        let raw = format!("OAuth token\x1b[5;1H{token}{edit}z\n");
+        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{edit:?}");
+    }
+    let at_bottom = format!("OAuth token\x1b[40d{token}\x1b[B");
+    assert!(extract_token(strip_controls(at_bottom.as_bytes()).as_slice()).is_none());
+}
+#[test]
+fn setup_token_accepts_windows_conpty_startup_screen() {
+    let token = fake_token();
+    // Captured from Windows ConPTY in local_cmd_512x40.jsonl.bin.
+    let raw = format!(
+        concat!(
+            "\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[HYour OAuth token:\r\n",
+            "{}\r\nPress Enter to continue.\x1b]0;C:\\Windows\\System32\\cmd.exe\x07",
+            "\x1b[?25h\r\nconfirmed\r\n",
+        ),
+        token,
+    );
+    let plain = strip_controls(raw.as_bytes());
+    let extracted = extract_token(plain.as_slice()).expect("startup positioning must preserve the heading");
+    assert_eq!(extracted.as_slice(), token.as_bytes());
+}
+
+#[test]
+fn setup_token_accepts_same_row_positioning_before_text() {
+    let token = fake_token();
+    for (prefix, expected) in [
+        ("\x1b[H\x1b[f", Some(token.as_bytes())),
+        ("notice\r\n\x1b[2;1H\x1b[2;1f", None),
+        ("notice\x1b[2;1H\x1b[2;1f", None),
+    ] {
+        let raw = format!("{prefix}Your OAuth token:\r\n{token}\r\n");
+        let plain = strip_controls(raw.as_bytes());
+        let extracted = extract_token(plain.as_slice());
+        assert_eq!(extracted.as_ref().map(SecretBytes::as_slice), expected, "{prefix:?}");
+    }
+}
+
+#[test]
+fn setup_token_rejects_same_row_rewrites_of_heading_or_candidate() {
+    let token = fake_token();
+    let raw = format!("Your \x1b[HOAuth token:\r\n{token}\r\n");
+    assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none());
+
+    let split = token.len() - 1;
+    for position in ["\x1b[2;1H", "\x1b[2;1f"] {
+        let raw = format!("Your OAuth token:\r\n{}{position}{}\r\n", &token[..split], &token[split..]);
+        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{position:?}");
+    }
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_after_whitespace() {
+    let token = fake_token();
+    for whitespace in [' ', '\t'] {
+        let raw = format!("{whitespace}\x1b[HYour OAuth token:\r\n{token}\r\n");
+        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{whitespace:?}");
+    }
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_after_returning_to_written_row() {
+    let token = fake_token();
+    let mut accepted = Vec::new();
+    for position in ["\x1b[2;1H", "\x1b[2;1f", "\x1b[2;5H", "\x1b[2;5f"] {
+        let raw = format!("Your OAuth token:\r\ntag:XX\r\n\x1b[A{position}{token}\r\n");
+        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+            accepted.push(position);
+        }
+    }
+    assert!(accepted.is_empty(), "positioning on a written row supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_after_moving_to_unwritten_row() {
+    let token = fake_token();
+    let mut accepted = Vec::new();
+    for command in ['H', 'f'] {
+        let raw = format!("notice\x1b[3d\x1b[A\x1b[2;1{command}Your OAuth token:\r\n{token}\r\n");
+        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+            accepted.push(command);
+        }
+    }
+    assert!(accepted.is_empty(), "positioning after text supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_after_whitespace_or_screen_clear() {
+    let token = fake_token();
+    let mut accepted = Vec::new();
+    for (prefix, row) in [
+        (" ", ""), ("\t", ""),
+        (" \r\n", "2;1"), ("\t\r\n", "2;1"),
+        ("notice\x1b[2J", ""), ("notice\r\n\x1b[2J", "2;1"),
+    ] {
+        for command in ['H', 'f'] {
+            let raw = format!("{prefix}\x1b[{row}{command}Your OAuth token:\r\n{token}\r\n");
+            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+                accepted.push((prefix, row, command));
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "positioning after text supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_after_screen_movement() {
+    let token = fake_token();
+    let other_text = ".".repeat(token.len());
+    let last_row = PTY_ROWS;
+    let previous_row = last_row - 1;
+    let tail_column = token.len() + 1;
+    let mut accepted = Vec::new();
+    for command in ['H', 'f'] {
+        for (case, drawing, row) in [
+            (
+                "scroll at bottom row",
+                format!("\x1b[{last_row};{tail_column}HZ\r\n\x1b[A"),
+                previous_row,
+            ),
+            ("automatic wrap", format!("\x1b[5;512HP{other_text}Z\x1b[6d"), 6),
+            ("next line escape", format!("\x1b[4;1H\x1bE{other_text}Z\x1b[5d"), 5),
+        ] {
+            let raw = format!(
+                "\x1b[10;1HYour OAuth token:\r\n{drawing}\x1b[{row};1{command}{token}\r\n"
+            );
+            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+                accepted.push((case, command));
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "positioning after screen movement supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_rejects_same_row_positioning_before_edited_candidate() {
+    let token = fake_token();
+    let (first_half, second_half) = token.split_at(token.len() / 2);
+    let mut accepted = Vec::new();
+    for (case, drawing) in [
+        ("line erase", format!("{first_half}\x1b[2K{second_half}\r\n")),
+        (
+            "overwritten continuation",
+            format!("{token}\r\nCD\x1b[2K\x1b[GPress Enter to continue.\r\n"),
+        ),
+        (
+            "later candidate rewrite",
+            format!("{token}\r\nPress Enter to continue.\x1b[2;2HZ\r\n"),
+        ),
+    ] {
+        for command in ['H', 'f'] {
+            let raw = format!("Your OAuth token:\r\n\x1b[2;1{command}{drawing}");
+            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+                accepted.push((case, command));
+            }
+        }
+    }
+    assert!(accepted.is_empty(), "positioning before an edited row supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_rejects_non_first_column_positioning_on_empty_row() {
+    let token = fake_token();
+    let mut accepted = Vec::new();
+    for position in ["\x1b[2;2H", "\x1b[2;2f", "\x1b[2;511H", "\x1b[2;511f"] {
+        let raw = format!("Your OAuth token:\r\n{position}{token}\x1b[3;1H!\r\n");
+        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+            accepted.push(position);
+        }
+    }
+    assert!(accepted.is_empty(), "non-first-column positioning supplied a candidate: {accepted:?}");
+}
+
+#[test]
+fn setup_token_accepts_first_column_positioning_on_empty_first_row() {
+    let token = fake_token();
+    for position in ["\x1b[H", "\x1b[1;1H", "\x1b[;H"] {
+        let raw = format!("{position}Your OAuth token:\r\n{token}\r\n");
+        let plain = strip_controls(raw.as_bytes());
+        let extracted = extract_token(plain.as_slice()).expect("first-column positioning must preserve the heading");
+        assert_eq!(extracted.as_slice(), token.as_bytes());
+    }
+}
+
 #[test]
 fn setup_token_repeated_identical_tokens_count_as_one_value() {
     let token = fake_token();
@@ -512,16 +774,258 @@ fn setup_token_native_command_resolves_and_passes_the_supplied_login_path_after_
 #[test]
 fn setup_token_drain_deadline_does_not_wait_for_a_reader_that_never_closes() {
     let (sender, receiver) = mpsc::sync_channel(2);
-    assert!(sender.send(SecretBytes(b"fixture output".to_vec())).is_ok());
+    assert!(sender.send(PtyOutput::Data(SecretBytes(b"fixture output".to_vec()))).is_ok());
     let mut raw = SecretBytes(Vec::with_capacity(OUTPUT_LIMIT));
     let start = Instant::now();
-    assert_eq!(drain_output(&receiver, &mut raw, Duration::from_millis(30)), Err("capture_failed"));
+    assert_eq!(drain_output(&receiver, &mut raw, Duration::from_millis(30)), Err(CaptureFailure::CaptureFailed));
     assert!(start.elapsed() < Duration::from_millis(300));
     assert_eq!(raw.as_slice(), b"fixture output");
     raw.wipe();
     assert!(raw.0.iter().all(|byte| *byte == 0));
     drop(sender);
 }
+
+#[test]
+fn setup_token_drain_timeout_never_accepts_an_observed_token() {
+    let complete = format!("Your OAuth token:\n{}\n", fake_token());
+    let different = format!("sk-ant-oat01-{}", "b".repeat(95));
+    for (tail, expected) in [
+        ("Finishing setup.\n".to_owned(), Err(CaptureFailure::CaptureFailed)),
+        (complete.clone(), Err(CaptureFailure::CaptureFailed)),
+        ("OAuth error: authorization was revoked\n".to_owned(), Err(CaptureFailure::CaptureFailed)),
+        (format!("{different}\n"), Err(CaptureFailure::CaptureFailed)),
+        (different, Err(CaptureFailure::CaptureFailed)),
+        (" ".repeat(OUTPUT_LIMIT), Err(CaptureFailure::OutputLimit)),
+    ] {
+        let mut raw = SecretBytes(complete.as_bytes().to_vec());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        assert!(sender.send(PtyOutput::Data(SecretBytes(tail.into_bytes()))).is_ok());
+        let drain = drain_output(&receiver, &mut raw, Duration::from_millis(10));
+        assert_eq!(drain.and_then(|()| capture_complete(&raw)).map(|_| ()), expected);
+        drop(sender);
+    }
+}
+
+#[test]
+fn setup_token_drain_requires_an_explicit_eof_from_the_reader() {
+    for end in [Some(PtyOutput::Eof), Some(PtyOutput::ReadFailed), None] {
+        let expected = if matches!(&end, Some(PtyOutput::Eof)) { Ok(()) } else { Err(CaptureFailure::CaptureFailed) };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        if let Some(end) = end { assert!(sender.send(end).is_ok()); }
+        drop(sender);
+        assert_eq!(drain_output(&receiver, &mut SecretBytes(Vec::new()), Duration::from_secs(1)), expected);
+    }
+}
+
+#[test]
+fn setup_token_drain_checks_queued_output_at_the_deadline() {
+    let (sender, receiver) = mpsc::sync_channel(2);
+    let mut raw = SecretBytes(vec![b'a'; OUTPUT_LIMIT - 8]);
+    assert!(sender.send(PtyOutput::Data(SecretBytes(b"late".to_vec()))).is_ok());
+    assert!(sender.send(PtyOutput::Data(SecretBytes(b"overflow".to_vec()))).is_ok());
+    assert_eq!(drain_output(&receiver, &mut raw, Duration::ZERO), Err(CaptureFailure::OutputLimit));
+    assert!(raw.as_slice().ends_with(b"late"));
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn setup_token_oauth_error_with_url_is_not_an_authorization_link() {
+    let url = "https://example.test/oauth/authorize?state=OAuth%20error%3A";
+    assert!(cli_error(format!("OAuth error: see {url}").as_bytes()));
+    let authorization = format!("Open {url}");
+    assert!(!cli_error(authorization.as_bytes()));
+    assert_eq!(authorization_url(authorization.as_bytes()).as_deref(), Some(url));
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_incomplete_or_conflicting_eof_does_not_replace_saved_value() {
+    for mode in ["partial_wrap", "partial_prefix", "heading_value"] {
+        let (base, cmd, live) = fixture(mode);
+        let store = MemoryStore::default();
+        store.write(ID, &fake_token()).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
+            &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        let event = registry.current().unwrap().unwrap();
+        assert_eq!(event.state, SetupTokenState::Failed, "{mode}");
+        assert_eq!(event.reason.as_deref(), Some("capture_failed"));
+        assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_cursor_visibility_does_not_complete_a_candidate_but_conpty_redraw_does() {
+    for (mode, expected) in [
+        ("cursor_visibility_eof", SetupTokenState::Failed),
+        ("conpty", SetupTokenState::Saved),
+    ] {
+        let (base, cmd, live) = fixture(mode);
+        let store = MemoryStore::default();
+        store.write(ID, &fake_token()).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
+            &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        assert_eq!(registry.current().unwrap().unwrap().state, expected, "{mode}");
+        let saved = if expected == SetupTokenState::Saved { fixture_token(base.path()) } else { fake_token() };
+        assert!(store.read(ID).unwrap().as_deref() == Some(saved.as_str()), "{mode}");
+    }
+}
+
+#[cfg(unix)]
+fn assert_setup_token_fixture_decisions(cases: &[(&str, Option<&str>)]) {
+    let mut differences = Vec::new();
+    for &(mode, expected_reason) in cases {
+        let (base, cmd, live) = fixture(mode);
+        let store = MemoryStore::default();
+        let previous = fake_token();
+        store.write(ID, &previous).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        let owner_checks = std::cell::Cell::new(0);
+        run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
+            &store, |_| { owner_checks.set(owner_checks.get() + 1); owner(false) },
+            |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        let event = registry.current().unwrap().unwrap();
+        let saved = expected_reason.is_none();
+        let expected_state = if saved { SetupTokenState::Saved } else { SetupTokenState::Failed };
+        let expected_value = if saved { fixture_token(base.path()) } else { previous };
+        let value_matches = store.read(ID).unwrap().as_deref() == Some(expected_value.as_str());
+        if event.state != expected_state || event.reason.as_deref() != expected_reason
+            || owner_checks.get() != usize::from(saved) || !value_matches
+        {
+            differences.push((mode, event.state, event.reason, owner_checks.get(), value_matches));
+        }
+    }
+    assert!(differences.is_empty(), "case, state, reason, owner checks, expected store value: {differences:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_requires_a_real_row_boundary_and_an_unedited_candidate() {
+    assert_setup_token_fixture_decisions(&[
+        ("overwrite_last_byte", Some("capture_failed")),
+        ("erase_display_eof", Some("capture_failed")),
+        ("same_row_eof", Some("capture_failed")),
+        ("conpty", None),
+    ]);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_matches_errors_after_cr_and_accepts_crlf_tokens() {
+    assert_setup_token_fixture_decisions(&[("cr_error", Some("cli_error")), ("normal_crlf", None)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_applies_the_same_rules_to_readable_and_malformed_lines() {
+    assert_setup_token_fixture_decisions(&[
+        ("short_prefix", Some("capture_failed")), ("short_prefix_invalid", Some("capture_failed")),
+        ("unreadable_after_candidate", Some("capture_failed")),
+        ("retry", Some("cli_error")), ("retry_invalid", Some("cli_error")),
+        ("retry_quoted", None), ("retry_quoted_invalid", None),
+        ("revoked", Some("cli_error")), ("revoked_invalid", Some("cli_error")),
+        ("revoked_quoted", None), ("revoked_quoted_invalid", None),
+    ]);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_malformed_relevant_output_does_not_replace_saved_value() {
+    for (mode, expected_reason) in [
+        ("malformed_oauth_error", Some("cli_error")),
+        ("malformed_conflicting_token", Some("capture_failed")),
+        ("invalid_utf8", None),
+    ] {
+        let (base, cmd, live) = fixture(mode);
+        let store = MemoryStore::default();
+        store.write(ID, &fake_token()).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        let owner_checked = std::cell::Cell::new(false);
+        run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
+            &store, |_| { owner_checked.set(true); owner(false) },
+            |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        let event = registry.current().unwrap().unwrap();
+        assert_eq!(event.reason.as_deref(), expected_reason, "{mode}");
+        let (state, saved) = if expected_reason.is_some() {
+            (SetupTokenState::Failed, fake_token())
+        } else {
+            (SetupTokenState::Saved, fixture_token(base.path()))
+        };
+        assert_eq!(event.state, state, "{mode}");
+        assert_eq!(owner_checked.get(), state == SetupTokenState::Saved, "{mode}");
+        assert!(store.read(ID).unwrap().as_deref() == Some(saved.as_str()), "{mode}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_browser_success_discards_a_queued_code_and_sends_only_confirmation() {
+    let (base, cmd, live) = fixture("browser_before_code");
+    let store = MemoryStore::default();
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    run_attempt(&registry, initial, control, base.path(), &live, cmd,
+        RunOptions { timeout: Duration::from_secs(10), fallback_after: Duration::ZERO,
+            token_exit_grace: Duration::from_millis(200), confirm_exit_grace: Duration::from_secs(1) },
+        &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
+        |event| {
+            let report = base.path().join("report.json");
+            if event.state == SetupTokenState::CodeAvailable && !report.with_extension("json.approved").exists() {
+                registry.submit_code(&event.login_id, "fixture-code#fixture-state".into()).unwrap();
+                fs::write(report.with_extension("json.approved"), b"").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !report.with_extension("json.screen").is_file() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert!(report.with_extension("json.screen").is_file());
+            }
+        });
+    assert_eq!(fs::read(base.path().join("report.json.input")).unwrap().as_slice(), b"\r");
+    assert_eq!(registry.current().unwrap().unwrap().state, SetupTokenState::Saved);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_failed_confirmation_requires_a_clean_natural_exit() {
+    struct RejectInput { _writer: Box<dyn Write + Send> }
+    impl Write for RejectInput {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    for (mode, expected) in [("linger", SetupTokenState::Failed),
+        ("natural_after_confirmation_error", SetupTokenState::Saved)] {
+        let (base, cmd, live) = fixture(mode);
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        let store = MemoryStore::default();
+        store.write(ID, &fake_token()).unwrap();
+        run_attempt_with_pty(&registry, initial, control, base.path(), &live, cmd,
+            RunOptions { token_exit_grace: Duration::ZERO, confirm_exit_grace: Duration::from_secs(1), ..RunOptions::default() },
+            &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+            |pty| {
+                let writer = std::mem::replace(&mut pty.writer, Box::new(std::io::sink()));
+                pty.writer = Box::new(RejectInput { _writer: writer });
+            }, drop);
+        let event = registry.current().unwrap().unwrap();
+        assert_eq!(event.state, expected, "{mode}");
+        if expected == SetupTokenState::Failed {
+            assert_eq!(event.reason.as_deref(), Some("capture_failed"));
+            assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+        } else {
+            assert_eq!(store.read(ID).unwrap().as_deref(), Some(fixture_token(base.path()).as_str()));
+        }
+    }
+}
+
 #[test]
 fn setup_token_read_loop_closes_code_input_before_drain_and_owner_lookup() {
     let registry = SetupTokenRegistry::default();
@@ -585,9 +1089,9 @@ fn setup_token_blocked_pty_close_does_not_delay_terminal_state_or_release() {
     let (release_tx, release_rx) = mpsc::sync_channel(1);
     let (finished_tx, finished_rx) = mpsc::sync_channel(1);
     let mut events = Vec::new();
-    let audit = run_attempt_with_close(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
+    let audit = run_attempt_with_pty(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
         &MemoryStore::default(), |_| panic!("no token"), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
-        |event| events.push(event), move |pty| {
+        |event| events.push(event), |_| {}, move |pty| {
             started_tx.send(Instant::now()).unwrap();
             // A watchdog bounds the failing version; the passing version releases
             // this stand-in for a stuck ClosePseudoConsole only after returning.
@@ -607,14 +1111,18 @@ fn setup_token_blocked_pty_close_does_not_delay_terminal_state_or_release() {
 }
 
 
+fn write_fixture_profile(base: &Path) {
+    let profile = CliAccountProfile { id: ID.into(), provider: CliProvider::Claude, label: "fixture".into(),
+        email: None, identity_key: "owner-1".into(), plan: None, org_name: None, captured_at: String::new(),
+        last_switched_at: None, needs_relogin: false, refresh_rejected_at: None, foreign_token_owner: None };
+    registry::save(base, &registry::CliAccountsFile { profiles: vec![profile], ..Default::default() }).unwrap();
+}
+
 // The shutdown fixtures use the same isolated profile and in-memory secret store
 // as the existing PTY tests, with Python invoked directly on either platform.
 fn shutdown_fixture(mode: &str) -> (tempfile::TempDir, CommandBuilder, ClaudePaths) {
     let base = tempfile::tempdir().unwrap();
-    let profile = CliAccountProfile { id: ID.into(), provider: CliProvider::Claude, label: "fixture".into(),
-        email: None, identity_key: "owner-1".into(), plan: None, org_name: None, captured_at: String::new(),
-        last_switched_at: None, needs_relogin: false, refresh_rejected_at: None, foreign_token_owner: None };
-    registry::save(base.path(), &registry::CliAccountsFile { profiles: vec![profile], ..Default::default() }).unwrap();
+    write_fixture_profile(base.path());
     let script = r#"
 import sys, os, time, signal
 mode, report, token = sys.argv[1:]
@@ -643,6 +1151,510 @@ else: print('Your OAuth token:\n' + token, flush=True)
     let live = ClaudePaths { credentials: base.path().join("must-not-read-credentials"),
         claude_json: base.path().join("missing-config"), store: CredentialStore::File };
     (base, cmd, live)
+}
+
+#[cfg(windows)]
+const WINDOWS_FIXTURE_SYNC_TIMEOUT: Duration = Duration::from_secs(45);
+
+#[cfg(windows)]
+fn wait_for_windows_fixture(deadline: Instant, description: &str, mut ready: impl FnMut() -> bool) {
+    while !ready() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for {description}");
+        std::thread::sleep(POLL_INTERVAL.min(remaining));
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_windows_fixture_file(base: &Path, name: &str, deadline: Instant) {
+    let path = base.join(name);
+    wait_for_windows_fixture(deadline, name, || path.is_file());
+}
+
+#[cfg(windows)]
+fn run_windows_cmd_fixture(
+    mode: &str,
+    prepare_pty: impl FnOnce(&Path, &mut PrivatePty),
+    close_pty: impl FnOnce(PrivatePty) + Send + 'static,
+) -> (tempfile::TempDir, SetupTokenEvent, MemoryStore, RunAudit, usize) {
+    let base = tempfile::tempdir().unwrap();
+    write_fixture_profile(base.path());
+    let launcher = base.path().join("fixture-claude.cmd");
+    fs::write(&launcher, concat!(
+        "@echo off\r\n",
+        "if not \"%FIXTURE_MODE:~0,8%\"==\"wrapper_\" goto foreground\r\n",
+        "start \"\" /b python.exe -I -B -u \"%~dp0fixture.py\" %*\r\n",
+        "if errorlevel 1 exit /b 1\r\n",
+        "if not \"%FIXTURE_MODE%\"==\"wrapper_between_polls\" goto wrapper_exit\r\n",
+        ":wait_for_failed_write\r\n",
+        "if not exist \"%~dp0confirm-failed\" goto wait_for_failed_write\r\n",
+        ":wrapper_exit\r\n",
+        "type nul > \"%~dp0wrapper-exiting\" || exit /b 1\r\n",
+        "exit /b 0\r\n",
+        ":foreground\r\n",
+        "python.exe -I -B -u \"%~dp0fixture.py\" %*\r\n",
+        "exit /b %ERRORLEVEL%\r\n",
+    )).unwrap();
+    fs::write(base.path().join("fixture.py"), r#"
+import msvcrt, os, pathlib, sys, threading, time
+
+assert sys.argv[1:] == ['setup-token']
+fixture_dir = pathlib.Path(__file__).parent
+mode = os.environ['FIXTURE_MODE']
+watchdog = threading.Timer(int(os.environ['FIXTURE_WATCHDOG_SECONDS']), lambda: os._exit(2))
+watchdog.daemon = True
+watchdog.start()
+# Publish a complete PID as the CLI readiness signal.
+pid_file = fixture_dir / 'child.pid'
+pending = pid_file.with_suffix('.tmp')
+pending.write_text(str(os.getpid()), encoding='ascii')
+pending.rename(pid_file)
+if mode == 'overflow_during_close':
+    # Scroll well beyond the capture limit and the output pipe's capacity.
+    block = ('0123456789' * 48 + '\n') * 128
+    for _ in range(128):
+        print(block, end='', flush=True)
+    time.sleep(12)
+print('Your OAuth token:\nsk-ant-oat01-' + 'a' * 95 + '\nPress Enter to continue.', flush=True)
+if mode in ('wrapper_confirmation_fails', 'wrapper_between_polls'):
+    while not (fixture_dir / 'let-cli-exit').exists():
+        time.sleep(0.01)
+    sys.exit(7)
+while msvcrt.getwch() != '\r':
+    pass
+(fixture_dir / 'confirmed').touch()
+if os.environ['FIXTURE_MODE'] in ('linger', 'wrapper_exits'):
+    time.sleep(12)
+"#).unwrap();
+    let mut args = vec!["setup-token".to_owned()];
+    let exe = crate::commands::terminal::prepare_spawn_command(launcher.to_str().unwrap(), &mut args);
+    let mut command = CommandBuilder::new(exe);
+    command.args(args);
+    let wrapper_mode = mode.starts_with("wrapper_");
+    let timeout = Duration::from_secs(if wrapper_mode { 60 } else { 10 });
+    command.env("FIXTURE_MODE", mode);
+    command.env("FIXTURE_WATCHDOG_SECONDS", (timeout.as_secs() + 2).to_string());
+    let live = ClaudePaths { credentials: base.path().join("must-not-read-credentials"),
+        claude_json: base.path().join("missing-config"), store: CredentialStore::File };
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let store = MemoryStore::default();
+    store.write(ID, &previous_windows_fixture_value()).unwrap();
+    let owner_checks = std::cell::Cell::new(0);
+    let mut events = Vec::new();
+    // Use one fixture deadline for launch and both exit gates. Leave time for capture
+    // and cleanup even if the wrapper or CLI is scheduled late.
+    let fixture_deadline = Instant::now() + WINDOWS_FIXTURE_SYNC_TIMEOUT;
+    let audit = run_attempt_with_pty(&registry, initial, control, base.path(), &live, command,
+        RunOptions { timeout, token_exit_grace: Duration::from_millis(200),
+            confirm_exit_grace: Duration::from_secs(1), ..RunOptions::default() },
+        &store, |_| { owner_checks.set(owner_checks.get() + 1); owner(false) }, |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
+        |event| {
+            if mode == "cancel_pending" && event.state == SetupTokenState::Confirming {
+                registry.cancel(&event.login_id).unwrap();
+            }
+            events.push(event);
+        }, |pty| {
+            if wrapper_mode {
+                prepare_windows_wrapper_fixture(base.path(), pty, mode, fixture_deadline);
+            }
+            prepare_pty(base.path(), pty);
+        }, close_pty);
+    (base, events.pop().unwrap(), store, audit, owner_checks.get())
+}
+
+#[cfg(windows)]
+fn previous_windows_fixture_value() -> String { format!("sk-ant-oat01-{}", "b".repeat(95)) }
+
+#[cfg(windows)]
+fn query_windows_job_counts(handle: BorrowedHandle<'_>) -> (u32, u32) {
+    use windows::Win32::{
+        Foundation::HANDLE,
+        System::JobObjects::{JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION},
+    };
+
+    let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    unsafe {
+        QueryInformationJobObject(HANDLE(handle.as_raw_handle()), JobObjectBasicAccountingInformation,
+            std::ptr::from_mut(&mut accounting).cast(), std::mem::size_of_val(&accounting) as u32,
+            None).unwrap();
+    }
+    (accounting.ActiveProcesses, accounting.TotalProcesses)
+}
+
+#[cfg(windows)]
+fn assert_windows_fixture_process_running(process: BorrowedHandle<'_>, name: &str) {
+    use windows::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    let state = unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 0) };
+    assert_eq!(state, WAIT_TIMEOUT, "{name} must still be running");
+}
+
+#[cfg(windows)]
+fn wait_for_windows_fixture_exit(
+    process: BorrowedHandle<'_>,
+    deadline: Instant,
+    name: &str,
+    expected_code: u32,
+) {
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+
+    let handle = HANDLE(process.as_raw_handle());
+    let remaining_ms = deadline.saturating_duration_since(Instant::now()).as_millis() as u32;
+    let state = unsafe { WaitForSingleObject(handle, remaining_ms) };
+    assert_eq!(state, WAIT_OBJECT_0, "{name} did not exit");
+    let mut code = 0;
+    unsafe { GetExitCodeProcess(handle, &mut code) }.unwrap();
+    assert_eq!(code, expected_code, "unexpected {name} exit code");
+}
+
+#[cfg(windows)]
+fn wait_for_windows_wrapper_exit(base: &Path, wrapper: BorrowedHandle<'_>, deadline: Instant) {
+    // The marker is written just before exit; the process handle proves exit 0.
+    wait_for_windows_fixture_file(base, "wrapper-exiting", deadline);
+    wait_for_windows_fixture_exit(wrapper, deadline, "wrapper", 0);
+}
+
+#[cfg(windows)]
+fn prepare_windows_wrapper_fixture(base: &Path, pty: &mut PrivatePty, mode: &str, deadline: Instant) {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
+
+    wait_for_windows_fixture_file(base, "child.pid", deadline);
+    let pid = fs::read_to_string(base.join("child.pid")).unwrap().parse().unwrap();
+    let cli = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }
+        .expect("open the fixture CLI process");
+    let cli = unsafe { OwnedHandle::from_raw_handle(cli.0) };
+    // The PTY owns the original wrapper handle until capture and close complete.
+    let wrapper = unsafe { BorrowedHandle::borrow_raw(pty.child.as_raw_handle().unwrap()) };
+    let gated_wrapper = if mode == "wrapper_between_polls" {
+        Some(wrapper.try_clone_to_owned().unwrap())
+    } else {
+        wait_for_windows_wrapper_exit(base, wrapper, deadline);
+        None
+    };
+    assert_windows_fixture_process_running(cli.as_handle(), "CLI");
+    let job = pty.job.as_ref().unwrap();
+    assert!(!job.is_empty().unwrap(), "CLI must remain in the job");
+    if mode != "wrapper_exits" {
+        let job = job.handle().try_clone_to_owned().unwrap();
+        let writer = std::mem::replace(&mut pty.writer, Box::new(std::io::sink()));
+        pty.writer = Box::new(FailedWindowsConfirmation {
+            base: base.to_path_buf(),
+            deadline,
+            wrapper: gated_wrapper,
+            cli,
+            job: Some(job),
+            _writer: writer,
+        });
+    }
+}
+
+#[cfg(windows)]
+struct FailedWindowsConfirmation {
+    base: PathBuf,
+    deadline: Instant,
+    wrapper: Option<OwnedHandle>,
+    cli: OwnedHandle,
+    job: Option<OwnedHandle>,
+    _writer: Box<dyn Write + Send>,
+}
+
+#[cfg(windows)]
+impl Write for FailedWindowsConfirmation {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        assert_eq!(bytes, b"\r");
+        assert_windows_fixture_process_running(self.cli.as_handle(), "CLI");
+        let job = self.job.take().expect("only one confirmation write is expected");
+        let (active, total) = query_windows_job_counts(job.as_handle());
+        assert!(active > 0 && total >= active && total >= 2, "the job must account for the wrapper and CLI");
+        if let Some(wrapper) = &self.wrapper {
+            assert!(active >= 2, "both wrapper and CLI must be alive entering the write");
+            assert_windows_fixture_process_running(wrapper.as_handle(), "wrapper");
+        }
+
+        fs::write(self.base.join("confirm-failed"), b"").unwrap();
+        if let Some(wrapper) = &self.wrapper {
+            wait_for_windows_wrapper_exit(&self.base, wrapper.as_handle(), self.deadline);
+            assert_windows_fixture_process_running(self.cli.as_handle(), "CLI");
+        }
+        fs::write(self.base.join("let-cli-exit"), b"").unwrap();
+        wait_for_windows_fixture_exit(self.cli.as_handle(), self.deadline, "CLI", 7);
+        wait_for_windows_fixture(self.deadline, "the job to become empty", || {
+            query_windows_job_counts(job.as_handle()).0 == 0
+        });
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_cmd_confirms_the_success_screen() {
+    let (base, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("confirm", |_, _| {}, drop);
+    assert_eq!(owner_checks, 1);
+    assert_eq!(terminal.state, SetupTokenState::Saved, "{:?}", terminal.reason);
+    assert!(base.path().join("confirmed").is_file(), "the .exe must receive Enter and exit normally");
+    assert!(store.0.borrow().get(ID).is_some_and(|value| value == &fake_token()));
+    assert!(audit.child_stopped && audit.wiped_buffer.iter().all(|byte| *byte == 0));
+    assert_eq!(fs::read_dir(staging::staging_root(base.path())).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_confirms_then_stops_the_job_before_closing_conpty() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let (base, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("linger", move |_, pty| {
+        pty.test_hooks.before_job_release = Some(Box::new(move |job| {
+            sender.send(query_windows_job_counts(job)).unwrap();
+        }));
+    }, drop);
+    let (active, total) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(active, 0, "the OS must report an empty job before the product releases it");
+    assert!(total >= 2, "the job must have contained the wrapper and CLI");
+    assert_eq!(owner_checks, 1);
+    assert!(base.path().join("confirmed").is_file());
+    assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+    assert_eq!(terminal.state, SetupTokenState::Saved, "{:?}", terminal.reason);
+    assert!(audit.child_stopped);
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_job_stops_the_cli_after_its_wrapper_already_exited() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    let (base, terminal, store, audit, _) =
+        run_windows_cmd_fixture("wrapper_exits", |_, _| {}, drop);
+    let pid: u32 = fs::read_to_string(base.path().join("child.pid")).unwrap().parse().unwrap();
+    let listing = Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .creation_flags(crate::util::process::CREATE_NO_WINDOW)
+        .output().unwrap();
+    assert!(listing.status.success());
+    assert!(!String::from_utf8_lossy(&listing.stdout).contains(&format!("\",\"{pid}\",")));
+    assert!(base.path().join("confirmed").is_file());
+    assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+    assert!(audit.child_stopped);
+    assert_eq!(terminal.state, SetupTokenState::Saved, "{:?}", terminal.reason);
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_job_stop_failure_keeps_the_previous_value() {
+    let (base, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("linger",
+        |_, pty| pty.job.as_mut().unwrap().restrict_to_query().unwrap(), drop);
+    assert_eq!(owner_checks, 0);
+    assert!(base.path().join("confirmed").is_file());
+    assert!(!audit.child_stopped);
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+    assert_eq!(store.read(ID).unwrap().as_deref(), Some(previous_windows_fixture_value().as_str()));
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_failed_confirmation_cannot_use_the_wrappers_zero_exit() {
+    let (base, terminal, store, audit, owner_checks) =
+        run_windows_cmd_fixture("wrapper_confirmation_fails", |_, _| {}, drop);
+    assert!(base.path().join("confirm-failed").is_file());
+    assert_eq!(owner_checks, 0);
+    assert!(audit.child_stopped);
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_failed_confirmation_rejects_exits_between_job_polls() {
+    let (base, terminal, store, audit, owner_checks) =
+        run_windows_cmd_fixture("wrapper_between_polls", |_, _| {}, drop);
+    assert!(base.path().join("let-cli-exit").is_file());
+    assert!(audit.child_stopped);
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+    assert_eq!(owner_checks, 0);
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn setup_token_windows_unconfirmed_stop_overrides_cancellation_and_releases_job() {
+    let logs = tempfile::tempdir().unwrap();
+    let (release, hold_close) = mpsc::sync_channel(1);
+    let (base, terminal, store, audit, owner_checks) = crate::diag::with_test_dir(logs.path().to_path_buf(), async move {
+        run_windows_cmd_fixture("cancel_pending",
+            |_, pty| pty.job.as_mut().unwrap().restrict_to_query().unwrap(), move |pty| {
+            // A slow Close must not be responsible for releasing the Job.
+            let _ = hold_close.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT);
+            drop(pty);
+        })
+    }).await;
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+    assert!(!audit.child_stopped);
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
+    assert_eq!(owner_checks, 0);
+    let logs_text = fs::read_to_string(logs.path().join("diag.log")).unwrap();
+    let messages: Vec<_> = logs_text.lines().filter_map(|line|
+        line.split_once("[claude_setup_token] ").map(|(_, message)| message)).collect();
+    assert_eq!(messages, ["stop_unconfirmed previous_reason=cancelled"]);
+    let pid = fs::read_to_string(base.path().join("child.pid")).unwrap();
+    use std::os::windows::process::CommandExt;
+    let listing = std::process::Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .creation_flags(crate::util::process::CREATE_NO_WINDOW)
+        .output().unwrap();
+    assert!(listing.status.success());
+    assert!(!String::from_utf8_lossy(&listing.stdout).contains(&format!("\",\"{pid}\",")));
+    release.send(()).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_overflow_drains_through_conpty_close() {
+    let (closed, done) = mpsc::sync_channel(1);
+    let (_, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("overflow_during_close",
+        |_, _| {}, move |pty| { drop(pty); let _ = closed.send(()); });
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("output_limit"));
+    assert_eq!(owner_checks, 0);
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
+    assert!(audit.child_stopped && audit.wiped_buffer.len() <= OUTPUT_LIMIT);
+    assert!(audit.wiped_buffer.iter().all(|byte| *byte == 0));
+    done.recv_timeout(Duration::from_secs(3)).expect("ConPTY close worker must finish");
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_deadline_releases_a_blocked_output_reader() {
+    let (mut output, pipe_writer) = std::io::pipe().unwrap();
+    let (reading, reader_started) = mpsc::sync_channel(1);
+    let (released, reader_released) = mpsc::sync_channel(1);
+    let (closed, close_finished) = mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        reading.send(()).unwrap();
+        let result = output.read(&mut [0]);
+        drop(output);
+        let _ = released.send(result);
+    });
+    reader_started.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).expect("reader did not start");
+    let closer = std::thread::spawn(move || {
+        // Keep the pipe open until its reader is released, as a blocked Close
+        // would. The timeout only bounds the failing test.
+        let result = reader_released.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT);
+        drop(pipe_writer);
+        let _ = closed.send(result);
+    });
+    let stop_reading = Arc::new(AtomicBool::new(false));
+    let now = Instant::now();
+    let completion = windows_job::finish_output(reader, closer, stop_reading.clone(), now,
+        now + Duration::from_secs(2), windows_job::OutputTestHooks::default());
+    assert!(completion.complete());
+    assert!(stop_reading.load(Ordering::SeqCst));
+    let result = close_finished.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+    assert!(result.is_err(), "cancelling the read must unblock Close");
+}
+
+#[cfg(windows)]
+struct ObserveEof {
+    reader: TestReader,
+    on_eof: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[cfg(windows)]
+impl Read for ObserveEof {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.reader.read(buffer);
+        if matches!(&result, Ok(0)) || result.as_ref().is_err_and(|error|
+            error.raw_os_error() == Some(windows::Win32::Foundation::ERROR_BROKEN_PIPE.0 as i32))
+        {
+            if let Some(on_eof) = self.on_eof.take() { on_eof(); }
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_cancellation_errors_leave_the_previous_value_and_reap() {
+    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NOT_FOUND};
+
+    for error in [ERROR_ACCESS_DENIED, ERROR_NOT_FOUND] {
+        let (blocked, reader_blocked) = mpsc::sync_channel(1);
+        let (release, hold_reader) = mpsc::sync_channel(1);
+        let (closed, close_finished) = mpsc::sync_channel(1);
+        let (reaped, workers_joined) = mpsc::sync_channel(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cancel_calls = calls.clone();
+        let (base, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("confirm",
+            move |_, pty| {
+                pty.test_hooks.wrap_reader = Some(Box::new(move |reader| Box::new(ObserveEof {
+                    reader, on_eof: Some(Box::new(move || {
+                        blocked.send(()).unwrap();
+                        hold_reader.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+                    })),
+                })));
+                pty.test_hooks.output.cancel = Some(Box::new(move |_| {
+                    cancel_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(windows::core::HRESULT::from_win32(error.0).into())
+                }));
+                pty.test_hooks.output.reaped = Some(reaped);
+            }, move |pty| { drop(pty); closed.send(()).unwrap(); });
+        assert!(base.path().join("confirmed").is_file());
+        reader_blocked.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+        close_finished.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+        assert_eq!(workers_joined.try_recv(), Err(mpsc::TryRecvError::Empty));
+        let calls_at_return = calls.load(Ordering::SeqCst);
+        if error == ERROR_NOT_FOUND { assert!(calls_at_return >= 2); }
+        else { assert_eq!(calls_at_return, 1); }
+        release.send(()).unwrap();
+        workers_joined.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), calls_at_return, "no retries after the deadline");
+        assert!(audit.child_stopped);
+        assert_eq!(terminal.state, SetupTokenState::Failed);
+        assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+        assert_eq!(owner_checks, 0);
+        assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn setup_token_windows_eof_with_a_pending_close_cannot_replace_the_saved_value() {
+    let (eof, reader_at_eof) = mpsc::sync_channel(1);
+    let (waiting, close_waiting) = mpsc::sync_channel(1);
+    let (release, hold_close) = mpsc::sync_channel(1);
+    let (reaped, workers_joined) = mpsc::sync_channel(1);
+    let (base, terminal, store, audit, owner_checks) = run_windows_cmd_fixture("confirm",
+        move |_, pty| {
+            pty.test_hooks.wrap_reader = Some(Box::new(move |reader| Box::new(ObserveEof {
+                reader, on_eof: Some(Box::new(move || eof.send(()).unwrap())),
+            })));
+            pty.test_hooks.output.reaped = Some(reaped);
+        }, move |pty| {
+            drop(pty);
+            reader_at_eof.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+            waiting.send(()).unwrap();
+            hold_close.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+        });
+    assert!(base.path().join("confirmed").is_file());
+    close_waiting.recv_timeout(WINDOWS_FIXTURE_SYNC_TIMEOUT).unwrap();
+    assert_eq!(workers_joined.try_recv(), Err(mpsc::TryRecvError::Empty));
+    release.send(()).unwrap();
+    workers_joined.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(audit.child_stopped);
+    assert_eq!(terminal.state, SetupTokenState::Failed);
+    assert_eq!(terminal.reason.as_deref(), Some("capture_failed"));
+    assert_eq!(owner_checks, 0);
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
 }
 
 // Like the existing fake-CLI tests, shutdown tests that spawn a real child through the PTY run on Unix only.
@@ -852,4 +1864,92 @@ fn setup_token_shutdown_stops_the_same_process_group_grandchild() {
     let status = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
     let state = String::from_utf8(status.stdout).unwrap();
     assert!(state.trim().is_empty() || state.trim().starts_with('Z'), "grandchild must be stopped");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_does_not_confirm_stop_while_the_group_exists() {
+    assert!(!confirm_process_group_exit(|| false, Duration::ZERO));
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_rechecks_the_group_until_it_disappears() {
+    let probes = std::cell::Cell::new(0);
+    assert!(confirm_process_group_exit(|| {
+        probes.set(probes.get() + 1);
+        probes.get() >= 2
+    }, Duration::from_secs(1)));
+    assert_eq!(probes.get(), 2);
+}
+
+#[cfg(unix)]
+fn pty_for_stop_test(child: impl Child + Send + Sync + 'static) -> PrivatePty {
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .unwrap();
+    PrivatePty { child: Box::new(child), writer: Box::new(std::io::sink()), _master: pair.master, stopped: None }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_stop_child_checks_the_group_after_an_accepted_signal() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    use std::process::Command;
+
+    let leader = Command::new("/bin/sleep").arg("5").process_group(0).spawn().unwrap();
+    let group = i32::try_from(leader.id()).unwrap();
+    let mut pty = pty_for_stop_test(leader);
+    let mut member = Command::new("/bin/sleep").arg("5").process_group(group).spawn().unwrap();
+
+    // Keep a direct child of the test unreaped so the group can still be
+    // observed after stop_child reaps its own child. Reap it before asserting.
+    let stopped = pty.stop();
+    let member_status = member.wait().unwrap();
+    assert_eq!(member_status.signal(), Some(libc::SIGKILL));
+    assert!(!stopped, "a SIGKILL accepted for the group is not proof that it disappeared");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_stop_child_accepts_a_reaped_child_without_a_process_id() {
+    #[derive(Debug)]
+    struct ExitedChild;
+    impl portable_pty::ChildKiller for ExitedChild {
+        fn kill(&mut self) -> std::io::Result<()> { panic!("the child already exited") }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> { Box::new(Self) }
+    }
+    impl Child for ExitedChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> { self.wait().map(Some) }
+        fn wait(&mut self) -> std::io::Result<ExitStatus> { Ok(ExitStatus::with_exit_code(0)) }
+        fn process_id(&self) -> Option<u32> { None }
+    }
+
+    assert!(pty_for_stop_test(ExitedChild).stop());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn setup_token_macos_checks_the_group_after_reaping_an_exited_child() {
+    let (base, cmd, live) = fixture("exit");
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let audit = run_attempt_with_pty(&registry, initial, control, base.path(), &live, cmd,
+        RunOptions::default(), &MemoryStore::default(), |_| panic!("no token"),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+        |pty| {
+            let pid = pty.child.process_id().unwrap().to_string();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let output = std::process::Command::new("/bin/ps")
+                    .args(["-o", "stat=", "-p", &pid]).output().unwrap();
+                if String::from_utf8_lossy(&output.stdout).trim_start().starts_with('Z') {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "fixture child did not exit");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(pty.stop(), "an already exited child and an empty group count as stopped");
+        }, drop);
+    assert!(audit.child_stopped);
 }

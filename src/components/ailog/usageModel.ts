@@ -175,7 +175,7 @@ export const USAGE_AXES: UsageAxis[] = [
   {
     value: "model",
     label: "シリーズ",
-    hint: "モデルのシリーズでまとめた括り (gpt-6, gpt-6.1, opus-5.5)",
+    hint: "モデルのシリーズでまとめた括り (gpt-6.2, fable-5.2, gemini-4-carbon)",
     series: true,
   },
   { value: "provider", label: "会社", hint: "Anthropic / OpenAI / xAI / Google / ローカル", series: true },

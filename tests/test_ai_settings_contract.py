@@ -144,8 +144,17 @@ def test_defaults_agree_across_the_rust_typescript_boundary() -> None:
     runner = read_repo_text("src-tauri/src/ai/mod.rs")
     catalog = read_repo_text("src/lib/aiModels.ts")
 
-    rust_model = re.search(r'Self::Codex\s*=>\s*"(gpt-[^"]+)"', runner)
-    assert rust_model, "src-tauri/src/ai/mod.rs: Codex default model not found"
+    rust_defaults = {
+        "codex": re.search(r'Self::Codex\s*=>\s*"(gpt-[^"]+)"', runner),
+        "claude-code": re.search(r'Self::ClaudeCode\s*=>\s*"(claude-[^"]+)"', runner),
+    }
+    ts_defaults = dict(re.findall(
+        r'id: "(codex|claude-code)",(?:(?!\bid:).)*?defaultModel: "([^"]+)"', catalog, re.S
+    ))
+    for provider, expected in {"codex": "gpt-5.6-luna", "claude-code": "claude-haiku-4-5-20251001"}.items():
+        rust_default = rust_defaults[provider]
+        assert rust_default and rust_default.group(1) == expected
+        assert ts_defaults[provider] == expected
 
     ts_provider = re.search(
         r'DEFAULT_AI_PROVIDER:\s*AiProviderId\s*=\s*"([^"]+)"', catalog,
@@ -155,9 +164,7 @@ def test_defaults_agree_across_the_rust_typescript_boundary() -> None:
     assert ts_model, "src/lib/aiModels.ts: DEFAULT_AI_MODEL not found"
 
     assert ts_provider.group(1) == "codex", "the default provider must stay codex on both sides"
-    assert rust_model.group(1) == ts_model.group(1), (
-        "default model differs between ai/mod.rs and aiModels.ts"
-    )
+    assert ts_model.group(1) == ts_defaults["codex"], "the global and Codex defaults must agree"
 
 
 def test_ai_settings_round_trip_through_data_json() -> None:

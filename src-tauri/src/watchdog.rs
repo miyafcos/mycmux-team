@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 static CLOCK: OnceLock<Instant> = OnceLock::new();
-static LOG_QUEUE: OnceLock<SyncSender<String>> = OnceLock::new();
+static LOG_QUEUE: OnceLock<SyncSender<(String, u64)>> = OnceLock::new();
+static DROPPED_LOG_LINES: AtomicU64 = AtomicU64::new(0);
 static FAILURES: OnceLock<SyncSender<RendererFailure>> = OnceLock::new();
 static MAIN_CREATION: OnceLock<Instant> = OnceLock::new();
 static RENDERERS: OnceLock<Mutex<RendererWatches>> = OnceLock::new();
@@ -27,9 +28,23 @@ fn renderers() -> &'static Mutex<RendererWatches> {
 
 /// Nonblocking even on a WebView2 callback. The queue is bounded so diagnostic
 /// failures cannot create an unbounded backlog during a freeze.
+fn format_with_memory(line: &str, ram: &str) -> String {
+    if let Some((prefix, metadata)) = line.split_once(" |diag-meta| ") {
+        format!("{prefix} free_ram_mib={ram} {metadata}")
+    } else { format!("{line} free_ram_mib={ram}") }
+}
+
+fn enqueue_log_with_drop_count(queue: &SyncSender<(String, u64)>, dropped: &AtomicU64, line: String) {
+    let count = dropped.swap(0, Ordering::Relaxed);
+    let line = (line, count);
+    if queue.try_send(line).is_err() {
+        dropped.fetch_add(count.saturating_add(1), Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn log_with_memory(line: String) {
     if let Some(queue) = LOG_QUEUE.get() {
-        let _ = queue.try_send(line);
+        enqueue_log_with_drop_count(queue, &DROPPED_LOG_LINES, line);
     }
 }
 
@@ -287,6 +302,79 @@ impl Probe {
     }
 }
 
+/// A fixed-schema diagnostic envelope; no terminal strings are accepted as log fields.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TerminalDiagnostic {
+    kind: String,
+    event: String,
+    session: String,
+    #[serde(default)]
+    numbers: std::collections::BTreeMap<String, u64>,
+    requested: Option<String>,
+    actual: Option<String>,
+    reason: Option<String>,
+    exception: Option<String>,
+}
+
+impl TerminalDiagnostic {
+    fn line(&self, webview: &str) -> Option<String> {
+        if !["renderer", "progress", "recovery"].contains(&self.kind.as_str())
+            || !["context-loss", "budget-evict", "budget-denied", "dispose-result", "retry", "exhausted",
+                "fallback-ready", "stall", "start", "end", "failed", "aborted", "coalesced"].contains(&self.event.as_str()) {
+            return None;
+        }
+        let session = if self.session.len() == 8 && self.session.bytes().all(|b| b.is_ascii_hexdigit()) {
+            self.session.as_str()
+        } else { "unknown" };
+        let view: String = webview.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(16).collect();
+        if self.event == "coalesced" {
+            let mut line = format!("[terminal-diagnostic] event=coalesced webview={view} session={session}");
+            for (key, value) in &self.numbers {
+                if matches!(key.as_str(), "coalesced" | "count_context_loss" | "count_budget_evict"
+                    | "count_budget_protected" | "count_budget_dispose_failed"
+                    | "count_dispose_result" | "count_dispose_failed" | "count_retry" | "count_exhausted"
+                    | "count_fallback_ready" | "count_stall" | "count_start" | "count_end" | "count_failed"
+                    | "count_aborted") || ["paint", "manual", "channel"].iter().any(|reason|
+                        ["start", "end", "failed", "aborted", "stall"].iter().any(|event|
+                            key == &format!("count_{reason}_{event}")))
+                {
+                    line.push_str(&format!(" {key}={value}"));
+                }
+            }
+            return Some(line);
+        }
+        let renderer = |value: Option<&str>| match value {
+            Some("auto") => "auto", Some("webgl") => "webgl", Some("dom") => "dom", _ => "unknown",
+        };
+        let reason = match self.reason.as_deref() {
+            Some("paint") => "paint", Some("channel") => "channel",
+            Some("manual") => "manual", _ => "unknown",
+        };
+        let exception = match self.exception.as_deref() {
+            Some("error") => "error", Some("type-error") => "type-error",
+            Some("range-error") => "range-error", Some("none") | None => "none", _ => "unknown",
+        };
+        let mut line = format!("[terminal-{}] event={} webview={view} session={session} requested={} actual={} reason={reason} exception={exception}",
+            self.kind, self.event, renderer(self.requested.as_deref()), renderer(self.actual.as_deref()));
+        for (key, value) in &self.numbers {
+            if ["term", "visible", "focused", "budget", "victim", "requester", "attempt", "dom_ready",
+                "dispose_ok", "budget_protected", "generation", "received_end", "parsed_end", "reused",
+                "observed_at_ms", "coalesced"].contains(&key.as_str()) {
+                line.push_str(&format!(" {key}={value}"));
+            }
+        }
+        if self.kind == "progress" && self.event == "stall" {
+            for key in ["generation", "received_end", "parsed_end"] {
+                if !self.numbers.contains_key(key) {
+                    line.push_str(&format!(" {key}=unknown"));
+                }
+            }
+        }
+        Some(line)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RendererHeartbeat {
@@ -297,13 +385,65 @@ pub struct RendererHeartbeat {
     pub pending_invokes: u32,
     pub visibility: String,
     pub focus: bool,
+    #[serde(default)]
+    pub heap_alert: bool,
+    #[serde(default)]
+    pub live_count: u32,
+    #[serde(default)]
+    pub cache_count: u32,
+    #[serde(default)]
+    pub pending_tickets: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress: Option<RendererProgress>,
 }
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RendererProgress {
+    timer_delay_ms: u64,
+    longest_frame_ms: u64,
+    work_kind: RendererWork,
+    work_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum RendererWork {
+    LongTask,
+    StyleLayout,
+    RenderCallbacks,
+    EventListener,
+    UserCallback,
+    Promise,
+    Script,
+    #[serde(other)]
+    Unknown,
+}
+
+impl RendererWork {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LongTask => "long-task",
+            Self::StyleLayout => "style-layout",
+            Self::RenderCallbacks => "render-callbacks",
+            Self::EventListener => "event-listener",
+            Self::UserCallback => "user-callback",
+            Self::Promise => "promise",
+            Self::Script => "script",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+const VISIBLE_RENDERER_GAP_MS: u64 = 45_000;
+const RENDERER_STALL_SAMPLE_MS: u64 = 1000;
 
 struct RendererWatch {
     last_seen_ms: u64,
     silent: bool,
     last_sample_ms: Option<u64>,
     last_long_sample_ms: Option<u64>,
+    last_visible_progress: Option<RendererProgress>,
 }
 
 impl RendererWatch {
@@ -313,15 +453,24 @@ impl RendererWatch {
             silent: false,
             last_sample_ms: None,
             last_long_sample_ms: None,
+            last_visible_progress: None,
         }
     }
 
     fn poll(&mut self, now_ms: u64) -> Option<String> {
-        if !self.silent && now_ms.saturating_sub(self.last_seen_ms) >= 120_000 {
-            self.silent = true;
-            return Some("[watchdog] renderer silent".to_string());
+        let gap = now_ms.saturating_sub(self.last_seen_ms);
+        let threshold = if self.last_visible_progress.is_some() { VISIBLE_RENDERER_GAP_MS } else { 120_000 };
+        if self.silent || gap < threshold {
+            return None;
         }
-        None
+        self.silent = true;
+        Some(match self.last_visible_progress {
+            Some(progress) => format!(
+                "[watchdog] renderer silent heartbeat_gap_ms={gap} last_work={} last_work_ms={} last_frame_ms={}",
+                progress.work_kind.label(), progress.work_ms, progress.longest_frame_ms
+            ),
+            None => "[watchdog] renderer silent".to_string(),
+        })
     }
 
     fn heartbeat(&mut self, heartbeat: &RendererHeartbeat, now_ms: u64) -> Vec<String> {
@@ -333,6 +482,19 @@ impl RendererWatch {
             ));
         }
         self.last_seen_ms = now_ms;
+        self.last_visible_progress = heartbeat.progress.filter(|_| heartbeat.visibility == "visible");
+        if let Some(progress) = heartbeat.progress {
+            if progress.timer_delay_ms >= RENDERER_STALL_SAMPLE_MS
+                || progress.longest_frame_ms >= RENDERER_STALL_SAMPLE_MS
+                || heartbeat.max_long_task_ms >= RENDERER_STALL_SAMPLE_MS as f64
+            {
+                lines.push(format!(
+                    "[renderer-stall] timer_delay_ms={} max_longtask_ms={:.1} longest_frame_ms={} work={} work_ms={}",
+                    progress.timer_delay_ms, heartbeat.max_long_task_ms, progress.longest_frame_ms,
+                    progress.work_kind.label(), progress.work_ms
+                ));
+            }
+        }
         let periodic = self
             .last_sample_ms
             .map_or(true, |at| now_ms.saturating_sub(at) >= 600_000);
@@ -340,7 +502,7 @@ impl RendererWatch {
             && self
                 .last_long_sample_ms
                 .map_or(true, |at| now_ms.saturating_sub(at) >= 30_000);
-        if periodic || long_task {
+        if periodic || long_task || heartbeat.heap_alert {
             let heap = heartbeat
                 .heap_used_mib
                 .map_or_else(|| "unknown".to_string(), |mib| format!("{mib:.1}"));
@@ -350,7 +512,8 @@ impl RendererWatch {
             };
             lines.push(format!(
                 "[renderer] heap_used_mib={heap} longtasks={} max_longtask_ms={:.1} xterm={} pending_invokes={} visibility={visibility} focus={}",
-                heartbeat.long_tasks, heartbeat.max_long_task_ms, heartbeat.xterm_count, heartbeat.pending_invokes, heartbeat.focus
+                heartbeat.long_tasks, heartbeat.max_long_task_ms, heartbeat.xterm_count,
+                heartbeat.pending_invokes, heartbeat.focus
             ));
             self.last_sample_ms = Some(now_ms);
             if long_task {
@@ -372,7 +535,12 @@ impl RendererWatches {
     fn heartbeat(&mut self, label: &str, heartbeat: &RendererHeartbeat, now_ms: u64) -> Vec<String> {
         self.views.entry(label.to_string()).or_insert_with(|| RendererWatch::new(now_ms))
             .heartbeat(heartbeat, now_ms).into_iter()
-            .map(|line| format!("{line} webview={label}")).collect()
+            .map(|line| {
+                let line = format!("{line} webview={label}");
+                if !line.starts_with("[renderer] ") { return line; }
+                format!("{line} |diag-meta| live={} cache={} pending_tickets={}",
+                    heartbeat.live_count, heartbeat.cache_count, heartbeat.pending_tickets)
+            }).collect()
     }
 
     fn poll(&mut self, now_ms: u64, exists: impl Fn(&str) -> bool) -> Vec<String> {
@@ -383,14 +551,29 @@ impl RendererWatches {
 }
 
 #[tauri::command]
-pub async fn report_renderer_heartbeat(caller: tauri::Webview, heartbeat: RendererHeartbeat) -> Result<(), String> {
-    if heartbeat.heap_used_mib.is_some_and(|value| !value.is_finite() || value < 0.0)
-        || !heartbeat.max_long_task_ms.is_finite() || heartbeat.max_long_task_ms < 0.0 {
-        return Err("invalid renderer heartbeat measurements".to_string());
+pub async fn report_renderer_heartbeat(
+    caller: tauri::Webview,
+    heartbeat: Option<RendererHeartbeat>,
+    diagnostic: Option<TerminalDiagnostic>,
+) -> Result<(), String> {
+    if heartbeat.is_none() && diagnostic.is_none() {
+        return Err("missing renderer heartbeat or diagnostic".to_string());
     }
-    let lines = renderers().lock().unwrap_or_else(|p| p.into_inner())
-        .heartbeat(caller.label(), &heartbeat, clock_ms());
-    for line in lines { log_with_memory(line); }
+    let diagnostic_line = match diagnostic {
+        Some(diagnostic) => Some(diagnostic.line(caller.label())
+            .ok_or_else(|| "invalid terminal diagnostic".to_string())?),
+        None => None,
+    };
+    if let Some(heartbeat) = heartbeat {
+        if heartbeat.heap_used_mib.is_some_and(|value| !value.is_finite() || value < 0.0)
+            || !heartbeat.max_long_task_ms.is_finite() || heartbeat.max_long_task_ms < 0.0 {
+            return Err("invalid renderer heartbeat measurements".to_string());
+        }
+        let lines = renderers().lock().unwrap_or_else(|p| p.into_inner())
+            .heartbeat(caller.label(), &heartbeat, clock_ms());
+        for line in lines { log_with_memory(line); }
+    }
+    if let Some(line) = diagnostic_line { log_with_memory(line); }
     Ok(())
 }
 
@@ -459,12 +642,17 @@ pub(crate) fn start(app: AppHandle) {
                 lines.extend(renderers().lock().unwrap_or_else(|p| p.into_inner())
                     .poll(now_ms, |label| app.get_webview(label).is_some()));
                 recover_renderers(&app, &mut recoveries, failure_receiver.try_iter(), now_ms, &mut lines);
-                lines.extend(receiver.try_iter());
+                for (line, dropped) in receiver.try_iter() {
+                    lines.push(line);
+                    if dropped > 0 {
+                        lines.push(format!("[diag-queue] dropped={dropped}"));
+                    }
+                }
                 if !lines.is_empty() {
                     let ram =
                         free_ram_mib().map_or_else(|| "unknown".to_string(), |mib| mib.to_string());
                     for line in lines {
-                        crate::diag::log(&format!("{line} free_ram_mib={ram}"));
+                        crate::diag::log(&format_with_memory(&line, &ram));
                     }
                 }
                 if let Some(stamp) = main.prepare(clock_ms()) {
@@ -586,6 +774,9 @@ pub(crate) fn register_process_failed(webview: &tauri::Webview) {
                     || *kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE.0
                     || *kind == COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED.0
             }) {
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED.0 {
+                    crate::commands::webpane_native::native_input_renderer_failed(&webview_label);
+                }
                 queue_renderer_failure(webview_label.clone(), kind);
             }
             Ok(())
@@ -737,6 +928,7 @@ mod mac_process_failed {
         log_with_memory(format!(
             "[webkit] ProcessFailed kind=Some(1) exit_code=None window={window} webview={label} event=webViewWebContentProcessDidTerminate"
         ));
+        crate::commands::webpane_native::native_input_renderer_failed(label);
         queue_renderer_failure(label.to_string(), 1);
     }
 
@@ -911,15 +1103,29 @@ mod tests {
         assert!(slow.contains("elapsed_ms=10001 success=false WARN slow creation"));
     }
 
+    #[test]
+    fn terminal_diagnostic_coalesces_only_named_events() {
+        let sample: TerminalDiagnostic = serde_json::from_value(serde_json::json!({
+            "kind": "renderer", "event": "coalesced", "session": "abcdef12",
+            "numbers": {"coalesced": 3, "count_context_loss": 2, "count_manual_failed": 1, "count_private": 5}
+        })).unwrap();
+        let line = sample.line("main").unwrap();
+        assert!(line.starts_with("[terminal-diagnostic] event=coalesced webview=main session=abcdef12"));
+        assert!(line.contains(" coalesced=3 count_context_loss=2 count_manual_failed=1"));
+        assert!(!line.contains("private"));
+    }
+
     fn heartbeat() -> RendererHeartbeat {
         RendererHeartbeat {
             heap_used_mib: Some(64.0),
             long_tasks: 0,
             max_long_task_ms: 0.0,
             xterm_count: 3,
-            pending_invokes: 1,
+            pending_invokes: 0,
+            heap_alert: false, live_count: 2, cache_count: 1, pending_tickets: 0,
             visibility: "visible".to_string(),
             focus: true,
+            progress: None,
         }
     }
 
@@ -1007,7 +1213,9 @@ mod tests {
             let lines = watches.heartbeat(label, &heartbeat(), 0);
             assert_eq!(lines.len(), 1);
             assert!(lines[0].starts_with("[renderer] heap_used_mib=64.0 "));
-            assert!(lines[0].ends_with(&format!(" webview={label}")));
+            let formatted = format_with_memory(&lines[0], "4096");
+            assert!(formatted.starts_with(&format!("[renderer] heap_used_mib=64.0 longtasks=0 max_longtask_ms=0.0 xterm=3 pending_invokes=0 visibility=visible focus=true webview={label} free_ram_mib=4096 ")));
+            assert!(formatted.ends_with("live=2 cache=1 pending_tickets=0"));
             assert!(watches.heartbeat(label, &heartbeat(), 30_000).is_empty());
             assert_eq!(watches.heartbeat(label, &heartbeat(), 600_000).len(), 1);
         }
@@ -1040,6 +1248,28 @@ mod tests {
         assert!(watches.poll(120_000, |_| false).is_empty());
         assert!(watches.views.is_empty());
     }
+    #[test]
+    fn visible_renderer_logs_an_early_gap_and_measured_work_on_return() {
+        let mut watches = RendererWatches::default();
+        let mut sample = heartbeat();
+        sample.progress = Some(RendererProgress {
+            timer_delay_ms: 0, longest_frame_ms: 250, work_kind: RendererWork::UserCallback, work_ms: 150,
+        });
+        watches.heartbeat("main", &sample, 1000);
+        assert!(watches.poll(45_999, |_| true).is_empty());
+        let gap = watches.poll(46_000, |_| true);
+        assert_eq!(gap, vec!["[watchdog] renderer silent heartbeat_gap_ms=45000 last_work=user-callback last_work_ms=150 last_frame_ms=250 webview=main"]);
+        assert!(watches.poll(60_000, |_| true).is_empty());
+
+        sample.progress = Some(RendererProgress {
+            timer_delay_ms: 50_429, longest_frame_ms: 50_000, work_kind: RendererWork::StyleLayout, work_ms: 42_000,
+        });
+        let lines = watches.heartbeat("main", &sample, 81_429);
+        let stall = lines.iter().find(|line| line.starts_with("[renderer-stall]")).unwrap();
+        assert_eq!(format_with_memory(stall, "3726"),
+            "[renderer-stall] timer_delay_ms=50429 max_longtask_ms=0.0 longest_frame_ms=50000 work=style-layout work_ms=42000 webview=main free_ram_mib=3726");
+    }
+
     #[test]
     fn a_renderer_is_silent_after_two_minutes_and_logs_its_return_once() {
         let mut watch = RendererWatch::new(0);
@@ -1075,11 +1305,80 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "heapUsedMib": 64.0, "longTasks": 0,
-            "maxLongTaskMs": 0.0, "xtermCount": 3, "pendingInvokes": 1,
+            "maxLongTaskMs": 0.0, "xtermCount": 3, "heapAlert": false,
+            "liveCount": 2, "cacheCount": 1, "pendingTickets": 0, "pendingInvokes": 0,
             "visibility": "visible", "focus": true })
         );
         let parsed: RendererHeartbeat = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.xterm_count, 3);
+        let legacy: RendererHeartbeat = serde_json::from_value(serde_json::json!({
+            "heapUsedMib": 64.0, "longTasks": 0, "maxLongTaskMs": 0.0, "xtermCount": 3,
+            "pendingInvokes": 7, "visibility": "visible", "focus": true
+        })).unwrap();
+        assert_eq!(legacy.pending_invokes, 7);
+        assert_eq!(legacy.pending_tickets, 0);
+    }
+
+    #[test]
+    fn terminal_diagnostic_queue_reports_dropped_count_on_the_next_writable_enqueue() {
+        let (queue, receiver) = mpsc::sync_channel(2);
+        let dropped = AtomicU64::new(0);
+        enqueue_log_with_drop_count(&queue, &dropped, "first".into());
+        enqueue_log_with_drop_count(&queue, &dropped, "second".into());
+        enqueue_log_with_drop_count(&queue, &dropped, "private discarded content".into());
+        enqueue_log_with_drop_count(&queue, &dropped, "another discarded line".into());
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(receiver.try_recv().unwrap(), ("first".to_string(), 0));
+        enqueue_log_with_drop_count(&queue, &dropped, "resumed".into());
+        assert_eq!(receiver.try_recv().unwrap(), ("second".to_string(), 0));
+        assert_eq!(receiver.try_recv().unwrap(), ("resumed".to_string(), 2));
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn terminal_diagnostic_never_serializes_terminal_text_or_exception_values() {
+        let sample: TerminalDiagnostic = serde_json::from_value(serde_json::json!({
+            "kind": "renderer", "event": "context-loss", "session": "secret/title/path",
+            "numbers": {"attempt": 2, "secret_body": 99}, "requested": "secret OSC",
+            "actual": "webgl", "exception": "secret/key", "reason": "secret/path"
+        })).unwrap();
+        let line = sample.line("main").unwrap();
+        assert!(line.contains("session=unknown"));
+        assert!(line.contains("attempt=2"));
+        assert!(!line.contains("secret"));
+        assert!(!line.contains("OSC"));
+    }
+
+    #[test]
+    fn terminal_diagnostic_marks_unmatched_frontend_offsets_unknown_and_omits_backend_fields() {
+        let sample: TerminalDiagnostic = serde_json::from_value(serde_json::json!({
+            "kind": "progress", "event": "stall", "session": "abcdef12", "actual": "webgl",
+            "numbers": {"generation": 3, "received_end": 15, "observed_at_ms": 1000,
+                        "backend_observed_at_ms": 2000, "backend_end": 99, "bytes": 5}
+        })).unwrap();
+        let line = sample.line("main").unwrap();
+        assert!(line.contains("generation=3"));
+        assert!(line.contains("received_end=15"));
+        assert!(line.contains("parsed_end=unknown"));
+        assert!(!line.contains("backend_"));
+        assert!(!line.contains("bytes="));
+    }
+
+    #[test]
+    fn drop_metadata_preserves_the_existing_scanner_prefixes() {
+        let enter = format_with_memory("[pty] session=abcdef12 frontend drop enter |diag-meta| reason=stale_ack", "4096");
+        assert!(enter.contains("frontend drop enter free_ram_mib=4096 reason=stale_ack"));
+        let exit = format_with_memory("[pty] session=abcdef12 frontend drop exit after_ms=1000 |diag-meta| outcome=closed", "4096");
+        assert!(exit.contains("frontend drop exit after_ms=1000 free_ram_mib=4096 outcome=closed"));
+    }
+
+    #[test]
+    fn heap_alert_is_logged_before_the_periodic_deadline() {
+        let mut watches = RendererWatches::default();
+        let mut sample = heartbeat();
+        watches.heartbeat("main", &sample, 0);
+        sample.heap_alert = true;
+        assert!(watches.heartbeat("main", &sample, 30_000)[0].contains("pending_tickets=0"));
     }
 
     #[test]

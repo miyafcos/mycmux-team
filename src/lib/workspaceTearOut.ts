@@ -147,7 +147,7 @@ export async function performWorkspaceWindowMove(
     await invoke("tearout_phase", { id, phase: "cleaned" });
     execution.mark("cleaned", label);
     await invoke("tearout_finalize", { id, token });
-    for (const sessionId of sessionIdsInWorkspace(workspace)) usePaneMetadataStore.getState().removeMetadata(sessionId);
+    for (const sessionId of sessionIdsInWorkspace(workspace)) usePaneMetadataStore.getState().removeMetadata(sessionId, "moved");
     recordPerf("detach.source.removed", workspaceId);
     return execution.result("moved");
   } catch (error) {

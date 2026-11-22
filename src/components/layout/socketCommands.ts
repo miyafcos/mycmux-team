@@ -42,6 +42,7 @@ import {
   reconcileSplitColumnsForPanes,
 } from "../../lib/layoutColumns";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
+import { beginLayoutOperation, isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import { invoke } from "@tauri-apps/api/core";
 import { postInboxMessage } from "../../lib/inbox";
 import { usePaneMetadataStore as delegationMetadataStore } from "../../stores/paneMetadataStore";
@@ -191,6 +192,8 @@ async function preflightCloseTabs(args: SocketArgs): Promise<void> {
   if (!plan.ok) requireClosedResult({ status: "refused", reason: plan.reason });
 }
 
+const SOCKET_LAYOUT_QUIT_REFUSAL = "Window is preparing to quit";
+
 async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPaneCommandContext): Promise<{ result: unknown } | null> {
   if (socketCommandTargets(cmd, args).length === 0) return null;
   const [{ useWorkspaceListStore }, { windowLabel }] = await Promise.all([
@@ -219,17 +222,26 @@ async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPan
   if (cmd === "pane.close_tabs" && groups.size > 1) {
     // Resolve every id and check every owner's structural guard before the first
     // kill. Termination remains sequential; this is not a distributed transaction.
-    for (const [owner, targets] of groups) {
-      const groupArgs = { tabIds: targets.map(target => target.id) };
+    const requests = Array.from(groups, ([owner, targets]) => ({
+      owner, groupArgs: { tabIds: targets.map(target => target.id) },
+    }));
+    for (const { owner, groupArgs } of requests) {
       if (owner === label) await preflightCloseTabs(groupArgs);
       else await requestPeerSocketCommand(owner, cmd, groupArgs, context, { preflightOnly: true });
     }
     const results: Awaited<ReturnType<typeof closeTabs>>[] = [];
-    for (const [owner, targets] of groups) {
-      const groupArgs = { tabIds: targets.map(target => target.id) };
-      results.push(await (owner === label ? handleSocketCommand(cmd, groupArgs, {
-        context, expiresAt: context.deadline,
-      }) : requestPeerSocketCommand(owner, cmd, groupArgs, context)) as Awaited<ReturnType<typeof closeTabs>>);
+    let unexecutedTabIds: string[] | undefined;
+    for (const [index, { owner, groupArgs }] of requests.entries()) {
+      try {
+        results.push(await (owner === label ? handleSocketCommand(cmd, groupArgs, {
+          context, expiresAt: context.deadline,
+        }) : requestPeerSocketCommand(owner, cmd, groupArgs, context)) as Awaited<ReturnType<typeof closeTabs>>);
+      } catch (error) {
+        // Peer replies carry errors as messages. This refusal precedes execution.
+        if (!(error instanceof Error) || error.message !== SOCKET_LAYOUT_QUIT_REFUSAL) throw error;
+        unexecutedTabIds = requests.slice(index).flatMap(({ groupArgs }) => groupArgs.tabIds);
+        break;
+      }
     }
     return { result: {
       moved: results.flatMap(result => result.moved ?? []),
@@ -241,6 +253,7 @@ async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPan
       affectedWorkspaces: [...new Set(results.flatMap(result => result.affectedWorkspaces ?? []))],
       staleRevision: results.some(result => result.staleRevision),
       victims: results.flatMap(result => result.victims),
+      ...(unexecutedTabIds ? { unexecutedTabIds, reason: "window_quitting" } : {}),
     } };
   }
   const owner = groups.keys().next().value!;
@@ -1055,7 +1068,7 @@ async function startTab(args: SocketArgs): Promise<TabStartResult> {
 
 /** Peer requests execute against the owning window's store and never route again. */
 export function startLocalTabSession(sessionId: string): Promise<TabStartResult> {
-  return startTab({ sessionId });
+  return runSocketLayoutOperation(() => startTab({ sessionId }));
 }
 
 function isKnownPaneSession(workspaces: Workspace[], sessionId: string): boolean {
@@ -1758,9 +1771,7 @@ async function automationWebPane(command: string, args: SocketArgs, context: Web
         const start = context.receivedAt;
         const waitDeadline = Math.min(context.deadline, start + timeoutMs);
         let url = "", ready = false;
-        const script = "const config = " + JSON.stringify({ state, selector }) + ";" +
-          'return {url: location.href, ready: config.state === "selector" ? !!document.querySelector(config.selector)' +
-          ': document.readyState === "complete" && (config.state === "load" || (window.__mycmux && Date.now() - window.__mycmux.lastMutationAt >= 500))};';
+        const script = api.buildWebPaneWaitScript(state, selector);
         while (Date.now() < waitDeadline) {
           const remaining = waitDeadline - Date.now();
           if (remaining <= 0) break;
@@ -2121,6 +2132,7 @@ async function closeTabs(args: SocketArgs) {
   const { closePaneOperation } = await import("../../lib/paneCloseOperation");
   const { windowLabel } = await import("../../lib/windowContext");
   socketCommandWindowsForRequest("pane.close_tabs", args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
+  if (isPreparingLayoutQuit()) throw new Error(SOCKET_LAYOUT_QUIT_REFUSAL);
   const result = await closePaneOperation({ kind: "tabs", tabIds }, "cli", {
     commitBulkLayout: workspaces => useWorkspaceListStore.getState()._replaceWorkspaces(workspaces),
   });
@@ -2963,236 +2975,259 @@ export const SOCKET_COMMAND_NAMES = [
 ] as const;
 type SocketCommandName = (typeof SOCKET_COMMAND_NAMES)[number];
 
+const layoutSocketCommands = new Set<SocketCommandName>([
+  "workspace.new", "new_workspace", "workspace.close", "close_workspace",
+  "workspace.rename", "rename_workspace",
+  "pane.spawn", "pane.spawn_tab", "pane.declare_tab", "pane.launch_declared",
+  "pane.start_tab", "pane.activate_tab", "pane.close_tab", "pane.close_tabs",
+  "pane.rename_tab", "pane.move", "web.open", "web.focus", "web.close",
+]);
+
+async function runSocketLayoutOperation<T>(dispatch: () => Promise<T>): Promise<T> {
+  const finish = beginLayoutOperation();
+  if (!finish) throw new Error(SOCKET_LAYOUT_QUIT_REFUSAL);
+  try {
+    return await dispatch();
+  } finally {
+    finish();
+  }
+}
+
 export async function handleSocketCommand(
   cmd: string, args: SocketArgs,
   execution?: Pick<PeerSocketCommandRequest, "context" | "expiresAt" | "preflightOnly">,
 ): Promise<unknown> {
-  const context = execution
-    ? { ...execution.context, deadline: Math.min(execution.context.deadline, execution.expiresAt) }
-    : webPaneCommandContext(cmd);
-  if (!execution) {
-    const routed = await routeSocketCommand(cmd, args, context);
-    if (routed) return routed.result;
-  }
-  const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
-    "../../stores/workspaceStore"
-  );
-  if (execution) {
-    if (Date.now() >= execution.expiresAt) throw new Error(`${cmd} owner request expired`);
-    const { windowLabel } = await import("../../lib/windowContext");
-    socketCommandWindowsForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
-    if (execution.preflightOnly) {
-      if (cmd !== "pane.close_tabs") throw new Error("unsupported peer preflight command");
-      await preflightCloseTabs(args);
-      return {};
+  const dispatch = async (): Promise<unknown> => {
+    const context = execution
+      ? { ...execution.context, deadline: Math.min(execution.context.deadline, execution.expiresAt) }
+      : webPaneCommandContext(cmd);
+    if (!execution) {
+      const routed = await routeSocketCommand(cmd, args, context);
+      if (routed) return routed.result;
     }
-  }
-  const workspaceState = useWorkspaceListStore.getState();
-
-  switch (cmd as SocketCommandName) {
-    case "account.switch": {
-      const { switchAccountForApi } = await import("../../lib/accountSwitchApi");
-      return switchAccountForApi(args, context.deadline);
+    const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
+      "../../stores/workspaceStore"
+    );
+    if (execution) {
+      if (Date.now() >= execution.expiresAt) throw new Error(`${cmd} owner request expired`);
+      const { windowLabel } = await import("../../lib/windowContext");
+      socketCommandWindowsForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
+      if (execution.preflightOnly) {
+        if (cmd !== "pane.close_tabs") throw new Error("unsupported peer preflight command");
+        await preflightCloseTabs(args);
+        return {};
+      }
     }
-    case "account.use_reset_ticket": {
-      const { useResetTicketForApi } = await import("../../lib/accountResetTicketApi");
-      return useResetTicketForApi(args, context.deadline);
-    }
-    case "inbox.post":
-      return postInboxMessage(args);
-    // Read-only: the account usage report mycmux already fetches for the Usage
-    // tab. Exposed over the socket so an agent can see how much room each
-    // registered CLI account has left without touching the credential store.
-    case "account.usage":
-    case "usage": {
-      const { getAccountUsageForApi } = await import("../../lib/accountUsageApi");
-      return getAccountUsageForApi();
-    }
+    const workspaceState = useWorkspaceListStore.getState();
 
-    case "workspace.list":
-    case "list_workspaces":
-      return {
-        activeWorkspaceId: workspaceState.activeWorkspaceId,
-        workspaces: workspaceState.workspaces.map((workspace) =>
-          serializeWorkspaceForSocket(workspace, workspaceState.activeWorkspaceId),
-        ),
-      };
+    switch (cmd as SocketCommandName) {
+      case "account.switch": {
+        const { switchAccountForApi } = await import("../../lib/accountSwitchApi");
+        return switchAccountForApi(args, context.deadline);
+      }
+      case "account.use_reset_ticket": {
+        const { useResetTicketForApi } = await import("../../lib/accountResetTicketApi");
+        return useResetTicketForApi(args, context.deadline);
+      }
+      case "inbox.post":
+        return postInboxMessage(args);
+      // Read-only: the account usage report mycmux already fetches for the Usage
+      // tab. Exposed over the socket so an agent can see how much room each
+      // registered CLI account has left without touching the credential store.
+      case "account.usage":
+      case "usage": {
+        const { getAccountUsageForApi } = await import("../../lib/accountUsageApi");
+        return getAccountUsageForApi();
+      }
 
-    case "workspace.select":
-    case "select_workspace": {
-      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
-      if (!workspaceId) throw new Error("workspace.select requires workspaceId");
-      const workspace = workspaceState.getWorkspace(workspaceId);
-      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
-      return {
-        activeWorkspaceId: workspaceState.activeWorkspaceId,
-        requestedWorkspaceId: workspaceId,
-        foregroundChanged: false,
-      };
-    }
-
-    case "workspace.rename":
-    case "rename_workspace": {
-      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
-      const name = socketArgString(args, "name");
-      if (!workspaceId) throw new Error("workspace.rename requires workspaceId");
-      if (!name) throw new Error("workspace.rename requires name");
-      const workspace = workspaceState.getWorkspace(workspaceId);
-      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
-      workspaceState.renameWorkspace(workspaceId, name);
-      return { id: workspaceId, name };
-    }
-
-    case "workspace.new":
-    case "new_workspace":
-      return newWorkspace(args);
-
-    case "workspace.close":
-    case "close_workspace":
-      return closeWorkspace(args);
-
-    case "pane.list":
-    case "list_panes": {
-      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id")
-        ?? workspaceState.activeWorkspaceId
-        ?? undefined;
-      if (!workspaceId) throw new Error("pane.list requires an active workspace or workspaceId");
-      const workspace = workspaceState.getWorkspace(workspaceId);
-      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
-      const activePaneId = useUiStore.getState().activePaneId;
-      const paneMetadata = usePaneMetadataStore.getState().metadata;
-      const { liveTerms } = await import("../terminal/terminalCache");
-      const [processSnapshot, lastOutputBySession] = await Promise.all([
-        loadProcessMetadataSnapshot(),
-        loadSessionOutputSnapshot(),
-      ]);
-      const serializationContext: PaneSocketSerializationContext = {
-        activeSessionId: activePaneId,
-        metadata: paneMetadata,
-        processMetadata: processSnapshot.metadata,
-        processMetadataAvailable: processSnapshot.available,
-        lastOutputBySession,
-        isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
-      };
-      return {
-        workspaceId,
-        activePaneId,
-        activeSessionId: activePaneId,
-        ...serializeWorkspaceLayoutForSocket(workspace),
-        panes: workspace.panes.map((pane) =>
-          serializePaneForSocket(pane, serializationContext)
-        ),
-      };
-    }
-
-    case "pane.list_all":
-    case "list_all_panes": {
-      const { getWindowFragments } = await import("../../lib/ipc");
-      const peers = otherWindowWorkspaces(
-        await getWindowFragments(), new Set(workspaceState.workspaces.map((ws) => ws.id)),
-      );
-      const activePaneId = useUiStore.getState().activePaneId;
-      const paneMetadata = usePaneMetadataStore.getState().metadata;
-      const { liveTerms } = await import("../terminal/terminalCache");
-      const [processSnapshot, lastOutputBySession] = await Promise.all([
-        loadProcessMetadataSnapshot(),
-        loadSessionOutputSnapshot(),
-      ]);
-      const serializationContext: PaneSocketSerializationContext = {
-        activeSessionId: activePaneId,
-        metadata: paneMetadata,
-        processMetadata: processSnapshot.metadata,
-        processMetadataAvailable: processSnapshot.available,
-        lastOutputBySession,
-        isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
-      };
-      return {
-        activeWorkspaceId: workspaceState.activeWorkspaceId,
-        activePaneId,
-        activeSessionId: activePaneId,
-        workspaces: [
-          ...workspaceState.workspaces.map((workspace) => ({
-            workspaceId: workspace.id,
-            workspaceName: workspace.name,
-            zoomedPaneId: workspace.panes.some(pane => pane.id === useUiStore.getState().zoomedPaneId)
-              ? useUiStore.getState().zoomedPaneId : null,
-            ...serializeWorkspaceLayoutForSocket(workspace),
-          })),
-          ...peers.map(({ workspace, windowLabel }) => ({
-            workspaceId: workspace.id, workspaceName: workspace.name, windowLabel, zoomedPaneId: null,
-          })),
-        ],
-        panes: [
-          ...workspaceState.workspaces.flatMap((workspace) =>
-            workspace.panes.map((pane) => serializePaneForSocket(pane, serializationContext, workspace))
+      case "workspace.list":
+      case "list_workspaces":
+        return {
+          activeWorkspaceId: workspaceState.activeWorkspaceId,
+          workspaces: workspaceState.workspaces.map((workspace) =>
+            serializeWorkspaceForSocket(workspace, workspaceState.activeWorkspaceId),
           ),
-          ...serializeOtherWindowPanes(peers, processSnapshot.metadata),
-        ],
-      };
-    }
+        };
 
-    case "pane.live_tails":
-    case "live_tails": {
-      const { getLiveTailsForApi } = await import("../../stores/liveTailStore");
-      return getLiveTailsForApi();
-    }
+      case "workspace.select":
+      case "select_workspace": {
+        const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+        if (!workspaceId) throw new Error("workspace.select requires workspaceId");
+        const workspace = workspaceState.getWorkspace(workspaceId);
+        if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+        return {
+          activeWorkspaceId: workspaceState.activeWorkspaceId,
+          requestedWorkspaceId: workspaceId,
+          foregroundChanged: false,
+        };
+      }
 
-    case "pane.spawn":
-    case "pane.spawn_tab":
-      return cmd === "pane.spawn" ? spawnPane(args) : spawnTab(args);
-    case "pane.declare_tab":
-      return declareTab(args);
-    case "pane.launch_declared":
-      return launchDeclared(args);
-    case "pane.start_tab":
-      return startTab(args);
-    case "pane.activate_tab":
-      return activateTab(args);
-    case "pane.restore_activation":
-      return restoreActivation(args);
-    case "pane.close_tab":
-      return closeTab(args);
-    case "pane.close_tabs":
-      return closeTabs(args);
-    case "pane.rename_tab":
-      return renameTab(args);
-    case "pane.send_text":
-      return sendPaneText(args, execution?.expiresAt, execution !== undefined);
-    case "pane.read":
-      return readPane(args, execution !== undefined);
-    case "pane.screen":
-      return readPaneScreen(args, execution !== undefined, execution?.expiresAt);
-    case "pane.capture":
-      return readPaneCapture(args, execution !== undefined, execution?.expiresAt);
-    case "pane.move":
-      return movePane(args);
-    case "web.open":
-      return openWebPane(args);
-    case "web.list":
-      return listWebPanes();
-    case "web.focus":
-      return focusWebPane(args, context);
-    case "web.navigate":
-    case "web.wait":
-    case "web.eval":
-    case "web.snapshot":
-    case "web.find":
-    case "web.click":
-    case "web.type":
-    case "web.key":
-    case "web.scroll":
-    case "web.upload":
-    case "web.screenshot":
-    case "web.downloads":
-    case "web.dialogs":
-      return automationWebPane(cmd, args, context);
-    case "web.read":
-      return readWebPane(args, context);
-    case "web.close":
-      return closeWebPane(args);
-    case "web.push":
-      return pushWebPane(args, context);
-    default:
-      throw new Error(`Unknown socket command: ${cmd}`);
-  }
+      case "workspace.rename":
+      case "rename_workspace": {
+        const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+        const name = socketArgString(args, "name");
+        if (!workspaceId) throw new Error("workspace.rename requires workspaceId");
+        if (!name) throw new Error("workspace.rename requires name");
+        const workspace = workspaceState.getWorkspace(workspaceId);
+        if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+        workspaceState.renameWorkspace(workspaceId, name);
+        return { id: workspaceId, name };
+      }
+
+      case "workspace.new":
+      case "new_workspace":
+        return newWorkspace(args);
+
+      case "workspace.close":
+      case "close_workspace":
+        return closeWorkspace(args);
+
+      case "pane.list":
+      case "list_panes": {
+        const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id")
+          ?? workspaceState.activeWorkspaceId
+          ?? undefined;
+        if (!workspaceId) throw new Error("pane.list requires an active workspace or workspaceId");
+        const workspace = workspaceState.getWorkspace(workspaceId);
+        if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+        const activePaneId = useUiStore.getState().activePaneId;
+        const paneMetadata = usePaneMetadataStore.getState().metadata;
+        const { liveTerms } = await import("../terminal/terminalCache");
+        const [processSnapshot, lastOutputBySession] = await Promise.all([
+          loadProcessMetadataSnapshot(),
+          loadSessionOutputSnapshot(),
+        ]);
+        const serializationContext: PaneSocketSerializationContext = {
+          activeSessionId: activePaneId,
+          metadata: paneMetadata,
+          processMetadata: processSnapshot.metadata,
+          processMetadataAvailable: processSnapshot.available,
+          lastOutputBySession,
+          isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
+        };
+        return {
+          workspaceId,
+          activePaneId,
+          activeSessionId: activePaneId,
+          ...serializeWorkspaceLayoutForSocket(workspace),
+          panes: workspace.panes.map((pane) =>
+            serializePaneForSocket(pane, serializationContext)
+          ),
+        };
+      }
+
+      case "pane.list_all":
+      case "list_all_panes": {
+        const { getWindowFragments } = await import("../../lib/ipc");
+        const peers = otherWindowWorkspaces(
+          await getWindowFragments(), new Set(workspaceState.workspaces.map((ws) => ws.id)),
+        );
+        const activePaneId = useUiStore.getState().activePaneId;
+        const paneMetadata = usePaneMetadataStore.getState().metadata;
+        const { liveTerms } = await import("../terminal/terminalCache");
+        const [processSnapshot, lastOutputBySession] = await Promise.all([
+          loadProcessMetadataSnapshot(),
+          loadSessionOutputSnapshot(),
+        ]);
+        const serializationContext: PaneSocketSerializationContext = {
+          activeSessionId: activePaneId,
+          metadata: paneMetadata,
+          processMetadata: processSnapshot.metadata,
+          processMetadataAvailable: processSnapshot.available,
+          lastOutputBySession,
+          isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
+        };
+        return {
+          activeWorkspaceId: workspaceState.activeWorkspaceId,
+          activePaneId,
+          activeSessionId: activePaneId,
+          workspaces: [
+            ...workspaceState.workspaces.map((workspace) => ({
+              workspaceId: workspace.id,
+              workspaceName: workspace.name,
+              zoomedPaneId: workspace.panes.some(pane => pane.id === useUiStore.getState().zoomedPaneId)
+                ? useUiStore.getState().zoomedPaneId : null,
+              ...serializeWorkspaceLayoutForSocket(workspace),
+            })),
+            ...peers.map(({ workspace, windowLabel }) => ({
+              workspaceId: workspace.id, workspaceName: workspace.name, windowLabel, zoomedPaneId: null,
+            })),
+          ],
+          panes: [
+            ...workspaceState.workspaces.flatMap((workspace) =>
+              workspace.panes.map((pane) => serializePaneForSocket(pane, serializationContext, workspace))
+            ),
+            ...serializeOtherWindowPanes(peers, processSnapshot.metadata),
+          ],
+        };
+      }
+
+      case "pane.live_tails":
+      case "live_tails": {
+        const { getLiveTailsForApi } = await import("../../stores/liveTailStore");
+        return getLiveTailsForApi();
+      }
+
+      case "pane.spawn":
+      case "pane.spawn_tab":
+        return cmd === "pane.spawn" ? spawnPane(args) : spawnTab(args);
+      case "pane.declare_tab":
+        return declareTab(args);
+      case "pane.launch_declared":
+        return launchDeclared(args);
+      case "pane.start_tab":
+        return startTab(args);
+      case "pane.activate_tab":
+        return activateTab(args);
+      case "pane.restore_activation":
+        return restoreActivation(args);
+      case "pane.close_tab":
+        return closeTab(args);
+      case "pane.close_tabs":
+        return closeTabs(args);
+      case "pane.rename_tab":
+        return renameTab(args);
+      case "pane.send_text":
+        return sendPaneText(args, execution?.expiresAt, execution !== undefined);
+      case "pane.read":
+        return readPane(args, execution !== undefined);
+      case "pane.screen":
+        return readPaneScreen(args, execution !== undefined, execution?.expiresAt);
+      case "pane.capture":
+        return readPaneCapture(args, execution !== undefined, execution?.expiresAt);
+      case "pane.move":
+        return movePane(args);
+      case "web.open":
+        return openWebPane(args);
+      case "web.list":
+        return listWebPanes();
+      case "web.focus":
+        return focusWebPane(args, context);
+      case "web.navigate":
+      case "web.wait":
+      case "web.eval":
+      case "web.snapshot":
+      case "web.find":
+      case "web.click":
+      case "web.type":
+      case "web.key":
+      case "web.scroll":
+      case "web.upload":
+      case "web.screenshot":
+      case "web.downloads":
+      case "web.dialogs":
+        return automationWebPane(cmd, args, context);
+      case "web.read":
+        return readWebPane(args, context);
+      case "web.close":
+        return closeWebPane(args);
+      case "web.push":
+        return pushWebPane(args, context);
+      default:
+        throw new Error(`Unknown socket command: ${cmd}`);
+    }
+  };
+  return layoutSocketCommands.has(cmd as SocketCommandName)
+    ? runSocketLayoutOperation(dispatch)
+    : dispatch();
 }

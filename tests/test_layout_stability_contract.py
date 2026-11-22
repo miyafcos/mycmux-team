@@ -778,7 +778,8 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "TERMINAL_BATCH_RETAINED_MAX_BYTES",
         "trimOldestBatchesToByteCap",
         "const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();",
-        "const terminalRawTailBySession = new Map<string, Uint8Array>();",
+        "const terminalRawTailBySession = new Map<string, TerminalRawTail>();",
+        "const knownTail = lastSynchronizedScrollbackEnd === 0\n        ? terminalRawTailBySession.get(sessionId)?.snapshot()\n        : undefined;",
         "const terminalScrollbackResyncNeeded = new Set<string>();",
         "let refreshTimers: ReturnType<typeof setTimeout>[] = [];",
         "const clearRefreshTimers = (): void => {",
@@ -808,7 +809,8 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "resetTerminalOutputDecoder(sessionId)",
         "replaceTerminalRawTail(sessionId, scrollback);",
         "rememberTerminalRawTail(sessionId, chunk);",
-        "const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);",
+        "const pendingBatches = new TerminalBatchQueue(takeDeferredTerminalBatches(sessionId));",
+        "const dropped = pendingBatches.trim(TERMINAL_BATCH_RETAINED_MAX_BYTES);",
         "stashDeferredTerminalBatches(sessionId, carry, (pending) => {",
         "terminalDeferredBatches.delete(sessionId);",
         "terminalRawTailBySession.delete(sessionId);",
@@ -859,7 +861,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "const syncBackendScrollbackToTerminal =", 1,
     )[0]
     guard = "if (!currentPtyRead(sessionId, readGeneration) || generation !== pumpGeneration || disposed || termDisposed || !term || !canWritePendingBatches()) return false;"
-    assert sync.index("await withTerminalDeadline(getSessionScrollback(sessionId)") < sync.index(guard)
+    assert sync.index("terminalRawTailBySession.get(sessionId)?.snapshot()") < sync.index("await withTerminalDeadline(getSessionScrollback(sessionId)") < sync.index(guard)
     assert sync.index(guard) < sync.index("const scrollback = new Uint8Array(scrollbackSnapshot.data);")
 
     # ACK without parsing: window-only parking retains the exact batch, while

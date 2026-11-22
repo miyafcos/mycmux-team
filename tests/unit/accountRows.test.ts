@@ -9,10 +9,12 @@ import {
   displayWindows,
   formatPct,
   formatResetShort,
+  formatUpdatedAt,
   orderAccountRows,
   rowHasWindows,
   rowMessage,
   rowNeedsAttention,
+  rowIsPressed,
   sharedResetAt,
   staleWindowsNote,
   usageBarColor,
@@ -48,6 +50,11 @@ function row(overrides: Partial<ProfileUsage> = {}): ProfileUsage {
 }
 
 describe("orderAccountRows", () => {
+  it("orders Gemini after the three switchable providers", () => {
+    const rows = [row({ provider: "gemini" }), row({ provider: "grok" }), row(), row({ provider: "codex" })];
+    expect(orderAccountRows(rows).map(({ provider }) => provider)).toEqual(["claude", "codex", "grok", "gemini"]);
+  });
+
   it("is deterministic regardless of input order", () => {
     const rows = [
       row({
@@ -165,6 +172,21 @@ describe("worstPct", () => {
   it("includes legacy model windows", () => {
     expect(worstPct(row({ seven_day_sonnet: stat(63) }))).toBe(63);
   });
+
+  it("uses only 7d for Grok's row colour and pressure", () => {
+    const grok = row({
+      provider: "grok",
+      five_hour: stat(97),
+      seven_day: stat(64),
+      model_windows: [{ key: "GrokBuild", window: stat(99) }],
+    });
+    expect(worstPct(grok)).toBe(64);
+    expect(usageColor(worstPct(grok)!)).toBe("var(--cmux-text-secondary)");
+    expect(rowIsPressed(grok)).toBe(false);
+    expect(rowIsPressed({ ...grok, seven_day: stat(90) })).toBe(true);
+    expect(worstPct({ ...grok, seven_day: null })).toBeNull();
+    expect(rowHasWindows({ ...grok, seven_day: null })).toBe(false);
+  });
 });
 
 describe("displayWindows", () => {
@@ -206,43 +228,27 @@ describe("displayWindows", () => {
     expect(windows.map(({ key }) => key)).toEqual(["model:Fable", "model:Falcon"]);
   });
 
-  // Every Grok product is named "Grok<Something>", so the initial-letter rule
-  // that reads fine for claude would print the same "G" for all three and the
-  // meter row would stop saying which limit is which.
-  it("gives every Grok product window a label of its own", () => {
-    const windows = displayWindows(
-      row({
-        provider: "grok",
-        seven_day: stat(64),
-        model_windows: [
-          { key: "GrokBuild", window: stat(58) },
-          { key: "GrokChat", window: stat(12) },
-          { key: "GrokImagine", window: stat(3) },
-        ],
-      }),
-    );
-    const labels = windows.map(({ label }) => label);
-    expect(labels).toEqual(["7d", "開発", "対話", "画像"]);
-    expect(new Set(labels).size).toBe(labels.length);
-    // The API's own name stays reachable on hover.
-    expect(windows[1].hint).toContain("GrokBuild");
+  it("shows only the weekly window for Grok", () => {
+    const grok = row({
+      provider: "grok",
+      five_hour: stat(15),
+      seven_day: stat(64),
+      model_windows: [
+        { key: "GrokBuild", window: stat(58) },
+        { key: "GrokChat", window: stat(12) },
+        { key: "GrokImagine", window: stat(3) },
+      ],
+    });
+    expect(displayWindows(grok).map(({ label, stat: value }) => [label, value.pct]))
+      .toEqual([["7d", 64]]);
+    expect(displayWindows({ ...grok, seven_day: null })).toEqual([]);
   });
 
-  it("falls back to the name without its shared prefix for unknown Grok products", () => {
-    const windows = displayWindows(
-      row({
-        provider: "grok",
-        model_windows: [{ key: "GrokVideo", window: stat(9) }],
-      }),
-    );
-    expect(windows[0].label).toBe("Video");
-  });
-
-  it("leaves non-Grok providers on the initial-letter label", () => {
-    const windows = displayWindows(
-      row({ model_windows: [{ key: "seven_day_fable", window: stat(54) }] }),
-    );
-    expect(windows[0].label).toBe("F");
+  it.each(["claude", "codex"] as const)("keeps all window labels and colours for %s", (provider) => {
+    const account = row({ provider, five_hour: stat(10), seven_day: stat(50),
+      model_windows: [{ key: "seven_day_fable", window: stat(99) }] });
+    expect(displayWindows(account).map(({ label }) => label)).toEqual(["5h", "7d", "F"]);
+    expect(worstPct(account)).toBe(99);
   });
 });
 
@@ -335,6 +341,17 @@ describe("usage colours", () => {
 });
 
 describe("row messaging", () => {
+  it.each([
+    ["gemini_expired", "wait_for_cli", "Gemini のログインの期限が切れています。agy を一度起動すると更新されます"],
+    ["gemini_not_signed_in", "needs_relogin", "agy にログインしていません"],
+    ["gemini_credentials", "error", "Gemini の認証情報を読み取れませんでした"],
+    ["gemini_unsupported", "unsupported", "この環境では Gemini の使用量を取得できません"],
+    ["gemini_fetch", "error", "Gemini の使用量を取得できませんでした"],
+    ["gemini_no_usage", "error", "表示できる使用量がありません"],
+  ] as const)("shows Gemini's %s message", (code, state, message) => {
+    expect(rowMessage(row({ provider: "gemini", state, error_code: `usage.error.${code}` }))).toBe(message);
+  });
+
   it("covers every row state", () => {
     const states: UsageRowState[] = [
       "ok",
@@ -385,6 +402,32 @@ describe("row messaging", () => {
         row({ model_windows: [{ key: "Fable", window: stat(54) }] }),
       ),
     ).toBe(true);
+  });
+
+  it("keeps the Gemini unsupported message without flagging it for attention", () => {
+    const unsupported = row({
+      provider: "gemini",
+      state: "unsupported",
+      error_code: "usage.error.gemini_unsupported",
+    });
+    expect(rowMessage(unsupported)).toContain("Gemini");
+    expect(rowNeedsAttention(unsupported)).toBe(false);
+    expect(rowNeedsAttention(row({ provider: "gemini", state: "error" }))).toBe(true);
+  });
+
+  it("shows the next update message without a warning for a new Gemini login on hold", () => {
+    const waiting = row({ provider: "gemini", state: "cooldown", error_code: "usage.error.deferred" });
+    expect(rowMessage(waiting)).toBe("今回の取得は見送りました。次回の更新で表示されます。");
+    expect(rowNeedsAttention(waiting)).toBe(false);
+    expect(rowNeedsAttention(row({ provider: "gemini", state: "error", error_code: "usage.error.gemini_fetch" }))).toBe(true);
+  });
+
+  it("uses the existing timed cooldown message for a rate-limited Gemini login", () => {
+    const retry_at = "2026-08-08T13:56:00Z";
+    const waiting = row({ provider: "gemini", state: "cooldown", error_code: "usage.error.rate_limited", retry_at });
+    expect(rowHasWindows(waiting)).toBe(false);
+    expect(rowMessage(waiting)).toContain(formatUpdatedAt(retry_at));
+    expect(rowNeedsAttention(waiting)).toBe(true);
   });
 
   it("captions stale numbers with their age and the resume time", () => {

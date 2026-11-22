@@ -10,6 +10,7 @@ import {
   type WebPaneUrlEvent,
 } from "./webPaneApi";
 import { webPaneStrings } from "./webPaneStrings";
+import { useOperatorFocusNoticeStore } from "../../lib/operatorFocusRequest";
 
 interface WebPaneStatusBarProps {
   tabId: string;
@@ -24,6 +25,10 @@ type SigninState = "idle" | "running" | "reopening";
  * launch even when nothing was wrong.
  */
 export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarProps) {
+  const focusRefusal = useOperatorFocusNoticeStore(({ notices }) => (
+    presetId === "browser" ? notices.get(tabId) : undefined
+  ));
+  const shortcutWaiting = useOperatorFocusNoticeStore(({ waitingShortcuts }) => waitingShortcuts.has(tabId));
   const [label, setLabel] = useState(presetId);
   // null until the pane reports its first navigation: an unknown state is not a
   // reason to tell the operator anything.
@@ -122,9 +127,23 @@ export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarPr
         ? webPaneStrings.signedOut(label)
         : null;
 
-  if (!message && !error) return null;
+  const notice = (kind: string, text: string) => (
+    <div data-web-pane-notice={kind} role="status" title={text} style={{
+      flexShrink: 0, padding: "5px 8px", fontSize: 12,
+      color: "var(--cmux-text)", background: "var(--cmux-surface)",
+      borderBottom: "1px solid var(--cmux-border)",
+      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+    }}>
+      {text}
+    </div>
+  );
+  const notices = <>
+    {focusRefusal && notice(focusRefusal, webPaneStrings.operatorFocus[focusRefusal])}
+    {shortcutWaiting && notice("shortcut-waiting", webPaneStrings.shortcutWaiting)}
+  </>;
+  if (!message && !error) return notices;
 
-  return (
+  const signinBanner = (
     <div
       data-web-pane-status-bar="true"
       data-web-pane-signed-out={signedOut ? "true" : undefined}
@@ -166,4 +185,5 @@ export default function WebPaneStatusBar({ tabId, presetId }: WebPaneStatusBarPr
       )}
     </div>
   );
+  return <>{notices}{signinBanner}</>;
 }

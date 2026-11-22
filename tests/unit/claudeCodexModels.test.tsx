@@ -1,9 +1,8 @@
 /** @vitest-environment jsdom */
 
 /**
- * claude-codex's chips come from its installed models.json (read by the
- * claude_codex_model_choices command); every other agent, and claude-codex
- * without a readable table, keeps the catalog's own list.
+ * Codex and claude-codex read their installed lists and fall back to the
+ * fixed launcher catalog when those lists are unavailable.
  */
 
 import { act } from "react";
@@ -15,6 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeM
 
 import {
   getCatalogEntry,
+  getLaunchEfforts,
   isValidLaunchSpecValue,
   type AgentCatalogEntry,
   type ModelChoice,
@@ -82,10 +82,9 @@ describe("useLaunchModels", () => {
   });
 
   it("never asks for other agents", async () => {
-    await render(getCatalogEntry("codex"));
+    await render(getCatalogEntry("agy"));
     expect(invokeMock).not.toHaveBeenCalled();
-    expect(seen).toEqual(getCatalogEntry("codex")!.models);
-    expect(seen.map((choice) => choice.value).slice(0, 2)).toEqual(["gpt-6.1-sol", "gpt-6.1-terra"]);
+    expect(seen).toEqual(getCatalogEntry("agy")!.models);
   });
 
   it("offers nothing without an entry", async () => {
@@ -96,11 +95,52 @@ describe("useLaunchModels", () => {
   it("re-reads the table when the panel comes back", async () => {
     invokeMock.mockResolvedValueOnce(INSTALLED);
     await render(getCatalogEntry("claude-codex"));
-    await render(getCatalogEntry("codex"));
+    await render(getCatalogEntry("grok"));
     invokeMock.mockResolvedValueOnce(INSTALLED.slice(0, 1));
     await render(getCatalogEntry("claude-codex"));
     expect(invokeMock).toHaveBeenCalledTimes(2);
     expect(seen).toEqual(INSTALLED.slice(0, 1));
+  });
+});
+
+describe("Codex cache choices", () => {
+  const choices: ModelChoice[] = [
+    { value: "gpt-next", label: "Next", efforts: [] },
+    { value: "gpt-6-luna", label: "Luna", efforts: ["low", "max"] },
+  ];
+
+  it("uses the cache order and each model's effort choices", async () => {
+    const entry = getCatalogEntry("codex")!;
+    invokeMock.mockResolvedValueOnce(choices);
+    await render(entry);
+    expect(invokeMock).toHaveBeenCalledWith("codex_model_choices");
+    expect(seen).toEqual(choices);
+    expect(getLaunchEfforts(entry, "gpt-next", seen)).toEqual([]);
+    expect(getLaunchEfforts(entry, "gpt-6-luna", seen)).toEqual(["low", "max"]);
+    expect(getLaunchEfforts(entry, "gpt-5.6-luna", seen)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it.each([
+    ["empty cache", () => invokeMock.mockResolvedValueOnce([])],
+    ["invalid IPC payload", () => invokeMock.mockResolvedValueOnce({ models: [] })],
+    ["failed read", () => invokeMock.mockRejectedValueOnce(new Error("unavailable"))],
+  ])("keeps the fixed Codex entries for %s", async (_name, arrange) => {
+    const entry = getCatalogEntry("codex")!;
+    arrange();
+    await render(entry);
+    expect(seen).toEqual(entry.models);
+    expect(seen.map((choice) => choice.value).slice(0, 2)).toEqual(["gpt-6.2-sol", "gpt-6.2-astra"]);
+    expect(getLaunchEfforts(entry, "gpt-6-luna", seen)).not.toContain("ultra");
+  });
+
+  it("discards a Codex response after the picker switches agents", async () => {
+    let resolve: (models: ModelChoice[]) => void = () => {};
+    invokeMock.mockReturnValueOnce(new Promise<ModelChoice[]>(res => { resolve = res; }));
+    await render(getCatalogEntry("codex"));
+    invokeMock.mockResolvedValueOnce(INSTALLED);
+    await render(getCatalogEntry("claude-codex"));
+    await act(async () => resolve(choices));
+    expect(seen).toEqual(INSTALLED);
   });
 });
 

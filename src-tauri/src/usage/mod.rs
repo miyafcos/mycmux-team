@@ -3,6 +3,7 @@ pub mod legacy;
 pub mod logging;
 pub mod oauth_claude;
 pub mod oauth_codex;
+pub(crate) mod oauth_gemini;
 pub mod oauth_grok;
 pub mod refresh;
 pub mod reset_tickets;
@@ -17,6 +18,12 @@ use std::time::Duration;
 /// always fetches fresh numbers while a focus-triggered poll shortly after
 /// one is served from cache instead of flapping between hit and miss.
 pub const USAGE_CACHE_TTL_MS: i64 = 150_000;
+pub(crate) const ERROR_DEFERRED: &str = "usage.error.deferred";
+pub(crate) const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
+
+pub(crate) fn next_429_backoff_ms(previous_ms: Option<i64>) -> i64 {
+    previous_ms.map_or(300_000, |ms| ms.saturating_mul(2).min(1_800_000))
+}
 
 /// Best-effort append-only failure log for OAuth flows
 /// (`<app_data>/logs/oauth.log`). Release builds run with
@@ -51,6 +58,7 @@ pub struct UsageState {
     pub refresh_lock: tokio::sync::Mutex<()>,
     pub cooldowns: tokio::sync::Mutex<HashMap<String, Cooldown>>,
     pub profile_usage_cache: tokio::sync::Mutex<HashMap<String, CachedWindows>>,
+    pub(crate) gemini_usage: oauth_gemini::UsageCache,
     pub account_subscriptions: tokio::sync::Mutex<HashMap<String, subscription::CachedSubscription>>,
     pub last_metadata_refresh_at_ms: tokio::sync::Mutex<i64>,
     pub reset_credit_details: tokio::sync::Mutex<HashMap<String, reset_tickets::CachedCredits>>,
@@ -85,6 +93,7 @@ impl UsageState {
             refresh_lock: tokio::sync::Mutex::new(()),
             cooldowns: tokio::sync::Mutex::new(HashMap::new()),
             profile_usage_cache: tokio::sync::Mutex::new(HashMap::new()),
+            gemini_usage: oauth_gemini::UsageCache::default(),
             account_subscriptions: tokio::sync::Mutex::new(HashMap::new()),
             last_metadata_refresh_at_ms: tokio::sync::Mutex::new(0),
             reset_credit_details: tokio::sync::Mutex::new(HashMap::new()),
@@ -137,10 +146,19 @@ pub enum UsageRowState {
     Error,
 }
 
+/// Gemini is a usage source and has no profile, login or switch IPC.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageProvider {
+    Gemini,
+    #[serde(untagged)]
+    Cli(crate::cli_accounts::CliProvider),
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ProfileUsage {
     pub profile_id: String,
-    pub provider: crate::cli_accounts::CliProvider,
+    pub provider: UsageProvider,
     pub label: String,
     pub email: Option<String>,
     pub plan: Option<String>,
@@ -165,6 +183,10 @@ pub struct ProfileUsage {
 pub struct AccountUsageReport {
     pub accounts: Vec<ProfileUsage>,
     pub generated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inventory_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gemini_revision: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -203,7 +225,7 @@ mod tests {
         let synthetic_refresh = "synthetic-refresh";
         let usage = ProfileUsage {
             profile_id: "profile".into(),
-            provider: crate::cli_accounts::CliProvider::Claude,
+            provider: UsageProvider::Cli(crate::cli_accounts::CliProvider::Claude),
             label: "label".into(),
             email: None,
             plan: None,

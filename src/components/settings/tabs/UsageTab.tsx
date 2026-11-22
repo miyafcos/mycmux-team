@@ -98,8 +98,10 @@ function UsageDetailRow({ row }: { row: ProfileUsage }) {
       <tr style={{ borderTop: "1px solid var(--cmux-border-hairline)" }}>
         <TableCell>
           <div style={{ display: "grid", gap: 2 }}>
-            <span style={{ color: "var(--cmux-text-tertiary)" }}>{PROVIDER_SHORT[row.provider]}</span>
-            <span>{row.email ?? row.label}</span>
+            <span style={{ color: "var(--cmux-text-tertiary)" }}>
+              {row.provider === "gemini" ? row.label : PROVIDER_SHORT[row.provider]}
+            </span>
+            {(row.provider !== "gemini" || row.email) && <span>{row.email ?? row.label}</span>}
             {row.plan && <span style={{ color: "var(--cmux-text-dim)" }}>{row.plan}</span>}
           </div>
         </TableCell>
@@ -110,13 +112,11 @@ function UsageDetailRow({ row }: { row: ProfileUsage }) {
         <TableCell>{formatUpdatedAt(row.fetched_at)}</TableCell>
         <TableCell>
           <div style={{ display: "grid", gap: 2 }}>
-            <span
-              style={{
-                color: row.is_active ? "var(--cmux-usage-ok)" : "var(--cmux-text-dim)",
-              }}
-            >
-              {row.is_active ? "使用中" : row.registered ? "登録済み" : "CLI 未登録"}
-            </span>
+            {row.provider !== "gemini" && (
+              <span style={{ color: row.is_active ? "var(--cmux-usage-ok)" : "var(--cmux-text-dim)" }}>
+                {row.is_active ? "使用中" : row.registered ? "登録済み" : "CLI 未登録"}
+              </span>
+            )}
             {message && <span style={{ color: "var(--cmux-text-dim)" }}>{message}</span>}
           </div>
         </TableCell>

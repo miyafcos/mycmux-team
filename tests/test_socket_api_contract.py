@@ -174,3 +174,21 @@ def test_human_activation_paths_remain_explicit() -> None:
         'focusController.request("programmatic", { sessionId: null, focus: false });',
         "src/lib/jumpToPaneTab.ts",
     )
+
+    controller = read_repo_text("src/components/workspace/WebPaneController.tsx")
+    operator_request = read_repo_text("src/lib/operatorFocusRequest.ts")
+    webpane = read_repo_text("src-tauri/src/commands/webpane.rs")
+    navigation_gate = function_slice(webpane, "if url.host_str() == Some(operator_focus::REQUEST_HOST)", 'if preset.id == "preview" {')
+    assert "operator_focus::operator_focus_decision(" in navigation_gate and "return false;" in navigation_gate
+    assert "tauri::async_runtime::spawn" in navigation_gate
+    listener = function_slice(controller, ".listen<unknown>(OPERATOR_FOCUS_EVENT", "}).then")
+    assert listener.index("parseOperatorFocusRequest(event.payload)") < listener.index("displayedPaneShortcutSource(request.tabId)")
+    assert listener.index('source?.type !== "web" || source.presetId !== "browser"') < listener.index("jumpToOperatorFocusTab(")
+    assert listener.index("isOperatorFocusBlocked(dragBlockedRef.current)") < listener.index("jumpToOperatorFocusTab(")
+    jump = function_slice(operator_request, "export function jumpToOperatorFocusTab(", "\n}")
+    assert jump.index("useWorkspaceListStore.getState().workspaces") < jump.index("jumpToPaneTab(")
+    assert jump.index('tab.type !== undefined && tab.type !== "terminal"') < jump.index("jumpToPaneTab(")
+    assert jump.index("isPaneTabClosing(tab.id)") < jump.index("jumpToPaneTab(")
+    socket = read_repo_text("src/components/layout/socketCommands.ts")
+    for token in ("operatorFocusRequest", "jumpToOperatorFocusTab", "mycmux:web-pane-operator-focus"):
+        assert token not in socket

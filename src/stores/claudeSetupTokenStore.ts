@@ -4,10 +4,10 @@ import {
   onClaudeSetupToken, type ClaudeSetupTokenEvent,
 } from "../lib/ipc";
 
-const rank = { starting: 0, waiting_browser: 1, code_available: 2, checking_owner: 3,
-  saved: 4, mismatch: 4, failed: 4, cancelled: 4, timeout: 4 } as const;
+const rank = { starting: 0, waiting_browser: 1, code_available: 2, confirming: 3, checking_owner: 4,
+  saved: 5, mismatch: 5, failed: 5, cancelled: 5, timeout: 5 } as const;
 export function isSetupTokenActive(event: ClaudeSetupTokenEvent | null): boolean {
-  return event !== null && rank[event.state] < 4;
+  return event !== null && rank[event.state] < rank.saved;
 }
 export interface RegistrationOrigin {
   surface: "launcher" | "settings" | "new-workspace";
@@ -155,7 +155,11 @@ export const useClaudeSetupTokenStore = create<SetupState>((set, get) => ({
       await submitClaudeSetupCode(loginId, code);
       set({ failure: null, failureProfileId: null }); return true;
     } catch {
-      set({ failure: "code_failed", failureProfileId: profileId }); return false;
+      const current = get().event;
+      if (current?.login_id === loginId && current.state === "code_available") {
+        set({ failure: "code_failed", failureProfileId: profileId });
+      }
+      return false;
     }
   },
   cancel: async loginId => {

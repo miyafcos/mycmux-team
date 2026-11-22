@@ -1,3 +1,4 @@
+import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 import { isAutomaticNameTarget } from "../lib/autoNamePolicy";
 import { create } from "zustand";
 import { confirm } from "../lib/appConfirmation";
@@ -1053,6 +1054,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
+    if (isPreparingLayoutQuit()) return;
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
@@ -1204,6 +1206,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   },
 
   openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, previewInfo) => {
+    if (isPreparingLayoutQuit()) return;
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 

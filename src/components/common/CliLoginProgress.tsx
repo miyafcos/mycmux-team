@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { CliProvider } from "../../lib/ipc";
+import type { SwitchableCliProvider } from "../../lib/ipc";
 import { loginRemainingLabel } from "../../lib/cliAccounts";
 import { useCliLoginStore } from "../../stores/cliLoginStore";
 
@@ -16,7 +16,7 @@ export function CliLoginProgress({
   provider,
   compact = false,
 }: {
-  provider: CliProvider;
+  provider: SwitchableCliProvider;
   compact?: boolean;
 }) {
   const entry = useCliLoginStore((state) => state.byProvider[provider]);

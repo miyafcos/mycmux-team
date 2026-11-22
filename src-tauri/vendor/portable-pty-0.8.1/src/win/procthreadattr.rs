@@ -4,7 +4,9 @@ use std::io::Error as IoError;
 use std::{mem, ptr};
 use winapi::shared::minwindef::DWORD;
 use winapi::um::processthreadsapi::*;
+use winapi::um::winnt::HANDLE;
 
+const PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002000D;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 
 pub struct ProcThreadAttributeList {
@@ -61,6 +63,22 @@ impl ProcThreadAttributeList {
             "UpdateProcThreadAttribute failed: {}",
             IoError::last_os_error()
         );
+        Ok(())
+    }
+
+    pub fn set_jobs(&mut self, jobs: &[HANDLE]) -> Result<(), Error> {
+        let res = unsafe {
+            UpdateProcThreadAttribute(
+                self.as_mut_ptr(),
+                0,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                jobs.as_ptr().cast_mut().cast(),
+                mem::size_of_val(jobs),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        ensure!(res != 0, "setting the job list failed: {}", IoError::last_os_error());
         Ok(())
     }
 }

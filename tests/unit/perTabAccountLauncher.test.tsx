@@ -29,7 +29,8 @@ import { launcherStrings as S } from "../../src/components/workspace/launcherStr
 import { moveSpecRow, specRowsFor } from "../../src/components/workspace/launcherModel";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-Element.prototype.scrollIntoView = () => {};
+const scrollIntoView = vi.fn();
+Element.prototype.scrollIntoView = scrollIntoView;
 let host: HTMLDivElement;
 let root: Root;
 const profiles = ["claude", "codex", "grok"].flatMap(provider =>
@@ -71,6 +72,23 @@ const accountRow = () => host.querySelector<HTMLElement>("[data-launch-account-r
 const env = () => mocks.layout.addTabToPaneWithOptions.mock.calls.at(-1)?.[2]?.launchEnv;
 
 describe("per-tab account launcher", () => {
+  it("scrolls to the selected chip in the active account, model or effort row", async () => {
+    await open("codex");
+    await key("ArrowRight");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(button("codex ready", accountRow()));
+    await key("ArrowDown");
+    await key("ArrowRight");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(button("Sol (6.2)"));
+    await key("ArrowDown");
+    await key("ArrowRight");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(button("low"));
+    await key("ArrowUp");
+    await key("ArrowUp");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(button("codex ready", accountRow()));
+    await key("ArrowRight");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(button("codex missing", accountRow()));
+  });
+
   it.each(["claude", "codex", "grok"])("L-1 loads only on opening %s and orders account, model, effort", async target => {
     await act(async () => root.render(<LauncherPane workspaceId="ws" paneId="pane" tabId="tab" sessionId="session" isActive />));
     expect(mocks.list).not.toHaveBeenCalled();
@@ -154,6 +172,10 @@ describe("per-tab account launcher", () => {
     await open("claude");
     expect(accountRow().textContent).toBe(S.accountLabel + S.accountEmpty);
     expect(accountRow().querySelectorAll("button")).toHaveLength(0);
+    await key("ArrowDown");
+    scrollIntoView.mockClear();
+    await key("ArrowUp");
+    expect(scrollIntoView.mock.contexts.at(-1)).toBe(accountRow().firstElementChild);
     await click(S.launchButton);
     expect(env()).toEqual({ MYCMUX_LAUNCH_TARGET: "claude" });
   });

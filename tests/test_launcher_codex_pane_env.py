@@ -1,4 +1,4 @@
-"""Codex receives a quoted pane-id override without changing user config."""
+"""Codex startup and pane-id overrides are scoped to the launcher argv."""
 from __future__ import annotations
 
 import json
@@ -36,7 +36,7 @@ __mycmux_codex_with_pane test_codex resume --last
     assert result.returncode == 0, result.stderr
     args = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG:")]
     assert args == ["-c", f"shell_environment_policy.set.MYCMUX_PANE_SESSION_ID={json.dumps(PANE_ID)}",
-                    "resume", "--last"]
+                    "-c", "check_for_update_on_startup=false", "resume", "--last"]
     assert "KIND:resume" in result.stdout
 
 
@@ -62,7 +62,7 @@ codex resume --last
     assert result.returncode == 0, result.stderr
     args = [line[4:] for line in result.stdout.splitlines() if line.startswith("ARG:")]
     assert args == ["-c", f"shell_environment_policy.set.MYCMUX_PANE_SESSION_ID={json.dumps(PANE_ID)}",
-                    "resume", "--last"]
+                    "-c", "check_for_update_on_startup=false", "resume", "--last"]
 
 
 @pytest.mark.parametrize("kind,expected_arg", [("codex", None), ("grok", "--continue")])
@@ -165,7 +165,8 @@ if ($env:TEST_RESUME -eq '1') {
     expected = (["resume", "fixture-id"] if provider == "codex" else ["--resume", "fixture-id"]) if resume else []
     expected += ["--model", "fixture-model"]
     if provider == "codex":
-        expected = ["-c", 'shell_environment_policy.set.MYCMUX_PANE_SESSION_ID="fixture-pane"'] + expected
+        expected = ["-c", 'shell_environment_policy.set.MYCMUX_PANE_SESSION_ID="fixture-pane"',
+                    "-c", "check_for_update_on_startup=false"] + expected
     if marker == "matching":
         expected = (["--no-daemon", "-c", 'cli_auth_credentials_store="file"'] if provider == "codex" else ["--no-leader"]) + expected
     assert actual == expected

@@ -8,6 +8,7 @@ import {
   type EmptyWorkspaceVariant,
 } from "../../lib/workspaceBootstrap";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { beginLayoutOperation } from "../../lib/layoutQuit";
 import { formatShortcutLabel } from "../../lib/keybindings";
 import { useToastStore } from "../../stores/toastStore";
 
@@ -86,6 +87,8 @@ export default function EmptyWorkspaceState({ variant, onOpenSetup }: EmptyWorks
 
   const startInHome = useCallback(async () => {
     if (pending) return;
+    const finish = beginLayoutOperation();
+    if (!finish) return;
     setPending("home");
     try {
       const home = await homeDir();
@@ -95,12 +98,15 @@ export default function EmptyWorkspaceState({ variant, onOpenSetup }: EmptyWorks
       pushToast(strings.homeError, "error");
       onOpenSetup();
     } finally {
+      finish();
       setPending(null);
     }
   }, [onOpenSetup, pending, pushToast]);
 
   const startInPickedFolder = useCallback(async () => {
     if (pending) return;
+    const finish = beginLayoutOperation();
+    if (!finish) return;
     setPending("folder");
     try {
       const picked = await openDialog({
@@ -116,6 +122,7 @@ export default function EmptyWorkspaceState({ variant, onOpenSetup }: EmptyWorks
       pushToast(strings.folderError, "error");
       onOpenSetup();
     } finally {
+      finish();
       setPending(null);
     }
   }, [onOpenSetup, pending, pushToast]);

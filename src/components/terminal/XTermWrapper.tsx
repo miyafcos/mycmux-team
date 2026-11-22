@@ -1,4 +1,8 @@
 ﻿import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
+import { reportTerminalDiagnostic, diagnosticException, terminalDiagnosticId } from "../../lib/terminalDiagnostics";
+import { ptyExitConfirmed } from "../../lib/codexRestoreLifecycle";
+import { registerManualDisplayRepaint } from "./manualTerminalDisplay";
+import { admitPaintRepair } from "./terminalPaintBudget";
 import { cliAccountLaunchErrorMessage } from "../../lib/cliAccounts";
 import { AgentTabConversation } from "./AgentTabConversation";
 import { isAgentConversationKind } from "./agentTabConversationModel";
@@ -41,7 +45,7 @@ import {
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
 import { withTerminalDeadline } from "../../lib/terminalDeadline";
-import { currentPtyRead, ptyReadGeneration, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
+import { currentPtyRead, ptyReadGeneration, subscribePtyReads, type PtyReadGeneration } from "../../lib/ptyReadGeneration";
 import { TerminalStreamHealth, terminalHealthMonitor } from "../../lib/terminalStreamHealth";
 import { buildTerminalRecoveryFrame, freezeTerminalScreen } from "./terminalRecoveryFrame";
 import {
@@ -119,7 +123,7 @@ import {
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
-  trimOldestBatchesToByteCap,
+  TerminalBatchQueue,
 } from "../../lib/terminalBatchQueue";
 import {
   type CachedTerm,
@@ -289,7 +293,10 @@ export function createPtyExitReporter(write: (notice: string) => void, onExit?: 
   };
 }
 
+const terminalsWithConfirmedStart = new WeakSet<Terminal>();
+
 interface XTermWrapperProps {
+  // Workspace terminals derive this from pane visibility and tab selection.
   historyVisible?: boolean;
   workspaceId: string;
   sessionId: string;
@@ -469,152 +476,182 @@ function diagStatsFor(sessionId: string): DiagWriteStats {
 
 type WebglRendererState = {
   addon: WebglAddon;
-  contextLossDisposable: IDisposable;
+  contextLossDisposable?: IDisposable;
 };
 
 const webglRendererBudget = new TerminalRendererBudget<Terminal>();
 const acceptParkedTerminalKey = () => true;
 
-// Keep this closure outside the mount effect: a parked cache entry must not
-// retain that effect's container, observers or React callbacks.
-function rendererDisposer(sessionId: string, term: Terminal): () => void {
-  return () => disposeWebglRenderer(sessionId, term, false);
+function rendererDisposer(sessionId: string, term: Terminal): (requester?: Terminal) => boolean {
+  return requester => {
+    const { disposed } = disposeWebglRenderer(sessionId, term, false);
+    if (disposed && requester) rendererDiagnostic("budget-evict", sessionId, term, {
+      victim: terminalDiagnosticId(term), requester: terminalDiagnosticId(requester),
+    });
+    return disposed;
+  };
+}
+// Cache entries bind just the terminal and session, without retaining the mount.
+function disposeTerminalRenderer(sessionId: string, term: Terminal): void {
+  try { disposeWebglRenderer(sessionId, term, false); }
+  finally {
+    webglRendererBudget.forget(term);
+    webglRendererStates.delete(term);
+  }
+}
+function rendererPriority(term: Terminal): { visible: boolean; focused: boolean } {
+  const element = term.element;
+  const rect = element?.getBoundingClientRect();
+  const visible = Boolean(element && !element.closest("[inert]") && !element.closest("[data-terminal-pane-hidden]")
+    && rect && rect.width > 0 && rect.height > 0
+    && document.visibilityState !== "hidden"
+    && (typeof element.checkVisibility === "function"
+      ? element.checkVisibility({ checkVisibilityCSS: true }) : getComputedStyle(element).visibility !== "hidden"));
+  return { visible, focused: Boolean(document.hasFocus() && term.textarea && term.textarea === document.activeElement) };
+}
+function actualTerminalRenderer(term: Terminal): "webgl" | "dom" | "unknown" {
+  return webglRendererUnknown.has(term) ? "unknown" : webglRendererStates.has(term) ? "webgl" : "dom";
+}
+function rendererDiagnostic(event: import("../../lib/terminalDiagnostics").DiagnosticEvent, sessionId: string, term: Terminal, numbers: Record<string, number> = {}, error?: unknown): void {
+  const priority = rendererPriority(term);
+  reportTerminalDiagnostic("renderer", event, sessionId, term, {
+    visible: Number(priority.visible), focused: Number(priority.focused), budget: webglRendererBudget.size,
+    attempt: webglRetryCounts.get(term) ?? 0, ...numbers,
+  }, { requested: useSettingsStore.getState().terminalRenderer,
+    actual: actualTerminalRenderer(term), exception: error === undefined ? "none" : diagnosticException(error) });
 }
 
 const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();
 const webglRendererFailures = new WeakSet<Terminal>();
-/**
- * How long a terminal stays on the DOM renderer after losing its GPU context,
- * and how many times it tries to get back.
- *
- * A context is lost when the system takes the GPU process down — under memory
- * pressure on a Mac that happens to a healthy app — and it comes back a moment
- * later. Treating the first loss as final left that pane drawing through the
- * DOM renderer for the rest of the session, which is exactly the pane the
- * reader is watching. Backing off keeps a genuinely broken context from
- * thrashing.
- */
+const webglRendererUnknown = new WeakSet<Terminal>();
+const awaitingDomRender = new WeakSet<Terminal>();
 const WEBGL_RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
 const webglRetryCounts = new WeakMap<Terminal, number>();
 const webglRetryTimers = new WeakMap<Terminal, ReturnType<typeof setTimeout>>();
+const webglRetryExhausted = new WeakSet<Terminal>();
 
 function cancelWebglRetry(term: Terminal): void {
   const timer = webglRetryTimers.get(term);
   if (timer === undefined) return;
-  clearTimeout(timer);
-  webglRetryTimers.delete(term);
+  clearTimeout(timer); webglRetryTimers.delete(term);
 }
-
 function scheduleWebglRetry(sessionId: string, term: Terminal): void {
+  if (webglRetryTimers.has(term)) return;
   const attempt = webglRetryCounts.get(term) ?? 0;
   const delay = WEBGL_RETRY_DELAYS_MS[attempt];
-  if (delay === undefined) return;
-  webglRetryCounts.set(term, attempt + 1);
-  cancelWebglRetry(term);
+  if (delay === undefined) {
+    if (!webglRetryExhausted.has(term)) {
+      webglRetryExhausted.add(term); rendererDiagnostic("exhausted", sessionId, term);
+    }
+    return;
+  }
   webglRetryTimers.set(term, setTimeout(() => {
     webglRetryTimers.delete(term);
     if (!webglRendererFailures.has(term)) return;
+    // Only an executed attempt spends the finite budget, not a cancelled timer.
+    webglRetryCounts.set(term, attempt + 1);
     webglRendererFailures.delete(term);
-    console.info(`[XTermWrapper] retrying the WebGL renderer for ${sessionId} (attempt ${attempt + 1})`);
+    rendererDiagnostic("retry", sessionId, term);
+    if (webglRendererUnknown.has(term) && !disposeWebglRenderer(sessionId, term, true).disposed) {
+      webglRendererFailures.add(term); scheduleWebglRetry(sessionId, term); return;
+    }
     enableWebglRenderer(sessionId, term);
   }, delay));
 }
-
-function disposeWebglRenderer(
-  sessionId: string,
-  term: Terminal,
-  fallback: boolean,
-  contextLost = false,
-): void {
-  webglRendererBudget.forget(term);
-  const rendererState = webglRendererStates.get(term);
-  if (rendererState) {
-    webglRendererStates.delete(term);
-    try {
-      rendererState.contextLossDisposable.dispose();
-    } catch {
-      // Continue disposing the addon so the DOM fallback still takes effect.
-    }
-    try {
-      rendererState.addon.dispose();
-    } catch (error) {
-      console.warn(`[XTermWrapper] Failed to dispose WebGL renderer for ${sessionId}:`, error);
-    }
+function refreshDomRenderer(sessionId: string, term: Terminal): boolean {
+  if (actualTerminalRenderer(term) !== "dom" || term.rows <= 0 || term.cols <= 0) return false;
+  awaitingDomRender.add(term);
+  try {
+    term.refresh(0, term.rows - 1);
+    return true; // readiness is logged only by a subsequent onRender event.
+  } catch (error) {
+    awaitingDomRender.delete(term);
+    rendererDiagnostic("dispose-result", sessionId, term, { dom_ready: 0 }, error);
+    return false;
   }
-
+}
+function disposeWebglRenderer(
+  sessionId: string, term: Terminal, fallback: boolean, contextLost = false,
+): { disposed: boolean; refreshed?: boolean } {
+  const rendererState = webglRendererStates.get(term);
+  if (contextLost) rendererDiagnostic("context-loss", sessionId, term);
+  let disposed = true;
+  let refreshed: boolean | undefined;
+  if (rendererState) {
+    try { rendererState.contextLossDisposable?.dispose(); } catch { /* still dispose addon */ }
+    try { rendererState.addon.dispose(); } catch (error) {
+      disposed = false; webglRendererUnknown.add(term);
+      rendererDiagnostic("dispose-result", sessionId, term, { dispose_ok: 0, dom_ready: 0 }, error);
+    }
+    if (disposed) webglRendererStates.delete(term);
+  }
+  if (disposed) {
+    webglRendererBudget.forget(term); webglRendererUnknown.delete(term);
+    if (rendererState) {
+      refreshed = refreshDomRenderer(sessionId, term);
+      rendererDiagnostic("dispose-result", sessionId, term, { dispose_ok: 1, dom_ready: 0 });
+    }
+    recordRenderer(sessionId, "dom");
+  }
   const stats = diagStatsFor(sessionId);
   stats.webgl = fallback ? "fallback" : "never";
-  recordRenderer(sessionId, "dom");
   if (contextLost) {
     webglRendererFailures.add(term);
-    stats.webglLostAt = Date.now();
-    recordWebglContextLoss(sessionId);
+    stats.webglLostAt = Date.now(); recordWebglContextLoss(sessionId);
     scheduleWebglRetry(sessionId, term);
-  } else {
-    cancelWebglRetry(term);
+  } else { cancelWebglRetry(term); }
+  return { disposed, refreshed };
+}
+function repaintTerminalDisplay(sessionId: string, term: Terminal): void {
+  const { disposed, refreshed } = actualTerminalRenderer(term) === "dom" && webglRetryTimers.has(term)
+    ? { disposed: true, refreshed: refreshDomRenderer(sessionId, term) }
+    : disposeWebglRenderer(sessionId, term, true);
+  if (!disposed || !(refreshed ?? refreshDomRenderer(sessionId, term))) {
+    throw new Error("Terminal display repaint failed");
   }
 }
-
 function enableWebglRenderer(sessionId: string, term: Terminal): void {
+  if (webglRendererUnknown.has(term)) webglRendererFailures.add(term);
   if (webglRendererFailures.has(term)) {
     diagStatsFor(sessionId).webgl = "fallback";
-    recordRenderer(sessionId, "dom");
-    return;
+    // Cached return re-arms cancelled timers without resetting/spending budget.
+    scheduleWebglRetry(sessionId, term); return;
   }
   if (webglRendererStates.has(term)) {
-    webglRendererBudget.touch(term);
-    diagStatsFor(sessionId).webgl = "on";
-    return;
+    webglRendererBudget.touch(term); diagStatsFor(sessionId).webgl = "on"; return;
   }
-
-  webglRendererBudget.reserve(term, rendererDisposer(sessionId, term));
-  let addon: WebglAddon | null = null;
-  let contextLossDisposable: IDisposable | null = null;
+  if (!webglRendererBudget.reserve(term, rendererDisposer(sessionId, term), () => rendererPriority(term),
+    protectedBudget => rendererDiagnostic("budget-denied", sessionId, term, { budget_protected: Number(protectedBudget) }))) {
+    diagStatsFor(sessionId).webgl = "fallback"; refreshDomRenderer(sessionId, term); return;
+  }
   try {
-    addon = new WebglAddon();
-    contextLossDisposable = addon.onContextLoss(() => {
-      if (webglRendererStates.get(term)?.addon !== addon) return;
+    const addon = new WebglAddon();
+    const state: WebglRendererState = { addon };
+    webglRendererStates.set(term, state);
+    state.contextLossDisposable = addon.onContextLoss(() => {
+      if (webglRendererStates.get(term) !== state) return;
       disposeWebglRenderer(sessionId, term, true, true);
     });
-    webglRendererStates.set(term, { addon, contextLossDisposable });
     term.loadAddon(addon);
     if (webglRendererStates.get(term)?.addon === addon) {
-      diagStatsFor(sessionId).webgl = "on";
-      recordRenderer(sessionId, "webgl");
-      // It came back; a later loss gets the full budget again.
-      webglRetryCounts.delete(term);
+      diagStatsFor(sessionId).webgl = "on"; recordRenderer(sessionId, "webgl");
+      awaitingDomRender.delete(term); webglRendererUnknown.delete(term);
+      webglRetryCounts.delete(term); webglRetryExhausted.delete(term);
+      webglRendererFailures.delete(term); cancelWebglRetry(term);
     }
   } catch (error) {
-    webglRendererBudget.forget(term);
-    if (webglRendererStates.get(term)?.addon === addon) {
-      webglRendererStates.delete(term);
-    }
-    try {
-      contextLossDisposable?.dispose();
-    } catch {
-      // Continue with addon disposal and the DOM fallback.
-    }
-    try {
-      addon?.dispose();
-    } catch {
-      // The DOM fallback below remains usable even if partial addon cleanup fails.
-    }
+    // Reuse the exact cleanup path even after a partially completed load.
+    const { disposed, refreshed } = disposeWebglRenderer(sessionId, term, true);
+    if (disposed && refreshed === undefined) refreshDomRenderer(sessionId, term);
     webglRendererFailures.add(term);
-    diagStatsFor(sessionId).webgl = "fallback";
-    recordRenderer(sessionId, "dom");
-    console.warn(`[XTermWrapper] WebGL unavailable for ${sessionId}; using DOM renderer:`, error);
+    rendererDiagnostic("dispose-result", sessionId, term, { dom_ready: 0, dispose_ok: Number(disposed) }, error);
+    scheduleWebglRetry(sessionId, term);
   }
 }
-
-function applyTerminalRenderer(
-  sessionId: string,
-  term: Terminal,
-  renderer: "webgl" | "dom",
-): void {
-  if (renderer === "webgl") {
-    enableWebglRenderer(sessionId, term);
-  } else {
-    webglRendererFailures.delete(term);
+function applyTerminalRenderer(sessionId: string, term: Terminal, renderer: "webgl" | "dom"): void {
+  if (renderer === "webgl") { enableWebglRenderer(sessionId, term); }
+  else {
+    webglRendererFailures.delete(term); webglRetryCounts.delete(term); webglRetryExhausted.delete(term);
     disposeWebglRenderer(sessionId, term, false);
   }
 }
@@ -846,6 +883,8 @@ export default memo(function XTermWrapper({
   }, [conversationTabId, conversationCovered]);
   const conversationCoveredRef = useRef(conversationCovered);
   conversationCoveredRef.current = conversationCovered;
+  const resetPaintVisibilityRef = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => { resetPaintVisibilityRef.current?.(); }, [conversationCovered, historyVisible]);
   const conversationInputRef = useRef<HTMLTextAreaElement>(null);
   const [conversationSearchRequest, setConversationSearchRequest] = useState(0);
   const conversationFocusTarget = useCallback(() => conversationCoveredRef.current ? {
@@ -1446,10 +1485,18 @@ export default memo(function XTermWrapper({
     let replayOutputDecoder = new TextDecoder();
     let replayMouseModeFilter = createTerminalMouseModeControlFilter();
     const diagStats = diagStatsFor(sessionId);
-    const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
+    const pendingBatches = new TerminalBatchQueue(takeDeferredTerminalBatches(sessionId));
     let pumpGeneration = 0;
     let ownedChannelId: number | undefined;
     const streamHealth = new TerminalStreamHealth();
+    resetPaintVisibilityRef.current = () => streamHealth.resetPaintVisibility();
+    const stopPaintReadChanges = subscribePtyReads(id => {
+      if (id === sessionId) streamHealth.resetPaintVisibility();
+    });
+    const stopPaintDashboardChanges = useDashboardViewStore.subscribe((state, previous) => {
+      if (state.open !== previous.open) streamHealth.resetPaintVisibility();
+    });
+    let channelAttempts = 0;
     let stopStreamHealth: (() => void) | null = null;
     let recoveryInFlight: Promise<void> | null = null;
     let writingBatch = false;
@@ -1795,6 +1842,7 @@ export default memo(function XTermWrapper({
       }
       const handleFocusChange = (): void => {
         bumpPaintStat("focus-change", sessionId);
+        if (textarea === document.activeElement) webglRendererBudget.touch(currentTerm);
         recordXtermFocus(sessionId, textarea === document.activeElement);
       };
       textarea.addEventListener("focus", handleFocusChange);
@@ -1811,6 +1859,11 @@ export default memo(function XTermWrapper({
     const registerRenderListener = (currentTerm: Terminal): void => {
       renderDisposable?.dispose();
       renderDisposable = currentTerm.onRender(({ start, end }) => {
+        webglRendererBudget.touch(currentTerm);
+        streamHealth.rendered();
+        if (awaitingDomRender.delete(currentTerm) && actualTerminalRenderer(currentTerm) === "dom") {
+          rendererDiagnostic("fallback-ready", sessionId, currentTerm, { dom_ready: 1 });
+        }
         recordTerminalFlowRender(sessionId);
         terminalProgressDiagnostics.render(sessionId);
         if (firstTerminalPaint) {
@@ -2213,14 +2266,10 @@ export default memo(function XTermWrapper({
     };
 
     const enforcePendingBatchCap = (): void => {
-      const trimmed = trimOldestBatchesToByteCap(
-        pendingBatches,
-        TERMINAL_BATCH_RETAINED_MAX_BYTES,
-      );
-      if (!trimmed.needsScrollbackResync) return;
-      pendingBatches.splice(0, pendingBatches.length, ...trimmed.retained);
+      const dropped = pendingBatches.trim(TERMINAL_BATCH_RETAINED_MAX_BYTES);
+      if (!dropped) return;
       terminalScrollbackResyncNeeded.add(sessionId);
-      for (const pending of trimmed.dropped) {
+      for (const pending of dropped) {
         ackPendingBatch(pending);
       }
     };
@@ -2410,6 +2459,8 @@ export default memo(function XTermWrapper({
       const visible = Boolean(term && !termDisposed && isContainerWritable());
       if (terminalPaintedVisible === visible) return false;
       terminalPaintedVisible = visible;
+      streamHealth.resetPaintVisibility();
+      if (visible && term) webglRendererBudget.touch(term);
       return true;
     };
 
@@ -2517,6 +2568,8 @@ export default memo(function XTermWrapper({
             // A timeout or thrown write is not proof that xterm parsed the bytes.
             if (completeParse(true)) markTerminalBufferReady(writeTerm, sourceGeneration);
             if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) {
+              // Only the first real callback contributes paint evidence.
+              if (!callbackObserved) streamHealth.observeCurrentParse(sessionId, sourceGeneration, progressGeneration, progressEnd);
               streamHealth.applied();
               terminalProgressDiagnostics.finishWrite(sessionId, progressWrite);
             }
@@ -2571,7 +2624,9 @@ export default memo(function XTermWrapper({
       const generation = pumpGeneration;
       const readGeneration = ptyReadGeneration(sessionId);
       if (!canWritePendingBatches() || !currentPtyRead(sessionId, readGeneration)) return false;
-      const knownTail = terminalRawTailBySession.get(sessionId);
+      const knownTail = lastSynchronizedScrollbackEnd === 0
+        ? terminalRawTailBySession.get(sessionId)?.snapshot()
+        : undefined;
       let scrollbackSnapshot: Awaited<ReturnType<typeof getSessionScrollback>>;
       try {
         scrollbackSnapshot = await withTerminalDeadline(getSessionScrollback(sessionId), "get_session_scrollback");
@@ -2883,6 +2938,8 @@ export default memo(function XTermWrapper({
 
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
       if (disposed || termDisposed) { ackBatch(batch); return; }
+      const source = ptyReadGeneration(sessionId);
+      if (currentPtyRead(sessionId, source)) streamHealth.observeReceipt(source, batch.generation, batch.scrollbackEnd);
       streamHealth.received();
       recordTerminalFlowReceive(sessionId, batch.bytes, batch.resync);
       terminalProgressDiagnostics.receive(sessionId, batch.generation, batch.scrollbackEnd);
@@ -2976,7 +3033,10 @@ export default memo(function XTermWrapper({
       streamHealth.attached();
       if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
-      if (term) registerReadAuthority(term);
+      if (term) {
+        terminalsWithConfirmedStart.add(term);
+        registerReadAuthority(term);
+      }
       markTearoutSessionAttached(sessionId, attached);
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
@@ -3122,10 +3182,22 @@ export default memo(function XTermWrapper({
       return true;
     };
 
+    const reportStalledDisplay = (target: Terminal, reason: "channel" | "paint"): void => {
+      const source = ptyReadGeneration(sessionId);
+      const numbers = currentPtyRead(sessionId, source) ? streamHealth.diagnosticProgress(source) : {};
+      reportTerminalDiagnostic("progress", "stall", sessionId, target, { ...numbers, observed_at_ms: Date.now() },
+        { reason, actual: actualTerminalRenderer(target) });
+    };
+
     const recoverFrontendStream = (reason: "channel-stall" | "write-stall"): Promise<void> => {
       if (recoveryInFlight) return recoveryInFlight;
       if (disposed || termDisposed || !term || !isContainerWritable()) return Promise.resolve();
+      const diagnosticTerm = term;
+      const attempt = ++channelAttempts;
+      reportStalledDisplay(diagnosticTerm, "channel");
+      reportTerminalDiagnostic("recovery", "start", sessionId, diagnosticTerm, { attempt, reused: 1 }, { reason: "channel" });
       pumpGeneration += 1;
+      const recoveryGeneration = pumpGeneration;
       frontendChannelReady = false;
       writingBatch = false;
       scrollbackSyncInFlight = null;
@@ -3133,18 +3205,67 @@ export default memo(function XTermWrapper({
       clearPendingDrainTimer();
       if (currentPendingBatch) ackPendingBatch(currentPendingBatch);
       currentPendingBatch = null;
-      for (const pending of pendingBatches.splice(0)) ackPendingBatch(pending);
+      for (const pending of pendingBatches.drain()) ackPendingBatch(pending);
       scrollbackRetry.reset();
       terminalScrollbackResyncNeeded.add(sessionId);
       const request = attachFrontendChannel(term.cols, term.rows, reason).finally(() => {
         if (recoveryInFlight === request) recoveryInFlight = null;
       });
       recoveryInFlight = request;
+      void request.then(
+        () => {
+          const acquired = !disposed && !termDisposed && pumpGeneration === recoveryGeneration
+            && frontendChannelReady && ownedChannelId !== undefined && getSessionChannelId(sessionId) === ownedChannelId;
+          reportTerminalDiagnostic("recovery", acquired ? "end" : "aborted", sessionId, diagnosticTerm, { attempt, reused: 1 }, { reason: "channel" });
+        },
+        () => reportTerminalDiagnostic("recovery", "failed", sessionId, diagnosticTerm, { attempt, reused: 1 }, { reason: "channel" }),
+      );
       return request;
+    };
+
+    const paintSurfaceExposed = (): boolean => !conversationCoveredRef.current && !container.hasAttribute("data-terminal-pane-hidden");
+    const paintSurfaceVisible = (): boolean => paintSurfaceExposed() && isContainerWritable();
+    const stopManualRepaint = registerManualDisplayRepaint(sessionId, () => {
+      invalidateContainerVisibilityMemo();
+      const observation = usePaneMetadataStore.getState().volatileMetadata[sessionId];
+      const observedStopped = observation?.ptyAlive === false && observation.liveAgentObservationKnown !== false;
+      if (!term || liveTerms.get(sessionId) !== term || disposed || termDisposed || !terminalsWithConfirmedStart.has(term)
+        || sessionExitPending || observedStopped || ptyExitConfirmed(sessionId, ptyReadGeneration(sessionId).epoch)
+        || !paintSurfaceVisible()) return;
+      const target = term;
+      return { term: target, repaint: () => repaintTerminalDisplay(sessionId, target) };
+    });
+
+    let cancelPaintCheck: (() => void) | undefined;
+    const repairPaint = (): void => {
+      if (!term || disposed || termDisposed || !paintSurfaceVisible()) return;
+      const target = term;
+      const { state, attempt } = admitPaintRepair(sessionId);
+      const report = (event: "start" | "end" | "aborted" | "failed") =>
+        reportTerminalDiagnostic("recovery", event, sessionId, target, { attempt, reused: 1 }, { reason: "paint", actual: actualTerminalRenderer(target) });
+      if (state !== "admitted") {
+        if (state === "exhausted") report("aborted");
+        return;
+      }
+      reportStalledDisplay(target, "paint");
+      report("start");
+      const before = streamHealth.renderCount;
+      try { repaintTerminalDisplay(sessionId, target); }
+      catch {
+        report("failed");
+        return;
+      }
+      const timer = setTimeout(() => {
+        cancelPaintCheck = undefined;
+        if (disposed || termDisposed || target !== term || !paintSurfaceVisible() || actualTerminalRenderer(target) !== "dom") report("aborted");
+        else report(streamHealth.renderCount > before ? "end" : "failed");
+      }, 2000);
+      cancelPaintCheck = () => { clearTimeout(timer); report("aborted"); };
     };
 
     stopStreamHealth = terminalHealthMonitor.watch({
       sessionId, health: streamHealth, recover: recoverFrontendStream,
+      paint: { sized: () => Boolean(paintSurfaceExposed() && term && term.cols > 0 && term.rows > 0), repair: repairPaint },
       visible: () => {
         invalidateContainerVisibilityMemo();
         return !disposed && !termDisposed && !replayActive && Boolean(term) && isContainerWritable();
@@ -3271,7 +3392,7 @@ export default memo(function XTermWrapper({
           xtermElement: element,
           unlistenExit: null,
           scrollbackEnd: lastSynchronizedScrollbackEnd,
-          disposeRenderer: rendererDisposer(sessionId, term),
+          disposeRenderer: disposeTerminalRenderer.bind(null, sessionId, term),
         });
         if (outcome === "disposed") {
           termDisposed = true;
@@ -3280,7 +3401,7 @@ export default memo(function XTermWrapper({
       }
       if (term) {
         termDisposed = true;
-        disposeWebglRenderer(sessionId, term, false);
+        disposeTerminalRenderer(sessionId, term);
         cancelTerminalBufferWrites(term); term.dispose();
       }
     };
@@ -3302,6 +3423,11 @@ export default memo(function XTermWrapper({
       if (progressViewportRef.current === readProgressViewport) progressViewportRef.current = null;
       clearResumeRecovery();
       resumeActionsRef.current = { openOwner: () => {}, takeover: () => {}, fresh: () => {}, original: () => {}, saved: () => {} };
+      stopManualRepaint();
+      stopPaintReadChanges();
+      stopPaintDashboardChanges();
+      resetPaintVisibilityRef.current = null;
+      cancelPaintCheck?.();
       stopStreamHealth?.();
       stopStreamHealth = null;
       pumpGeneration += 1;
@@ -3372,7 +3498,7 @@ export default memo(function XTermWrapper({
       }
       recordXtermUnmounted(sessionId);
       if (pendingBatches.length > 0) {
-        const carry = pendingBatches.splice(0, pendingBatches.length);
+        const carry = pendingBatches.drain();
         if (termDisposed) {
           for (const pending of carry) {
             ackPendingBatch(pending);
@@ -3386,7 +3512,7 @@ export default memo(function XTermWrapper({
       if (currentPendingBatch) ackPendingBatch(currentPendingBatch);
       ackCoalescer.flushAndDispose();
       if (sessionStarted && !termDisposed && !terminalRawTailBySession.has(sessionId)) {
-        terminalRawTailBySession.set(sessionId, new Uint8Array());
+        replaceTerminalRawTail(sessionId, new Uint8Array());
       }
       searchAddonRef.current = null;
       termRef.current = null;
@@ -3887,6 +4013,8 @@ export default memo(function XTermWrapper({
       )}
       <div
         ref={containerRef}
+        data-hanabi-terminal-surface="true"
+        data-terminal-pane-hidden={historyVisible ? undefined : ""}
         inert={conversationCovered || undefined}
         aria-hidden={conversationCovered || undefined}
         style={{

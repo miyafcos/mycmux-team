@@ -24,11 +24,11 @@ vi.mock("../../src/stores/cliLoginStore", async () => {
 });
 import { TabAccountSettings, TabAccountSettingsProvider } from "../../src/components/settings/TabAccountSettings";
 import { LaunchAccountRow, useLaunchAccounts } from "../../src/components/workspace/LaunchAccountRow";
-import { useClaudeSetupTokenStore } from "../../src/stores/claudeSetupTokenStore";
-import type { ClaudeSetupTokenEvent, CliAccountProfile, CliProvider } from "../../src/lib/ipc";
+import { isSetupTokenActive, useClaudeSetupTokenStore } from "../../src/stores/claudeSetupTokenStore";
+import type { ClaudeSetupTokenEvent, CliAccountProfile, SwitchableCliProvider } from "../../src/lib/ipc";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement, root: Root;
-const profile = (provider: CliProvider = "claude"): CliAccountProfile => ({
+const profile = (provider: SwitchableCliProvider = "claude"): CliAccountProfile => ({
   id: provider + "-fixture", provider, label: "仕事用", email: "fixture@example.test", identity_key: "fixture",
   plan: null, org_name: null, captured_at: "", last_switched_at: null, needs_relogin: false,
 });
@@ -54,7 +54,7 @@ function button(text: string) {
   expect(node, text).toBeDefined(); return node!;
 }
 async function click(text: string) { await act(async () => button(text).click()); }
-async function renderSettings(provider: CliProvider = "claude") {
+async function renderSettings(provider: SwitchableCliProvider = "claude") {
   await act(async () => root.render(<TabAccountSettingsProvider><TabAccountSettings profile={profile(provider)} /></TabAccountSettingsProvider>));
 }
 async function begin() { await click("タブでも使う"); await click("始める"); }
@@ -87,6 +87,19 @@ describe("one-button Claude registration", () => {
     mocks.tokens.mockResolvedValue([registered]); await emit("saved", { status: registered });
     expect(host.textContent).toContain("登録済み・期限 2099-01-01・持ち主: 確認済み");
     expect(button("登録し直す")).toBeDefined();
+  });
+  it("closes the code form during confirmation and ignores delayed code availability", async () => {
+    await renderSettings(); await begin(); await emit("code_available");
+    const input = host.querySelector<HTMLInputElement>('form input[type="password"]')!;
+    input.value = "fixture-code#fixture-state";
+    expect(host.querySelector('[role="status"]')?.textContent).toBe("ブラウザで承認してください");
+    await emit("confirming");
+    expect(isSetupTokenActive(useClaudeSetupTokenStore.getState().event)).toBe(true);
+    expect(input.value).toBe("");
+    expect(host.querySelector('form input[type="password"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toBe("登録中…");
+    await emit("code_available");
+    expect(host.querySelector('form input[type="password"]')).toBeNull();
   });
   it("cancels the active native login and clears the code on unmount", async () => {
     await renderSettings(); await begin(); await emit("code_available");
@@ -128,7 +141,7 @@ describe("one-button Claude registration", () => {
     }
   });
 });
-function Launcher({ provider }: { provider: CliProvider }) {
+function Launcher({ provider }: { provider: SwitchableCliProvider }) {
   const accounts = useLaunchAccounts(provider);
   return <LaunchAccountRow accounts={accounts} ownerKey="launcher:fixture" value="" onChange={vi.fn()} />;
 }

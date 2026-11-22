@@ -1,6 +1,6 @@
 import type { CliProvider, ProfileUsage, UsageRowState, WindowStat } from "./ipc";
 import { PROVIDER_ORDER } from "./cliAccounts";
-import { GROK_PRODUCT_LABELS, grokAccountStrings } from "./grokAccountStrings";
+import { grokAccountStrings } from "./grokAccountStrings";
 
 export { PROVIDER_SHORT } from "./cliAccounts";
 
@@ -12,6 +12,7 @@ export { PROVIDER_SHORT } from "./cliAccounts";
 
 /** Any window with a number, whether from this fetch or a previous one. */
 export function rowHasWindows(row: ProfileUsage): boolean {
+  if (row.provider === "grok") return Boolean(row.seven_day);
   return Boolean(
     row.five_hour ||
     row.seven_day ||
@@ -27,10 +28,12 @@ export function rowHasWindows(row: ProfileUsage): boolean {
  * keeps the titlebar quiet.
  */
 export function rowNeedsAttention(row: ProfileUsage): boolean {
+  if (row.provider === "gemini" && (row.state === "unsupported" || row.error_code === "usage.error.deferred")) return false;
   return row.state !== "ok" && !rowHasWindows(row);
 }
 
 export function worstPct(row: ProfileUsage): number | null {
+  if (row.provider === "grok") return row.seven_day?.pct ?? null;
   const candidates = [
     row.five_hour?.pct,
     row.seven_day?.pct,
@@ -119,13 +122,15 @@ export const USAGE_DANGER_PCT = 95;
  * two decides whether the operator needs to look. A row in cooldown still holds
  * its last good figures and counts; one that never had any does not.
  */
-export function worstWindowPct(row: {
+type HeadlineWindows = Pick<ProfileUsage, "five_hour" | "seven_day"> & {
   state: string;
-  five_hour: WindowStat | null;
-  seven_day: WindowStat | null;
-}): number | null {
+  provider?: CliProvider;
+};
+
+export function worstWindowPct(row: HeadlineWindows): number | null {
   const usable = row.state === "ok" || row.state === "cooldown";
   if (!usable) return null;
+  if (row.provider === "grok") return row.seven_day?.pct ?? null;
   const values = [row.five_hour?.pct, row.seven_day?.pct].filter(
     (pct): pct is number => typeof pct === "number",
   );
@@ -133,9 +138,7 @@ export function worstWindowPct(row: {
 }
 
 /** Whether a row is close enough to its limit to earn full detail. */
-export function rowIsPressed(
-  row: { state: string; five_hour: WindowStat | null; seven_day: WindowStat | null } | undefined,
-): boolean {
+export function rowIsPressed(row: HeadlineWindows | undefined): boolean {
   if (!row) return false;
   const worst = worstWindowPct(row);
   return worst !== null && worst >= USAGE_ATTENTION_PCT;
@@ -168,6 +171,13 @@ export function sharedResetAt(
 export function displayWindows(
   row: ProfileUsage,
 ): { key: string; label: string; stat: WindowStat; hint: string }[] {
+  const week = row.seven_day && {
+    key: "seven_day",
+    label: "7d",
+    stat: row.seven_day,
+    hint: resetHint(row.seven_day)!,
+  };
+  if (row.provider === "grok") return week ? [week] : [];
   const fixed = [
     row.five_hour && {
       key: "five_hour",
@@ -175,12 +185,7 @@ export function displayWindows(
       stat: row.five_hour,
       hint: resetHint(row.five_hour)!,
     },
-    row.seven_day && {
-      key: "seven_day",
-      label: "7d",
-      stat: row.seven_day,
-      hint: resetHint(row.seven_day)!,
-    },
+    week,
     row.seven_day_sonnet && {
       key: "seven_day_sonnet",
       label: "S",
@@ -199,35 +204,16 @@ export function displayWindows(
   );
   const models = row.model_windows.map(({ key, window }) => {
     const name = key.replace(/^seven_day_/, "");
+    const gemini = row.provider === "gemini";
+    const reset = gemini && !window.resets_at ? undefined : resetHint(window);
     return {
       key: `model:${key}`,
-      label: windowLabel(row.provider, name),
+      label: gemini ? name : name.charAt(0).toUpperCase(),
       stat: window,
-      hint: `${windowHint(row.provider, name)} — ${resetHint(window)}`,
+      hint: reset ? `${name} — ${reset}` : name,
     };
   });
   return [...fixed, ...models];
-}
-
-/**
- * A per-model window is labelled by its initial, which reads fine while the
- * names in a row differ on that letter (claude's "F" for fable). Grok names
- * every product "Grok<Something>", so the same rule would print "G" three
- * times over. Grok rows use the short product names instead.
- */
-function windowLabel(provider: CliProvider, name: string): string {
-  if (provider !== "grok") return name.charAt(0).toUpperCase();
-  const known = GROK_PRODUCT_LABELS[name];
-  if (known) return known;
-  // A product the API adds later: dropping the shared prefix still tells the
-  // products apart, which the initial alone would not.
-  return name.replace(/^Grok/, "") || name;
-}
-
-/** Hover copy keeps the API's own product name so it stays searchable. */
-function windowHint(provider: CliProvider, name: string): string {
-  const label = GROK_PRODUCT_LABELS[name];
-  return provider === "grok" && label ? `${label} (${name})` : name;
 }
 
 // hour12 is pinned: the meter row is laid out to the character, and a 12-hour
@@ -275,6 +261,13 @@ const USAGE_ERROR_MESSAGE: Record<string, string> = {
     "使用量を取得できませんでした。CLI 側でトークンが更新されると表示されます。",
   "usage.error.codex_unsupported": "切り替えると表示されます。",
   "usage.error.grok_unsupported": grokAccountStrings.usageUnsupported,
+  "usage.error.gemini_expired":
+    "Gemini のログインの期限が切れています。agy を一度起動すると更新されます",
+  "usage.error.gemini_not_signed_in": "agy にログインしていません",
+  "usage.error.gemini_credentials": "Gemini の認証情報を読み取れませんでした",
+  "usage.error.gemini_unsupported": "この環境では Gemini の使用量を取得できません",
+  "usage.error.gemini_fetch": "Gemini の使用量を取得できませんでした",
+  "usage.error.gemini_no_usage": "表示できる使用量がありません",
   "usage.error.network":
     "使用量を取得できませんでした。ネットワークを確認してください。",
   "usage.error.upstream":

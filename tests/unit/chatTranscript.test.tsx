@@ -6,6 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatTranscript } from "../../src/components/dashboard/ChatTranscript";
+import * as chatModel from "../../src/components/dashboard/chatModel";
+import * as linkedTextModule from "../../src/components/dashboard/DashboardLinkedText";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import type { SemanticEvent, SemanticEventEnvelope } from "../../src/lib/livebrief";
 
@@ -474,5 +476,136 @@ describe("ChatTranscript user-turn requests", () => {
       kind: "step",
       delta: -1,
     });
+  });
+});
+
+describe("ChatTranscript scroll work", () => {
+  const turnCount = 48;
+  let host: HTMLDivElement;
+  let root: Root;
+
+  function transcriptEvents(): SemanticEventEnvelope[] {
+    return Array.from({ length: turnCount }, (_, index) => {
+      const call_id = `call-${index}`;
+      const target = `tool target ${index}`;
+      return [
+        userMessage(`Request ${index + 1}`),
+        envelope({ type: "agentMessage", text: `Response ${index + 1}` }),
+        envelope({ type: "toolStart", call_id, tool: "Read", target }),
+        envelope({ type: "toolEnd", call_id, tool: "Read", target, ok: true, summary: null }),
+      ];
+    }).flat();
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("bounds lookups and row renders during settled wheel scrolling", () => {
+    const linkedText = vi.spyOn(linkedTextModule, "DashboardLinkedText").mockImplementation(({ text }) => <>{text}</>);
+    const events = transcriptEvents();
+    act(() => root.render(<ChatTranscript compact events={events} displayState="idle" />));
+    act(() => vi.advanceTimersToNextFrame());
+    expect(linkedText.mock.calls.filter(([props]) => props.text.startsWith("tool target "))).toHaveLength(turnCount);
+    linkedText.mockClear();
+
+    const log = host.querySelector<HTMLElement>(".cmux-dashboard-chat")!;
+    const metrics = { scrollHeight: 5000, clientHeight: 400, scrollTop: 4600 };
+    stubScrollMetrics(log, metrics);
+    const containerRect = vi.spyOn(log, "getBoundingClientRect").mockReturnValue({ top: 0 } as DOMRect);
+    const turns = Array.from(log.querySelectorAll<HTMLElement>(".cmux-dashboard-msg.is-user"));
+    expect(turns).toHaveLength(turnCount);
+    const turnRects = turns.map((turn, index) => vi.spyOn(turn, "getBoundingClientRect").mockImplementation(() => (
+      { top: index * 90 - metrics.scrollTop } as DOMRect
+    )));
+    const selectors = vi.spyOn(log, "querySelectorAll");
+    const frames = vi.spyOn(window, "requestAnimationFrame");
+    const next = host.querySelector<HTMLButtonElement>(`button[aria-label="${NEXT_LABEL}"]`)!;
+
+    for (const [scrollTop, expectedTurn, followingBottom] of [
+      [2250, 26, false],
+      [1508, 17, false],
+      [1509, 17, false],
+      [3600, 41, false],
+      [4575, 48, false],
+      [4576, 48, true],
+    ] as const) {
+      act(() => {
+        for (let offset = 3; offset >= 0; offset -= 1) {
+          metrics.scrollTop = scrollTop - offset;
+          log.dispatchEvent(new Event("scroll"));
+        }
+        vi.advanceTimersToNextFrame();
+      });
+      expect(host.querySelector("[data-dashboard-user-turn-nav]")?.getAttribute("aria-label"))
+        .toBe(dashboardStrings.userTurnNavAriaLabel(expectedTurn, turnCount));
+      expect(next.disabled).toBe(followingBottom);
+      expect(metrics.scrollTop).toBe(scrollTop);
+    }
+
+    const eventLookups = selectors.mock.calls.flatMap(([selector], index) => (
+      selector === "[data-dashboard-event]" ? [selectors.mock.results[index].value.length as number] : []
+    ));
+    const counts = {
+      eventQueries: eventLookups.length,
+      eventMatches: eventLookups.reduce((total, matches) => total + matches, 0),
+      turnRects: turnRects.reduce((total, rect) => total + rect.mock.calls.length, 0),
+      containerRects: containerRect.mock.calls.length,
+      frameRequests: frames.mock.calls.length,
+      toolRowRenders: linkedText.mock.calls.filter(([props]) => props.text.startsWith("tool target ")).length,
+      userBubbleRenders: linkedText.mock.calls.filter(([props]) => props.text.startsWith("Request ")).length,
+    };
+    if (process.env.DASHBOARD_SCROLL_METRICS === "1") console.info("Settled scroll counts", counts);
+    expect.soft(counts.eventQueries).toBe(0);
+    expect.soft(counts.turnRects).toBeLessThanOrEqual(5 * Math.ceil(Math.log2(turnCount)));
+    expect.soft(counts.containerRects).toBeLessThanOrEqual(5);
+    expect.soft(counts.frameRequests).toBe(6);
+    expect.soft(counts.toolRowRenders).toBe(0);
+    expect.soft(counts.userBubbleRenders).toBe(0);
+  });
+
+  it("reuses transcript rows across refetched copies and rebuilds when an event changes without a new ID", () => {
+    const projectRows = vi.spyOn(chatModel, "toChatTranscriptRows");
+    const linkedText = vi.spyOn(linkedTextModule, "DashboardLinkedText").mockImplementation(({ text }) => <>{text}</>);
+    const events = transcriptEvents();
+    act(() => root.render(<ChatTranscript compact events={events} displayState="idle" />));
+    expect(projectRows).toHaveBeenCalledTimes(1);
+    expect(linkedText.mock.calls.filter(([props]) => props.text.startsWith("tool target "))).toHaveLength(turnCount);
+
+    for (let poll = 0; poll < 3; poll += 1) {
+      const copy: SemanticEventEnvelope[] = JSON.parse(JSON.stringify(events));
+      act(() => root.render(<ChatTranscript compact events={copy} displayState="idle" />));
+      act(() => vi.advanceTimersToNextFrame());
+    }
+
+    const counts = {
+      rowBuilds: projectRows.mock.calls.length,
+      toolRowRenders: linkedText.mock.calls.filter(([props]) => props.text.startsWith("tool target ")).length,
+      userBubbleRenders: linkedText.mock.calls.filter(([props]) => props.text.startsWith("Request ")).length,
+    };
+    if (process.env.DASHBOARD_SCROLL_METRICS === "1") console.info("Initial render and refetch counts", counts);
+    expect.soft(counts.rowBuilds).toBe(1);
+    expect.soft(counts.toolRowRenders).toBe(turnCount);
+    expect.soft(counts.userBubbleRenders).toBe(turnCount);
+
+    const changed: SemanticEventEnvelope = {
+      ...events[0],
+      kind: { type: "userMessage", kind: "taskStart", text: "Corrected request", digest: "Request 1" },
+    };
+    act(() => root.render(<ChatTranscript compact events={[changed, ...events.slice(1)]} displayState="idle" />));
+    expect(projectRows).toHaveBeenCalledTimes(counts.rowBuilds + 1);
+    expect(host.querySelector(".cmux-dashboard-msg.is-user")?.textContent).toBe("Corrected request");
   });
 });

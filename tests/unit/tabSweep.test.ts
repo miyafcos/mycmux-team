@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { confirmPtyExit, publishCodexRestoreNoticeEpoch } from "../../src/lib/codexRestoreLifecycle";
 import type { PtyMetadataSnapshot } from "../../src/lib/ipc";
 import type { Workspace } from "../../src/types";
 import {
@@ -96,6 +97,8 @@ function report(tabs: SweepTab[]): SweepReport {
 
 describe("scanTabs", () => {
   it("classifies DEAD, all LOCKED reasons, and a quiet CANDIDATE", async () => {
+    publishCodexRestoreNoticeEpoch("s-dead", 601);
+    confirmPtyExit("s-dead", 601);
     const tabs = [
       { id: "dead", sessionId: "s-dead", agentId: "shell-starter", type: "terminal" as const },
       { id: "active", sessionId: "s-active", agentId: "shell-starter", type: "terminal" as const },
@@ -139,14 +142,22 @@ describe("scanTabs", () => {
     expect(result.unnamed.map((item) => item.id)).not.toContain("dead");
   });
 
-  it("treats snapshot_unavailable as DEAD", async () => {
-    const result = await scanTabs(source({
-      workspaces: [workspace([
-        { id: "lost", sessionId: "s-lost", agentId: "shell-starter", type: "terminal" },
-      ])],
-      processMetadataAvailable: false,
-    }));
-    expect(result.dead[0]?.processStatusReason).toBe("snapshot_unavailable");
+  it("locks tabs with an unavailable process snapshot or a stale exit from a previous PTY", async () => {
+    publishCodexRestoreNoticeEpoch("s-lost", 602);
+    confirmPtyExit("s-lost", 602);
+    publishCodexRestoreNoticeEpoch("s-new-owner", 604);
+    confirmPtyExit("s-new-owner", 603);
+    const tabs = [workspace([
+      { id: "lost", sessionId: "s-lost", agentId: "shell-starter", type: "terminal" },
+      { id: "new-owner", sessionId: "s-new-owner", agentId: "codex", type: "terminal" },
+    ])];
+    const unavailable = await scanTabs(source({ workspaces: tabs, processMetadataAvailable: false }));
+    expect(unavailable.dead).toEqual([]);
+    expect(unavailable.locked.map(tab => tab.processStatusReason)).toEqual(["snapshot_unavailable", "snapshot_unavailable"]);
+
+    const recovered = await scanTabs(source({ workspaces: tabs }));
+    expect(recovered.dead.map(tab => tab.id)).toEqual(["lost"]);
+    expect(recovered.locked.map(tab => tab.id)).toEqual(["new-owner"]);
   });
 
   it("keeps no_foreground_process live and requires an idle prompt", async () => {

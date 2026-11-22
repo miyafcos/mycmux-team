@@ -1,4 +1,4 @@
-import type { CliProvider, ProfileUsage } from "./ipc";
+import type { CliProvider, ProfileUsage, SwitchableCliProvider } from "./ipc";
 import { formatPct } from "./accountRows";
 import { PROVIDER_SHORT } from "./cliAccounts";
 
@@ -95,9 +95,10 @@ export function visibleResetTickets(row: { reset_tickets?: ResetTickets | null }
 /** Tickets per provider across the rows, for the panel header. */
 export function resetTicketTotals(
   rows: readonly { provider: CliProvider; reset_tickets?: ResetTickets | null }[],
-): Record<CliProvider, number> {
-  const totals: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
+): Record<SwitchableCliProvider, number> {
+  const totals: Record<SwitchableCliProvider, number> = { claude: 0, codex: 0, grok: 0 };
   for (const row of rows) {
+    if (row.provider === "gemini") continue;
     const tickets = visibleResetTickets(row);
     if (tickets) totals[row.provider] += tickets.available;
   }
@@ -107,7 +108,7 @@ export function resetTicketTotals(
 export const RESET_TICKET_HEADER_TITLE = "使えるリセット券の合計 (この欄に出ているアカウントの分)";
 
 /** "券 CC 6 · CX 5"; null when no row has a ticket. */
-export function resetTicketHeaderLabel(totals: Record<CliProvider, number>): string | null {
+export function resetTicketHeaderLabel(totals: Record<SwitchableCliProvider, number>): string | null {
   const parts = (["claude", "codex", "grok"] as const)
     .filter((provider) => totals[provider] > 0)
     .map((provider) => `${PROVIDER_SHORT[provider]} ${totals[provider]}`);

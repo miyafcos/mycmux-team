@@ -206,10 +206,9 @@ __mycmux_codex_with_pane() {
   if [ -n "${MYCMUX_PANE_SESSION_ID:-}" ]; then
     local pane_value="${MYCMUX_PANE_SESSION_ID//\\/\\\\}"
     pane_value="${pane_value//\"/\\\"}"
-    __mycmux_with_hook_cap codex "$executable" "${home_args[@]}" -c "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=\"$pane_value\"" "$@"
-  else
-    __mycmux_with_hook_cap codex "$executable" "${home_args[@]}" "$@"
+    home_args+=(-c "shell_environment_policy.set.MYCMUX_PANE_SESSION_ID=\"$pane_value\"")
   fi
+  __mycmux_with_hook_cap codex "$executable" "${home_args[@]}" -c check_for_update_on_startup=false "$@"
 }
 
 __mycmux_claude_codex_launch_args() {
@@ -1385,23 +1384,39 @@ __spec_models_for() {
     # read its installed models.json; this menu keeps the GPT tiers, and its
     # type-in row reaches any other id. It serves macOS, where neither Mac has
     # claude-codex (2026-09-18), and a Windows pane whose shell is Git Bash.
+    # Codex CLI 0.169.0 models_cache.json (visibility=list), verified 2026-11-18.
     codex|claude-codex)
-      printf '%s\n' "Sol (6.1)|gpt-6.1-sol" "Terra (6.1)|gpt-6.1-terra" "Astra (6 flagship)|gpt-6-astra" "Sol (6)|gpt-6-sol" "Luna (6 light)|gpt-6-luna" "Sol (5.6)|gpt-5.6-sol" "Terra (5.6)|gpt-5.6-terra" "Luna (5.6)|gpt-5.6-luna" ;;
-    # agy 1.5.5: agy models, verified 2026-11-12.
+      printf '%s\n' \
+        "Sol (6.2)|gpt-6.2-sol" \
+        "Astra (6.2)|gpt-6.2-astra" \
+        "Terra (6.1)|gpt-6.1-terra" \
+        "Sol (6.1)|gpt-6.1-sol" \
+        "Astra (6 flagship)|gpt-6-astra" \
+        "Sol (6)|gpt-6-sol" \
+        "Luna (6 light)|gpt-6-luna" \
+        "Sol (5.6)|gpt-5.6-sol" \
+        "Terra (5.6)|gpt-5.6-terra" \
+        "Luna (5.6)|gpt-5.6-luna" ;;
+    # agy 1.5.10: agy models, verified 2026-11-18.
     agy)
       printf '%s\n' \
-        "Gemini 4 Argon (High)|gemini-4-argon-high" \
+        "Gemini 4 Carbon (Medium)|gemini-4-carbon-medium" \
+        "Gemini 4 Carbon (High)|gemini-4-carbon-high" \
+        "Gemini 4 Carbon (Low)|gemini-4-carbon-low" \
         "Gemini 4 Argon (Medium)|gemini-4-argon-medium" \
+        "Gemini 4 Argon (High)|gemini-4-argon-high" \
         "Gemini 4 Argon (Low)|gemini-4-argon-low" \
+        "Gemini 4 Hydrogen (High)|gemini-4-hydrogen-high" \
+        "Gemini 4 Hydrogen (XHigh)|gemini-4-hydrogen-xhigh" \
+        "Gemini 4 Hydrogen (Medium)|gemini-4-hydrogen-medium" \
+        "Gemini 4 Hydrogen (Low)|gemini-4-hydrogen-low" \
+        "Orchestrator (Carbon)|gemini-pro-orchestrator" \
+        "Orchestrator (Argon)|gemini-pro-orchestrator-argon" \
         "Gemini 3.8 Flash (High)|gemini-3.8-flash-high" \
         "Gemini 3.8 Flash (Medium)|gemini-3.8-flash-medium" \
         "Gemini 3.8 Flash (Low)|gemini-3.8-flash-low" \
-        "Claude Opus 5.5 (High)|claude-opus-5-5-high" \
-        "Claude Opus 5.5 (Medium)|claude-opus-5-5-medium" \
-        "Claude Opus 5.5 (Low)|claude-opus-5-5-low" \
-        "Claude Sonnet 5.5 (High)|claude-sonnet-5-5-high" \
-        "Claude Sonnet 5.5 (Medium)|claude-sonnet-5-5-medium" \
-        "Claude Sonnet 5.5 (Low)|claude-sonnet-5-5-low" \
+        "Claude Sonnet 4.6 (Thinking)|claude-sonnet-4-6" \
+        "Claude Opus 4.6 (Thinking)|claude-opus-4-6-thinking" \
         "GPT-OSS 120B (Medium)|gpt-oss-120b-medium" ;;
     # Grok Build 1.0.77: ~/.grok/models_cache.json, verified 2026-11-12.
     grok)
@@ -1410,22 +1425,42 @@ __spec_models_for() {
         "Grok 4.7 Fast|grok-4.7-build-fast" \
         "Grok 4.6|grok-4.6" \
         "Grok 4.5|grok-4.5" ;;
+    # omp 18.2.11: omp models openai-codex --no-extensions, verified 2026-11-18.
     omp)
-      printf '%s\n' "Astra (6 flagship)|openai-codex/gpt-6-astra" "Sol (6)|openai-codex/gpt-6-sol" "Luna (6 light)|openai-codex/gpt-6-luna" ;;
-    # Recheck unavailable 2026-11-12: cursor-agent 2026.01.28 reported "No models available for this account".
-    # Public docs have names but no CLI ids; values remain as verified on 2026-10-15.
+      printf '%s\n' \
+        "Luna (5.6)|openai-codex/gpt-5.6-luna" \
+        "Sol (5.6)|openai-codex/gpt-5.6-sol" \
+        "Terra (5.6)|openai-codex/gpt-5.6-terra" \
+        "Astra (6 flagship)|openai-codex/gpt-6-astra" \
+        "Luna (6 light)|openai-codex/gpt-6-luna" \
+        "Sol (6)|openai-codex/gpt-6-sol" ;;
+    # cursor-agent 2026.10.19-6bbf2c4: cursor-agent models, verified 2026-11-18.
     cursor)
       printf '%s\n' \
+        "Auto|auto" \
         "Composer 2.5|composer-2.5" \
-        "Grok 4.7 (Low)|grok-4.7-low" \
-        "Grok 4.7 (Medium)|grok-4.7-medium" \
-        "Grok 4.7 (High)|grok-4.7-high" \
-        "Grok 4.7 (Extra High)|grok-4.7-xhigh" \
-        "Claude Opus 5.5 (High)|claude-opus-5-5-high" \
-        "Claude Opus 5.5 (Max)|claude-opus-5-5-max" \
-        "Claude Sonnet 5.5 (High)|claude-sonnet-5-5-high" \
-        "GPT-5.6 Sol (High)|gpt-5.6-sol-high" \
-        "GPT-5.6 Sol (Extra High)|gpt-5.6-sol-xhigh" \
+        "Composer 2.5 Fast|composer-2.5-fast" \
+        "Claude Fable 5.2 1M High (NO ZDR)|claude-fable-5-2-high" \
+        "Claude Fable 5.2 1M Max (NO ZDR)|claude-fable-5-2-max" \
+        "Claude Opus 5.5 1M High|claude-opus-5-5-high" \
+        "Claude Opus 5.5 1M Max|claude-opus-5-5-max" \
+        "Claude Sonnet 5.5 High|claude-sonnet-5-5-high" \
+        "Claude Sonnet 5.5 Max|claude-sonnet-5-5-max" \
+        "Claude Haiku 5.5 High No Thinking|claude-haiku-5-5-high" \
+        "Claude Haiku 5.5 Max No Thinking|claude-haiku-5-5-max" \
+        "GPT-5.6 Sol 1M High|gpt-5.6-sol-high" \
+        "GPT-5.6 Sol 1M Extra High|gpt-5.6-sol-xhigh" \
+        "GPT-5.6 Terra 1M High|gpt-5.6-terra-high" \
+        "GPT-5.6 Terra 1M Max|gpt-5.6-terra-max" \
+        "GPT-5.6 Luna 1M High|gpt-5.6-luna-high" \
+        "Grok 4.7 Low|grok-4.7-low" \
+        "Grok 4.7 Medium|grok-4.7-medium" \
+        "Grok 4.7 High|grok-4.7-high" \
+        "Grok 4.7 Extra High|grok-4.7-xhigh" \
+        "Gemini 4 Carbon High|gemini-4-carbon-high" \
+        "Gemini 4 Argon High|gemini-4-argon-high" \
+        "Gemini 4 Hydrogen High|gemini-4-hydrogen-high" \
+        "Gemini 4 Hydrogen Extra High|gemini-4-hydrogen-xhigh" \
         "Gemini 3.1 Pro|gemini-3.1-pro" ;;
     # The fcc backend's open models depend on the account; keep its type-in path.
     claude-codex-open) : ;;
@@ -1447,7 +1482,7 @@ __spec_efforts_for() {
         grok-4.5) printf '%s\n' low medium high ;;
         *) printf '%s\n' low medium high xhigh ;;
       esac ;;
-    # agy 1.5.5 --help, verified 2026-11-12.
+    # agy 1.5.10 --help, verified 2026-11-18.
     agy) printf '%s\n' low medium high xhigh max ;;
     omp) printf '%s\n' low medium high xhigh max ;;
   esac
@@ -1468,6 +1503,7 @@ __spec_menu() {
   local title="$1" note="${2:-}"
   local total=${#__SPEC_LABELS[@]}
   local sel=0 i num marker line
+  local visible_rows=12 first end
   __open_menu_fd
   while true; do
     printf "\033[H\033[2J" >&$__CMUX_MENU_FD
@@ -1475,7 +1511,9 @@ __spec_menu() {
     echo "  $title" >&$__CMUX_MENU_FD
     [ -n "$note" ] && echo "  $note" >&$__CMUX_MENU_FD
     echo "" >&$__CMUX_MENU_FD
-    for i in "${!__SPEC_LABELS[@]}"; do
+    first=$((sel >= visible_rows ? sel - visible_rows + 1 : 0))
+    end=$((first + visible_rows < total ? first + visible_rows : total))
+    for ((i = first; i < end; i++)); do
       if [ "${__SPEC_VALUES[$i]}" = "__type__" ]; then num=0; elif [ "$i" -lt 9 ]; then num=$((i + 1)); else num="-"; fi
       if [ "$i" -eq "$sel" ]; then marker=">"; else marker=" "; fi
       line="${marker} ${num}. ${__SPEC_LABELS[$i]}"
@@ -1529,7 +1567,9 @@ __spec_menu() {
       fi
       return 0
     fi
-    __SPEC_RESULT="${__SPEC_VALUES[$sel]}"
+    local value="${__SPEC_VALUES[$sel]}"
+    __SPEC_RESULT="$(__launch_spec_value "$value")"
+    if [ -n "$value" ] && [ -z "$__SPEC_RESULT" ]; then return 1; fi
     return 0
   done
 }

@@ -7,7 +7,7 @@ export const GRASS_DARK = ["#3d8241", "#49a14f", "#5cc063", "#75e07c"] as const;
 // Only these authored dark surfaces tint the translucent wash beyond C=0.03.
 // Opaque neutral values keep their existing contrast without changing other themes.
 const NEUTRAL_EMPTY: Readonly<Record<string, string>> = {
-  "yoi-ai": "#414141", "yogiri": "#3f3f3f", "synthwave": "#343434",
+  "yoi-ai": "#414141", "yogiri": "#3f3f3f", "synthwave": "#343434", "hanabi": "#383840",
 };
 
 /** A store-free caller uses the dark scale. */

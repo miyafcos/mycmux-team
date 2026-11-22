@@ -36,6 +36,11 @@ export function normalizeDisplayAgentKind(kind: string | null | undefined): Disp
     ? kind : null;
 }
 
+export function isPtyDetectableAgentKind(kind: string | null | undefined): boolean {
+  const displayKind = normalizeDisplayAgentKind(kind);
+  return displayKind !== null && displayKind !== "cursor";
+}
+
 export function resolveDisplayAgentKind(
   agentKind: string | null | undefined,
   commandArgv?: readonly string[] | null,

@@ -1,0 +1,99 @@
+{
+  "generation": 7,
+  "agentStartedAt": 9,
+  "cwd": "C:\\toy-work\\toy-folder",
+  "batch": {
+    "ptySessionId": "tab-a",
+    "briefRevision": 31,
+    "telemetryHealth": "live",
+    "events": [
+      {
+        "eventId": "toy-event-1",
+        "sourceRevision": 4,
+        "occurredAt": 9700,
+        "sourceByteStart": 20,
+        "sourceByteEnd": 55,
+        "kind": {
+          "type": "agentMessage",
+          "text": "Earlier synthetic reply"
+        }
+      },
+      {
+        "eventId": "toy-event-2",
+        "sourceRevision": 4,
+        "occurredAt": 10500,
+        "sourceByteStart": 55,
+        "sourceByteEnd": 90,
+        "kind": {
+          "type": "agentMessage",
+          "text": "Latest synthetic reply"
+        }
+      },
+      {
+        "eventId": "toy-event-3",
+        "sourceRevision": 4,
+        "occurredAt": 10750,
+        "sourceByteStart": 90,
+        "sourceByteEnd": 123,
+        "kind": {
+          "type": "userMessage",
+          "kind": "taskChange",
+          "text": "Synthetic user input",
+          "digest": "toy-digest"
+        }
+      }
+    ]
+  },
+  "brief": {
+    "ptySessionId": "tab-a",
+    "agentSessionId": "toy-conversation",
+    "agentKind": "claude",
+    "ptyInstanceId": "toy-instance",
+    "ptyGeneration": 7,
+    "sourceRevision": 4,
+    "ptyInputRevision": 1,
+    "task": null,
+    "latestInstruction": null,
+    "taskSourceEventIds": [],
+    "activityKind": null,
+    "activityText": null,
+    "activitySourceEventId": null,
+    "checkpoint": null,
+    "checkpointEvidenceEventIds": [],
+    "pendingInputKind": null,
+    "pendingPrompt": null,
+    "pendingOptions": [],
+    "promptEventId": null,
+    "promptHash": null,
+    "eventSeq": 3,
+    "operationalState": "running",
+    "telemetryHealth": "live",
+    "lastEventAt": 10750,
+    "lastSuccessfulReadAt": 10800,
+    "updatedAt": 10800,
+    "serviceEpoch": "toy-service",
+    "briefRevision": 31
+  },
+  "request": {
+    "requestId": "toy-current",
+    "sessionId": "tab-a",
+    "ptyGeneration": 7,
+    "provider": "claude",
+    "draft": "A synthetic draft to check",
+    "conversationExcerpt": "Latest synthetic reply",
+    "replySource": {
+      "ptyGeneration": 7,
+      "agentKind": "claude",
+      "agentSessionId": "toy-conversation",
+      "occurredAt": 10500
+    },
+    "workdirName": "toy-folder",
+    "workdirIsBasename": true
+  },
+  "workdirCases": [
+    { "cwd": "/a/b:c", "workdirName": "b:c" },
+    { "cwd": "/a/b:", "workdirName": "b:" },
+    { "cwd": "C:folder", "workdirName": "folder" },
+    { "cwd": "C:", "workdirName": "" }
+  ]
+}

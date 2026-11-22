@@ -6,28 +6,41 @@ use std::{
 };
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use serde::Serialize;
 use super::{claude::ClaudePaths, launch_tokens::{self, LaunchTokenStatus, LaunchTokenStore, SaveOutcome},
     staging, token_owner::LaunchOwnerCheck, ERR_LAUNCH_TOKEN_OWNER_MISMATCH};
 
 const OUTPUT_LIMIT: usize = 1024 * 1024;
+const OUTPUT_QUEUE_CAPACITY: usize = 8;
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+#[cfg(unix)]
+const PROCESS_GROUP_EXIT_TIMEOUT: Duration = Duration::from_millis(250);
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+const OUTPUT_CANCEL_GRACE: Duration = Duration::from_millis(250);
+const TOKEN_PREFIX: &str = "sk-ant-oat";
+const PTY_ROWS: u16 = 40;
+// Preserves the fact that a displayed row was edited without emulating its cells.
+const EDITED_ROW: u8 = b'\x08';
+#[cfg(windows)]
+#[path = "setup_token_windows.rs"]
+mod windows_job;
 pub(super) const AUTH_ENV_KEYS: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
 ];
 // Claude Code 2.1.323 setup-token: terminal error view and revoked-token gate.
 // Match known screen lines, never generic words in startup notices.
-const ERROR_MARKERS: &[&str] = &[
-    "OAuth error:", "Press Enter to retry.",
-    "Anthropic reported the token revoked; it was not shown.",
-];
+const OAUTH_ERROR: &str = "OAuth error:";
+const RETRY_LINE: &str = "Press Enter to retry";
+const REVOKED_LINE: &str = "Anthropic reported the token revoked; it was not shown.";
 const UNAVAILABLE: &str = "cli_account.error.setup_unavailable";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupTokenState {
-    Starting, WaitingBrowser, CodeAvailable, CheckingOwner, Saved, Mismatch, Failed, Cancelled, Timeout,
+    Starting, WaitingBrowser, CodeAvailable, Confirming, CheckingOwner, Saved, Mismatch, Failed, Cancelled, Timeout,
 }
 impl SetupTokenState {
     fn terminal(&self) -> bool {
@@ -134,13 +147,16 @@ impl SetupTokenRegistry {
         attempt.event.state = state;
         attempt.event.reason = reason;
         attempt.event.status = status;
+        if attempt.event.state == SetupTokenState::Confirming {
+            attempt.event.url = None;
+        }
         if attempt.event.state.terminal() {
             attempt.active = false;
             attempt.accepting_cancel = false;
             attempt.accepting_code = false;
             // Approval URLs are only useful during the current authorization.
             attempt.event.url = None;
-            // AttemptGuard publishes only after its PTY and staging are cleaned.
+            // The attempt has finished with its staging directory.
             self.idle.notify_all();
         }
         Some(attempt.event.clone())
@@ -167,8 +183,10 @@ impl SetupTokenRegistry {
 pub(super) struct SecretBytes(Vec<u8>);
 impl SecretBytes {
     fn as_slice(&self) -> &[u8] { &self.0 }
-    fn wipe(&mut self) {
-        for byte in &mut self.0 {
+    fn wipe(&mut self) { Self::wipe_slice(&mut self.0); }
+
+    fn wipe_slice(bytes: &mut [u8]) {
+        for byte in bytes {
             // Keep the overwrite even when the allocation is about to be released.
             unsafe { std::ptr::write_volatile(byte, 0); }
         }
@@ -202,9 +220,46 @@ pub fn native_command(login_path: Option<&str>) -> CommandBuilder {
     if let Some(path) = login_path { command.env("PATH", path); }
     command
 }
+fn cursor_position(current: u16, command: u8, params: &[u8]) -> Option<(u16, u16)> {
+    let mut fields = params.split(|byte| *byte == b';');
+    let number = |field: &[u8]| {
+        if field.is_empty() { return Some(1); }
+        if !field.iter().all(u8::is_ascii_digit) { return None; }
+        let value = std::str::from_utf8(field).ok()?.parse::<u16>().ok()?;
+        (value <= i16::MAX as u16).then_some(value)
+    };
+    let first = number(fields.next()?)?.max(1);
+    let column = match fields.next() {
+        None => 1,
+        Some(column) if matches!(command, b'H' | b'f') && fields.next().is_none() => number(column)?,
+        Some(_) => return None,
+    };
+    let row = match command {
+        b'A' | b'F' => current.saturating_sub(first).max(1),
+        b'B' | b'E' => current.saturating_add(first).min(PTY_ROWS),
+        b'd' | b'H' | b'f' => first.min(PTY_ROWS),
+        _ => return None,
+    };
+    Some((row, column))
+}
+
+fn finish_row(plain: &mut Vec<u8>, edited: &mut bool) {
+    if std::mem::take(edited) { plain.push(EDITED_ROW); }
+    plain.push(b'\n');
+}
+
 pub(super) fn strip_controls(raw: &[u8]) -> SecretBytes {
-    let mut plain = Vec::with_capacity(raw.len());
+    // A CR edit marker is the only added byte that need not replace a
+    // control byte. Reserve space up front to avoid reallocating plaintext.
+    let cr_count = raw.iter().filter(|byte| **byte == b'\r').count();
+    let mut plain = Vec::with_capacity(raw.len() + cr_count);
     let mut at = 0;
+    let mut row = 1;
+    let mut edited = false;
+    let mut after_cr = false;
+    // Once display text (including spaces and tabs) has been seen, a same-row
+    // H/f can be a rewrite even after a cursor move or screen clear.
+    let mut seen_text = false;
     while at < raw.len() {
         match raw[at] {
             0x1b => {
@@ -213,12 +268,27 @@ pub(super) fn strip_controls(raw: &[u8]) -> SecretBytes {
                 match raw[at] {
                     b'[' => {
                         at += 1;
+                        let start = at;
                         while at < raw.len() && !(0x40..=0x7e).contains(&raw[at]) { at += 1; }
-                        // An unfinished CSI and a trailing erase do not complete
-                        // the preceding text line. Cursor motion still separates rows.
-                        if at >= raw.len() || (raw[at] == b'K' && at + 1 == raw.len()) { break; }
-                        if raw[at] != b'm' { plain.push(b'\n'); }
-                        at = (at + 1).min(raw.len());
+                        if at >= raw.len() { break; }
+                        let command = raw[at];
+                        if matches!(command, b'C' | b'D' | b'G' | 0x60 | b'P' | b'@' | b'X') {
+                            edited = true;
+                        } else if matches!(command, b'A' | b'B' | b'E' | b'F' | b'd' | b'H' | b'f') {
+                            match cursor_position(row, command, &raw[start..at]) {
+                                Some((next, _)) if next != row => {
+                                    finish_row(&mut plain, &mut edited);
+                                    row = next;
+                                    after_cr = false;
+                                }
+                                Some((_, column)) => {
+                                    edited |= matches!(command, b'H' | b'f')
+                                        && (seen_text || column != 1);
+                                }
+                                None => edited = true,
+                            }
+                        }
+                        at += 1;
                     }
                     b']' | b'P' | b'_' | b'^' => {
                         at += 1;
@@ -234,98 +304,234 @@ pub(super) fn strip_controls(raw: &[u8]) -> SecretBytes {
                     }
                 }
             }
-            b'\r' => {
-                if raw.get(at + 1) != Some(&b'\n') { plain.push(b'\n'); }
+            b'\n' => {
+                finish_row(&mut plain, &mut edited);
+                row = (row + 1).min(PTY_ROWS);
+                after_cr = false;
                 at += 1;
             }
-            b'\n' | b'\t' => { plain.push(raw[at]); at += 1; }
-            0..=31 | 127 => { plain.push(b'\n'); at += 1; }
-            _ => { plain.push(raw[at]); at += 1; }
+            b'\r' => { plain.push(b'\r'); after_cr = true; at += 1; }
+            b'\t' => { plain.push(b'\t'); seen_text = true; at += 1; }
+            b'\x08' => { edited = true; at += 1; }
+            0..=31 | 127 => at += 1,
+            _ => {
+                edited |= std::mem::take(&mut after_cr);
+                plain.push(raw[at]);
+                seen_text = true;
+                at += 1;
+            }
         }
     }
+    if edited { plain.push(EDITED_ROW); }
     SecretBytes(plain)
 }
 fn valid_token(value: &str) -> bool {
-    value.strip_prefix("sk-ant-oat").is_some_and(|rest| {
+    value.strip_prefix(TOKEN_PREFIX).is_some_and(|rest| {
         let b = rest.as_bytes();
         (23..=515).contains(&b.len()) && b[0].is_ascii_digit() && b[1].is_ascii_digit()
-            && b[2] == b'-' && b[3..].iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            && b[2] == b'-' && b[3..].iter().copied().all(token_byte)
     })
 }
+fn token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+fn token_fragment(line: &str) -> bool {
+    !line.is_empty() && line.bytes().all(token_byte)
+}
+fn ascii_position(line: &[u8], text: &str) -> Option<usize> {
+    line.windows(text.len()).position(|part| part == text.as_bytes())
+}
+// Retain readable text on both sides of an undecodable byte sequence. The
+// bytes between spans cannot establish a token or make a quoted error exact.
+fn readable_spans(line: &[u8]) -> impl Iterator<Item = &str> {
+    line.utf8_chunks().map(|chunk| chunk.valid().trim()).filter(|span| !span.is_empty())
+}
+
+fn partial_token(line: &[u8], complete: bool) -> bool {
+    let mut last = None;
+    for word in readable_spans(line).flat_map(str::split_whitespace) {
+        if word.starts_with("sk-") && TOKEN_PREFIX.starts_with(word) { return true; }
+        last = Some(word);
+    }
+    !complete && last.is_some_and(|word| TOKEN_PREFIX.starts_with(word))
+}
+
 pub(super) fn extract_token(plain: &[u8]) -> Option<SecretBytes> {
     let mut marker = false;
     let mut candidate: Option<&str> = None;
     let mut previous_candidate = false;
-    for bytes in plain.split_inclusive(|byte| *byte == b'\n') {
-        if bytes.last() != Some(&b'\n') { break; } // Never accept a partial token line.
-        let Ok(line) = std::str::from_utf8(bytes) else { continue; };
-        let line = line.trim();
-        if line.contains("OAuth token") { marker = true; continue; }
-        if line.contains("sk-ant-oat") {
-            if !marker || !valid_token(line) || candidate.is_some_and(|value| value != line) { return None; }
-            candidate = Some(line);
-            previous_candidate = true;
-        } else {
-            // A wrapped continuation must not turn a valid-looking prefix into a saved token.
-            if previous_candidate && !line.is_empty()
-                && line.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')) { return None; }
-            if !line.is_empty() { previous_candidate = false; }
+    for line in plain.split_inclusive(|byte| *byte == b'\n') {
+        let complete = line.ends_with(b"\n");
+        let bytes = line.strip_suffix(b"\n").unwrap_or(line);
+        let edited = bytes.ends_with(&[EDITED_ROW]);
+        let bytes = bytes.strip_suffix(&[EDITED_ROW]).unwrap_or(bytes);
+        let has_token = ascii_position(bytes, TOKEN_PREFIX).is_some();
+        let has_heading = ascii_position(bytes, "OAuth token").is_some();
+        let mut spans = readable_spans(bytes);
+        let first = spans.next();
+        // A wrapped or unreadable continuation can make an otherwise valid
+        // prefix ambiguous. Known unrelated text breaks the continuation.
+        let could_be_continuation = previous_candidate && !has_heading && !has_token
+            && match first {
+                Some(first) => token_fragment(first) && spans.all(token_fragment),
+                None => std::str::from_utf8(bytes).is_err(),
+            };
+        if partial_token(bytes, complete && !edited) || could_be_continuation { return None; }
+        if has_token || has_heading {
+            // Only an unedited, complete, UTF-8 row can supply a token.
+            let line = std::str::from_utf8(bytes).ok()?.trim();
+            if edited || (has_heading && has_token) || (!complete && has_token) { return None; }
+            if has_heading {
+                marker |= complete;
+            } else {
+                if !marker || !valid_token(line) || candidate.is_some_and(|value| value != line) { return None; }
+                candidate = Some(line);
+                previous_candidate = true;
+            }
+        } else if first.is_some() {
+            previous_candidate = false;
         }
     }
     candidate.map(|value| SecretBytes(value.as_bytes().to_vec()))
 }
 pub(super) fn authorization_url(plain: &[u8]) -> Option<String> {
-    plain.split(|byte| *byte == b'\n').filter_map(|line| std::str::from_utf8(line).ok())
+    plain.split(|byte| matches!(*byte, b'\n' | b'\r' | EDITED_ROW))
+        .filter_map(|line| std::str::from_utf8(line).ok())
         .flat_map(str::split_whitespace).find(|word| word.starts_with("https://") && word.contains("/oauth/authorize?") && word.len() <= 8192
             && !word.contains("sk-ant-oat") && word.bytes().all(|byte| !byte.is_ascii_control()))
         .map(str::to_owned)
 }
 fn cli_error(plain: &[u8]) -> bool {
-    plain.split(|byte| *byte == b'\n').filter_map(|line| std::str::from_utf8(line).ok()).any(|line| {
-        let line = line.trim();
-        if line.contains("https://") || line.contains("sk-ant-oat") { return false; }
-        ERROR_MARKERS.iter().any(|marker| {
-            if *marker == "OAuth error:" { line.starts_with(marker) }
-            else if *marker == "Press Enter to retry." { line.trim_end_matches('.') == marker.trim_end_matches('.') }
-            else { line.ends_with(marker) }
-        })
+    // A CR starts another visible message at column one. It does not end a
+    // token row. The edit marker is synthetic and contains no visible text.
+    plain.split(|byte| matches!(*byte, b'\n' | b'\r' | EDITED_ROW)).any(|bytes| {
+        let mut spans = readable_spans(bytes);
+        let Some(first) = spans.next() else { return false; };
+        let last = spans.last();
+        first.starts_with(OAUTH_ERROR)
+            || (last.is_none() && first.trim_end_matches('.') == RETRY_LINE)
+            || (last.unwrap_or(first).ends_with(REVOKED_LINE)
+                && !first.starts_with("https://") && ascii_position(bytes, TOKEN_PREFIX).is_none())
     })
 }
 pub struct RunOptions {
     pub timeout: Duration,
     pub token_exit_grace: Duration,
+    pub confirm_exit_grace: Duration,
     pub fallback_after: Duration,
 }
 impl Default for RunOptions {
     fn default() -> Self {
         Self { timeout: Duration::from_secs(600), token_exit_grace: Duration::from_secs(5),
-            fallback_after: Duration::from_secs(3) }
+            confirm_exit_grace: Duration::from_secs(5), fallback_after: Duration::from_secs(3) }
     }
 }
 pub struct RunAudit { pub child_stopped: bool, pub wiped_buffer: Vec<u8> }
 struct StagingGuard<F: Fn(&Path)> { path: PathBuf, cleanup: F }
 impl<F: Fn(&Path)> Drop for StagingGuard<F> { fn drop(&mut self) { (self.cleanup)(&self.path); } }
+#[cfg(all(windows, test))]
+type TestReader = Box<dyn Read + Send>;
+
+#[cfg(all(windows, test))]
+type BeforeJobRelease = Box<dyn FnOnce(std::os::windows::io::BorrowedHandle<'_>) + Send>;
+
+#[cfg(all(windows, test))]
+#[derive(Default)]
+struct PtyTestHooks {
+    wrap_reader: Option<Box<dyn FnOnce(TestReader) -> TestReader + Send>>,
+    before_job_release: Option<BeforeJobRelease>,
+    output: windows_job::OutputTestHooks,
+}
+
 struct PrivatePty {
+    #[cfg(all(windows, test))]
+    test_hooks: PtyTestHooks,
+    #[cfg(windows)]
+    job: Option<windows_job::SetupJob>,
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     _master: Box<dyn MasterPty + Send>,
-    stopped: bool,
+    stopped: Option<bool>,
 }
 impl PrivatePty {
+    fn finished(&mut self, _confirmation_failed: bool) -> Result<Option<ExitStatus>, CaptureFailure> {
+        let status = self.child.try_wait().map_err(|_| CaptureFailure::CaptureFailed)?;
+        #[cfg(windows)]
+        if status.as_ref().is_some_and(ExitStatus::success) {
+            let counts = self.job.as_ref().expect("job is open while polling")
+                .accounting().map_err(|_| CaptureFailure::CaptureFailed)?;
+            if counts.ActiveProcesses != 0 { return Ok(None); }
+            // TotalProcesses includes descendants that exited between polls.
+            // With a failed Enter, a wrapper's zero cannot verify their exit.
+            if _confirmation_failed && counts.TotalProcesses > 1 {
+                return Err(CaptureFailure::CaptureFailed);
+            }
+        }
+        Ok(status)
+    }
+
     fn stop(&mut self) -> bool {
-        if self.stopped { return true; }
+        if let Some(stopped) = self.stopped { return stopped; }
+        #[cfg(windows)]
+        // Release the kill-on-close handle here, including when stop failed.
+        // ConPTY Close runs elsewhere and must not own the job.
+        let stopped = self.job.take().is_some_and(|job| {
+            let stopped = job.stop().unwrap_or(false);
+            #[cfg(test)]
+            if let Some(observe) = self.test_hooks.before_job_release.take() {
+                observe(job.handle());
+            }
+            stopped
+        });
+        #[cfg(not(windows))]
+        let stopped = self.stop_child();
+        self.stopped = Some(stopped);
+        stopped
+    }
+
+    #[cfg(not(windows))]
+    fn stop_child(&mut self) -> bool {
         // portable-pty starts Unix children as session/process-group leaders.
         // Descendants may otherwise keep the private PTY reader open forever.
         #[cfg(unix)]
-        if let Some(pid) = self.child.process_id().filter(|pid| *pid > 1 && *pid <= i32::MAX as u32) {
-            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+        let group = self.child.process_id().filter(|pid| *pid > 1 && *pid <= i32::MAX as u32)
+            .map(|pid| -(pid as i32));
+        #[cfg(unix)]
+        if let Some(group) = group {
+            // The signal's return value does not establish that the group exited.
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
         }
         if self.child.try_wait().ok().flatten().is_none() { let _ = self.child.kill(); }
-        self.stopped = self.child.wait().is_ok();
-        self.stopped
+        if self.child.wait().is_err() { return false; }
+        #[cfg(unix)]
+        {
+            group.is_none_or(|group| confirm_process_group_exit(|| {
+                // Probe after reaping even when SIGKILL was accepted. EPERM
+                // means the group may still exist, including on macOS.
+                let result = unsafe { libc::kill(group, 0) };
+                result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            }, PROCESS_GROUP_EXIT_TIMEOUT))
+        }
+        #[cfg(not(unix))]
+        true
     }
 }
 impl Drop for PrivatePty { fn drop(&mut self) { self.stop(); } }
+
+#[cfg(unix)]
+fn confirm_process_group_exit(
+    mut group_has_exited: impl FnMut() -> bool, timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !group_has_exited() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(POLL_INTERVAL.min(remaining));
+    }
+    true
+}
 
 struct AttemptGuard<'a, E: FnMut(SetupTokenEvent)> {
     registry: &'a SetupTokenRegistry,
@@ -346,22 +552,112 @@ impl<E: FnMut(SetupTokenEvent)> Drop for AttemptGuard<'_, E> {
         }
     }
 }
-fn drain_output(receiver: &Receiver<SecretBytes>, raw: &mut SecretBytes, timeout: Duration) -> Result<(), &'static str> {
-    let deadline = Instant::now() + timeout;
-    let mut failure = None;
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return Err(failure.unwrap_or("capture_failed"));
-        };
-        match receiver.recv_timeout(remaining) {
-            Ok(chunk) => {
-                if raw.0.len() + chunk.0.len() > OUTPUT_LIMIT { failure = Some("output_limit"); }
-                else { raw.0.extend_from_slice(chunk.as_slice()); }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return failure.map_or(Ok(()), Err),
-            Err(mpsc::RecvTimeoutError::Timeout) => return Err(failure.unwrap_or("capture_failed")),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureFailure {
+    Cancelled,
+    Timeout,
+    CliError,
+    CaptureFailed,
+    OutputLimit,
+}
+
+impl CaptureFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Timeout => "timeout",
+            Self::CliError => "cli_error",
+            Self::CaptureFailed => "capture_failed",
+            Self::OutputLimit => "output_limit",
         }
     }
+
+    fn state(self) -> SetupTokenState {
+        match self {
+            Self::Cancelled => SetupTokenState::Cancelled,
+            Self::Timeout => SetupTokenState::Timeout,
+            _ => SetupTokenState::Failed,
+        }
+    }
+}
+
+fn report_unconfirmed_stop(previous: Option<CaptureFailure>) {
+    let previous_reason = previous.map_or("none", CaptureFailure::code);
+    crate::diag::warn("claude_setup_token", &format!("stop_unconfirmed previous_reason={previous_reason}"));
+}
+
+enum PtyOutput {
+    Data(SecretBytes),
+    Eof,
+    ReadFailed,
+}
+
+fn read_pty_output(mut reader: impl Read, sender: SyncSender<PtyOutput>, stop_reading: &AtomicBool) {
+    let mut buffer = SecretBytes(vec![0; 8192]);
+    let mut capture = true;
+    while !stop_reading.load(Ordering::SeqCst) {
+        let end = match reader.read(&mut buffer.0) {
+            Ok(0) => PtyOutput::Eof,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                buffer.wipe();
+                continue;
+            }
+            #[cfg(windows)]
+            Err(error) if error.raw_os_error() == Some(windows::Win32::Foundation::ERROR_BROKEN_PIPE.0 as i32) => PtyOutput::Eof,
+            Err(_) => PtyOutput::ReadFailed,
+            Ok(count) => {
+                let used = &mut buffer.0[..count];
+                let chunk = capture.then(|| SecretBytes(used.to_vec()));
+                // Wipe before queueing, since a full queue can block the sender.
+                SecretBytes::wipe_slice(used);
+                if let Some(chunk) = chunk { capture = sender.send(PtyOutput::Data(chunk)).is_ok(); }
+                // After capture closes, keep draining with the same buffer.
+                continue;
+            }
+        };
+        if capture { let _ = sender.send(end); }
+        break;
+    }
+}
+
+fn record_output(raw: &mut SecretBytes, output: PtyOutput) -> Result<bool, CaptureFailure> {
+    match output {
+        PtyOutput::Data(chunk) => {
+            if raw.0.len() + chunk.0.len() > OUTPUT_LIMIT { return Err(CaptureFailure::OutputLimit); }
+            raw.0.extend_from_slice(chunk.as_slice());
+            Ok(false)
+        }
+        PtyOutput::Eof => Ok(true),
+        PtyOutput::ReadFailed => Err(CaptureFailure::CaptureFailed),
+    }
+}
+
+fn record_pending_output(receiver: &Receiver<PtyOutput>, raw: &mut SecretBytes) -> Result<bool, CaptureFailure> {
+    for output in receiver.try_iter().take(OUTPUT_QUEUE_CAPACITY) {
+        if record_output(raw, output)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
+fn drain_output(receiver: &Receiver<PtyOutput>, raw: &mut SecretBytes, timeout: Duration) -> Result<(), CaptureFailure> {
+    let deadline = Instant::now() + timeout;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) {
+        match receiver.recv_timeout(remaining) {
+            Ok(output) => if record_output(raw, output)? { return Ok(()); },
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(CaptureFailure::CaptureFailed),
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+        }
+    }
+    // Account for output already read by the worker at the cutoff. A timeout
+    // remains a capture failure even if EOF arrives during this last pass.
+    record_pending_output(receiver, raw)?;
+    Err(CaptureFailure::CaptureFailed)
+}
+
+fn capture_complete(raw: &SecretBytes) -> Result<SecretBytes, CaptureFailure> {
+    let plain = strip_controls(raw.as_slice());
+    if cli_error(plain.as_slice()) { return Err(CaptureFailure::CliError); }
+    extract_token(plain.as_slice()).ok_or(CaptureFailure::CaptureFailed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,15 +667,17 @@ pub fn run_attempt(
     secrets: &dyn LaunchTokenStore, check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,
     cleanup_staging: impl Fn(&Path), emit: impl FnMut(SetupTokenEvent),
 ) -> RunAudit {
-    run_attempt_with_close(registry, initial, control, base, live, command, options, secrets, check_owner, cleanup_staging, emit, drop)
+    run_attempt_with_pty(registry, initial, control, base, live, command, options, secrets,
+        check_owner, cleanup_staging, emit, |_| {}, drop)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_attempt_with_close(
+fn run_attempt_with_pty(
     registry: &SetupTokenRegistry, initial: SetupTokenEvent, control: SetupControl,
     base: &Path, live: &ClaudePaths, mut command: CommandBuilder, options: RunOptions,
     secrets: &dyn LaunchTokenStore, check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,
     cleanup_staging: impl Fn(&Path), emit: impl FnMut(SetupTokenEvent),
+    prepare_pty: impl FnOnce(&mut PrivatePty),
     close_pty: impl FnOnce(PrivatePty) + Send + 'static,
 ) -> RunAudit {
     let id = &initial.login_id;
@@ -404,15 +702,29 @@ fn run_attempt_with_close(
     command.env("COLORTERM", "truecolor");
     command.cwd(&staging.path);
     let spawn = || -> Result<_, ()> {
-        let pair = native_pty_system().openpty(PtySize { cols: 512, rows: 40, pixel_width: 0, pixel_height: 0 }).map_err(|_| ())?;
+        let pair = native_pty_system().openpty(PtySize { cols: 512, rows: PTY_ROWS, pixel_width: 0, pixel_height: 0 }).map_err(|_| ())?;
+        #[cfg(windows)]
+        let reader = pair.master.take_reader().map_err(|_| ())?;
+        #[cfg(not(windows))]
         let reader = pair.master.try_clone_reader().map_err(|_| ())?;
         let writer = pair.master.take_writer().map_err(|_| ())?;
         if control.cancelled.load(Ordering::SeqCst) { return Err(()); }
+        #[cfg(windows)]
+        let job = windows_job::SetupJob::new().map_err(|_| ())?;
+        #[cfg(windows)]
+        let child = pair.slave.spawn_command_in_job(command, job.handle()).map_err(|_| ())?;
+        #[cfg(not(windows))]
         let child = pair.slave.spawn_command(command).map_err(|_| ())?;
         drop(pair.slave);
-        Ok((PrivatePty { child, writer, _master: pair.master, stopped: false }, reader))
+        Ok((PrivatePty {
+            #[cfg(all(windows, test))]
+            test_hooks: PtyTestHooks::default(),
+            #[cfg(windows)]
+            job: Some(job),
+            child, writer, _master: pair.master, stopped: None,
+        }, reader))
     };
-    let (mut pty, mut reader) = match spawn() {
+    let (mut pty, reader) = match spawn() {
         Ok(pair) => pair,
         Err(_) => {
             drop(staging);
@@ -424,107 +736,168 @@ fn run_attempt_with_close(
             return RunAudit { child_stopped: true, wiped_buffer: vec![] };
         }
     };
-    let (sender, receiver) = mpsc::sync_channel(8);
-    let reader_thread = std::thread::spawn(move || {
-        loop {
-            let mut chunk = SecretBytes(vec![0; 8192]);
-            match reader.read(&mut chunk.0) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => {
-                    // Wipe the unused tail before shortening the allocation.
-                    for byte in &mut chunk.0[count..] { unsafe { std::ptr::write_volatile(byte, 0); } }
-                    chunk.0.truncate(count);
-                    if sender.send(chunk).is_err() { break; }
-                }
-            }
-        }
-    });
+    prepare_pty(&mut pty);
+    #[cfg(all(windows, test))]
+    let reader = match pty.test_hooks.wrap_reader.take() {
+        Some(wrap) => wrap(reader),
+        None => reader,
+    };
+    let (sender, receiver) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
+    let stop_reading = Arc::new(AtomicBool::new(false));
+    let reader_thread = {
+        let stop_reading = stop_reading.clone();
+        std::thread::spawn(move || read_pty_output(reader, sender, &stop_reading))
+    };
     guard.publish(SetupTokenState::WaitingBrowser, None, None, None);
     let started = Instant::now();
     let mut candidate_since = None;
+    let mut confirmation: Option<(Instant, bool)> = None;
+    let mut code_enter_at: Option<Instant> = None;
     let mut fallback_shown = false;
     let mut last_url = None;
     let mut failure = None;
     let mut parsed_len = 0;
-    let mut captured = None;
+    let mut valid_candidate = false;
+    let mut eof = false;
     loop {
-        if control.cancelled.load(Ordering::SeqCst) { failure = Some((SetupTokenState::Cancelled, "cancelled")); break; }
-        if started.elapsed() >= options.timeout { failure = Some((SetupTokenState::Timeout, "timeout")); break; }
-        if let Ok(mut code) = control.codes.try_recv() {
-            let sent = pty.writer.write_all(code.as_slice()).and_then(|_| pty.writer.flush());
-            code.wipe();
-            if sent.is_err() { failure = Some((SetupTokenState::Failed, "cli_error")); break; }
-            std::thread::sleep(Duration::from_millis(150));
-            if control.cancelled.load(Ordering::SeqCst) { failure = Some((SetupTokenState::Cancelled, "cancelled")); break; }
-            if pty.writer.write_all(b"\r").and_then(|_| pty.writer.flush()).is_err() {
-                failure = Some((SetupTokenState::Failed, "cli_error")); break;
+        if eof {
+            std::thread::sleep(POLL_INTERVAL);
+        } else {
+            let result = match receiver.recv_timeout(POLL_INTERVAL) {
+                Ok(output) => record_output(&mut raw, output).and_then(|eof| {
+                    if eof { Ok(true) } else { record_pending_output(&receiver, &mut raw) }
+                }),
+                Err(mpsc::RecvTimeoutError::Timeout) => Ok(false),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(CaptureFailure::CaptureFailed),
+            };
+            match result {
+                Ok(end) => eof = end,
+                Err(reason) => { failure = Some(reason); break; }
             }
         }
-        let mut eof = false;
-        match receiver.recv_timeout(Duration::from_millis(20)) {
-            Ok(chunk) => {
-                if raw.0.len() + chunk.0.len() > OUTPUT_LIMIT {
-                    failure = Some((SetupTokenState::Failed, "output_limit")); break;
-                }
-                raw.0.extend_from_slice(chunk.as_slice());
-                // Consume already queued output together before scanning it.
-                while let Ok(chunk) = receiver.try_recv() {
-                    if raw.0.len() + chunk.0.len() > OUTPUT_LIMIT {
-                        failure = Some((SetupTokenState::Failed, "output_limit")); break;
-                    }
-                    raw.0.extend_from_slice(chunk.as_slice());
-                }
-                if failure.is_some() { break; }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => eof = true,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
+        if control.cancelled.load(Ordering::SeqCst) { failure = Some(CaptureFailure::Cancelled); break; }
+        if started.elapsed() >= options.timeout { failure = Some(CaptureFailure::Timeout); break; }
         if raw.0.len() != parsed_len {
             parsed_len = raw.0.len();
             let plain = strip_controls(raw.as_slice());
-            if cli_error(plain.as_slice()) { failure = Some((SetupTokenState::Failed, "cli_error")); break; }
-            if let Some(url) = authorization_url(plain.as_slice()) {
-                if last_url.as_ref() != Some(&url) {
+            if cli_error(plain.as_slice()) { failure = Some(CaptureFailure::CliError); break; }
+            valid_candidate = extract_token(plain.as_slice()).is_some();
+            if candidate_since.is_none() {
+                if valid_candidate {
+                    candidate_since = Some(Instant::now());
+                    registry.close_input(id);
+                    drop(control.codes.try_recv());
+                    code_enter_at = None;
+                    guard.publish(SetupTokenState::Confirming, None, None, None);
+                } else if let Some(url) = authorization_url(plain.as_slice()).filter(|url| last_url.as_ref() != Some(url)) {
                     last_url = Some(url);
                     guard.publish(if fallback_shown { SetupTokenState::CodeAvailable } else { SetupTokenState::WaitingBrowser }, last_url.clone(), None, None);
+                    // The callback may queue a code while new output arrives.
+                    continue;
                 }
             }
-            captured = extract_token(plain.as_slice());
-            if captured.is_some() && candidate_since.is_none() { candidate_since = Some(Instant::now()); }
         }
-        if started.elapsed() >= options.fallback_after && !fallback_shown {
+        match pty.finished(confirmation.is_some_and(|(_, sent)| !sent)) {
+            Ok(Some(status)) => {
+                if !status.success() { failure = Some(CaptureFailure::CliError); }
+                break;
+            }
+            Ok(None) => {}
+            Err(reason) => { failure = Some(reason); break; }
+        }
+        if let Some((at, sent)) = confirmation {
+            if at.elapsed() >= options.confirm_exit_grace {
+                if !sent { failure = Some(CaptureFailure::CaptureFailed); }
+                break;
+            }
+        } else if let Some(at) = candidate_since {
+            if at.elapsed() >= options.token_exit_grace {
+                if !valid_candidate {
+                    failure = Some(CaptureFailure::CaptureFailed);
+                    break;
+                }
+                let sent = !eof && pty.writer.write_all(b"\r").and_then(|_| pty.writer.flush()).is_ok();
+                confirmation = Some((Instant::now(), sent));
+            }
+        } else if eof {
+            failure = Some(CaptureFailure::CaptureFailed);
+            break;
+        } else if let Some(at) = code_enter_at {
+            if Instant::now() >= at {
+                code_enter_at = None;
+                if pty.writer.write_all(b"\r").and_then(|_| pty.writer.flush()).is_err() {
+                    failure = Some(CaptureFailure::CliError); break;
+                }
+            }
+        } else if let Ok(mut code) = control.codes.try_recv() {
+            let sent = pty.writer.write_all(code.as_slice()).and_then(|_| pty.writer.flush());
+            code.wipe();
+            if sent.is_err() { failure = Some(CaptureFailure::CliError); break; }
+            code_enter_at = Some(Instant::now() + Duration::from_millis(150));
+        } else if started.elapsed() >= options.fallback_after && !fallback_shown {
             fallback_shown = true;
             guard.publish(SetupTokenState::CodeAvailable, last_url.clone(), None, None);
         }
-        // Finish the current output before accepting its uniqueness. This also
-        // catches candidates split between reads. A CLI left open is bounded.
-        if eof || pty.child.try_wait().ok().flatten().is_some()
-            || candidate_since.is_some_and(|at| at.elapsed() >= options.token_exit_grace) { break; }
     }
     registry.close_input(id);
-    if failure.is_none() && pty.child.try_wait().ok().flatten().is_some_and(|status| !status.success()) {
-        failure = Some((SetupTokenState::Failed, "cli_error"));
+    drop(control.codes.try_recv());
+    if failure.is_none() {
+        match pty.child.try_wait() {
+            Ok(Some(status)) if !status.success() => failure = Some(CaptureFailure::CliError),
+            Err(_) => failure = Some(CaptureFailure::CaptureFailed),
+            _ => {}
+        }
     }
     let stopped = pty.stop();
-    // The writer/master are never registered with any terminal or control API.
-    // ClosePseudoConsole may wait for the reader; keep draining on this thread.
-    let _ = std::thread::spawn(move || close_pty(pty));
-    // A detached descendant can retain its handle even after the process group
-    // is killed. Bound draining and never join a still-blocked reader thread.
-    if let Err(reason) = drain_output(&receiver, &mut raw, Duration::from_secs(2)) {
-        if failure.is_none() { failure = Some((SetupTokenState::Failed, reason)); }
+    if !stopped {
+        report_unconfirmed_stop(failure);
+        failure = Some(CaptureFailure::CaptureFailed);
     }
-    drop(receiver); // Dropping queued chunks also wipes their allocations.
-    if reader_thread.is_finished() { let _ = reader_thread.join(); }
-    if raw.0.len() != parsed_len {
-        let plain = strip_controls(raw.as_slice());
-        if failure.is_none() && cli_error(plain.as_slice()) { failure = Some((SetupTokenState::Failed, "cli_error")); }
-        captured = extract_token(plain.as_slice());
+    // ConPTY can write a final frame during Close. The reader owns the only
+    // output handle and drains independently of the writer and master.
+    let close_deadline = Instant::now() + OUTPUT_DRAIN_TIMEOUT;
+    #[cfg(windows)]
+    let drain_deadline = close_deadline - OUTPUT_CANCEL_GRACE;
+    #[cfg(not(windows))]
+    let drain_deadline = close_deadline;
+    #[cfg(all(windows, test))]
+    let output_hooks = std::mem::take(&mut pty.test_hooks.output);
+    let close_thread = std::thread::spawn(move || close_pty(pty));
+    let drain = if eof || failure.is_some() {
+        Ok(())
+    } else {
+        drain_output(&receiver, &mut raw, drain_deadline.saturating_duration_since(Instant::now()))
+    };
+    drop(receiver); // Wipe queued chunks and switch the worker to discarding.
+    #[cfg(windows)]
+    {
+        let completion = windows_job::finish_output(
+            reader_thread, close_thread, stop_reading, drain_deadline, close_deadline,
+            #[cfg(test)]
+            output_hooks,
+        );
+        if !completion.complete() {
+            failure.get_or_insert(drain.err().unwrap_or(CaptureFailure::CaptureFailed));
+        }
     }
-    if failure.is_some() { captured = None; }
+    #[cfg(not(windows))]
+    {
+        drop(close_thread);
+        stop_reading.store(true, Ordering::SeqCst);
+        if reader_thread.is_finished() { let _ = reader_thread.join(); }
+    }
+    let captured = if failure.is_none() {
+        match drain.and_then(|()| capture_complete(&raw)) {
+            Ok(token) => Some(token),
+            Err(reason) => {
+                failure = Some(reason);
+                None
+            }
+        }
+    } else { None };
     raw.wipe();
-    let (state, reason, status) = if let Some((state, reason)) = failure {
-        (state, Some(reason), None)
+    let (state, reason, status) = if let Some(reason) = failure {
+        (reason.state(), Some(reason.code()), None)
     } else if let Some(mut token) = captured {
         guard.publish(SetupTokenState::CheckingOwner, None, None, None);
         let result = if control.cancelled.load(Ordering::SeqCst) { Err("cancelled".to_string()) } else {

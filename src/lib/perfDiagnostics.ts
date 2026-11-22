@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { liveTerms, termCache } from "../components/terminal/terminalCache";
+import { terminalHeartbeatCounts } from "../components/terminal/terminalCache";
 
 const LONG_TASK_WARNING_THRESHOLD_MS = 200;
 const LONG_TASK_WARNING_THROTTLE_MS = 5_000;
@@ -134,6 +134,41 @@ export function initializePerfDiagnostics(): () => void {
 
 
 const RENDERER_HEARTBEAT_INTERVAL_MS = 30_000;
+type RendererWork = "unknown" | "long-task" | "style-layout" | "render-callbacks"
+  | "event-listener" | "user-callback" | "promise" | "script";
+
+interface LongAnimationFrame extends PerformanceEntry {
+  renderStart: number;
+  styleAndLayoutStart: number;
+  scripts?: readonly {
+    invokerType: string;
+    duration: number;
+    forcedStyleAndLayoutDuration: number;
+  }[];
+}
+
+function dominantFrameWork(frame: LongAnimationFrame): { workKind: RendererWork; workMs: number } {
+  const end = frame.startTime + frame.duration;
+  let layoutMs = frame.styleAndLayoutStart ? end - frame.styleAndLayoutStart : 0;
+  let workMs = frame.renderStart ? (frame.styleAndLayoutStart || end) - frame.renderStart : 0;
+  let workKind: RendererWork = workMs > 0 ? "render-callbacks" : "unknown";
+  for (const script of frame.scripts ?? []) {
+    const forcedLayout = script.forcedStyleAndLayoutDuration || 0;
+    layoutMs += forcedLayout;
+    const scriptMs = script.duration - forcedLayout;
+    if (scriptMs <= workMs) continue;
+    workMs = scriptMs;
+    switch (script.invokerType) {
+      case "event-listener": workKind = "event-listener"; break;
+      case "user-callback": workKind = "user-callback"; break;
+      case "resolve-promise":
+      case "reject-promise": workKind = "promise"; break;
+      default: workKind = "script";
+    }
+  }
+  return layoutMs > workMs ? { workKind: "style-layout", workMs: layoutMs } : { workKind, workMs };
+}
+
 let rendererHeartbeatCleanup: (() => void) | null = null;
 
 /** Lightweight production diagnostics; the verbose DEV diagnostics stay separate. */
@@ -143,14 +178,27 @@ export function initializeRendererHeartbeat(): () => void {
 
   let longTasks = 0;
   let maxLongTaskMs = 0;
+  let longestFrame: { duration: number; workKind: RendererWork; workMs: number } | null = null;
+  const clock = () => globalThis.performance?.now?.() ?? Date.now();
+  let previousAt = clock();
+  let previousVisibility = document.visibilityState;
   let observer: PerformanceObserver | null = null;
   try {
     const Observer = globalThis.PerformanceObserver;
-    if (typeof Observer === "function" && Observer.supportedEntryTypes.includes("longtask")) {
+    const entryTypes = typeof Observer === "function"
+      ? ["longtask", "long-animation-frame"].filter((type) => Observer.supportedEntryTypes.includes(type))
+      : [];
+    if (entryTypes.length > 0) {
       observer = new Observer((list) => {
         try {
           for (const entry of list.getEntries()) {
             if (!isFiniteNumber(entry.duration) || entry.duration <= 50) continue;
+            if (entry.entryType === "long-animation-frame") {
+              if (!longestFrame || entry.duration > longestFrame.duration) {
+                longestFrame = { duration: entry.duration, ...dominantFrameWork(entry as LongAnimationFrame) };
+              }
+              continue;
+            }
             longTasks += 1;
             maxLongTaskMs = Math.max(maxLongTaskMs, entry.duration);
           }
@@ -158,29 +206,51 @@ export function initializeRendererHeartbeat(): () => void {
           // A diagnostics callback must never interrupt rendering.
         }
       });
-      observer.observe({ entryTypes: ["longtask"] });
+      observer.observe({ entryTypes });
     }
   } catch {
     try { observer?.disconnect(); } catch { /* optional diagnostics */ }
     observer = null;
   }
 
+  let previousHeapMib: number | null = null;
   let heartbeatId: ReturnType<typeof globalThis.setInterval>;
   try {
     heartbeatId = globalThis.setInterval(() => {
       try {
         const heap = globalThis.performance ? readHeapSnapshot(globalThis.performance) : null;
+        const heapMib = heap ? heap.usedJSHeapSize / BYTES_PER_MIB : null;
+        const heapAlert = heapMib !== null && (heapMib >= 600 || (previousHeapMib !== null && previousHeapMib > 0 && heapMib >= previousHeapMib * 2));
+        previousHeapMib = heapMib;
+        const counts = terminalHeartbeatCounts();
+        const now = clock();
+        const visibility = document.visibilityState;
+        const timerDelayMs = previousVisibility === "visible" && visibility === "visible"
+          ? Math.max(0, Math.round(now - previousAt - RENDERER_HEARTBEAT_INTERVAL_MS)) : 0;
+        previousAt = now;
+        previousVisibility = visibility;
+        const work = longestFrame && longestFrame.duration >= maxLongTaskMs
+          ? longestFrame
+          : { workKind: maxLongTaskMs > 0 ? "long-task" : "unknown", workMs: maxLongTaskMs };
         const heartbeat = {
-          heapUsedMib: heap ? heap.usedJSHeapSize / BYTES_PER_MIB : null,
+          heapUsedMib: heapMib,
           longTasks,
           maxLongTaskMs,
-          xtermCount: new Set([...liveTerms.keys(), ...termCache.keys()]).size,
+          xtermCount: counts.liveCount + counts.cacheCount,
           pendingInvokes: 0,
-          visibility: document.visibilityState,
+          visibility,
           focus: document.hasFocus(),
+          heapAlert, ...counts,
+          progress: {
+            timerDelayMs,
+            longestFrameMs: Math.round(longestFrame?.duration ?? 0),
+            workKind: work.workKind,
+            workMs: Math.round(work.workMs),
+          },
         };
         longTasks = 0;
         maxLongTaskMs = 0;
+        longestFrame = null;
         // Never serialize on the reply: even a hung invoke must not silence us.
         void invoke<void>("report_renderer_heartbeat", { heartbeat }).catch(noop);
       } catch {

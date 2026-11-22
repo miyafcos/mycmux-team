@@ -27,7 +27,7 @@ OKLCH の色相角で定義する。ブランド由来の HSL 色相とは値が
 | xAI | マゼンタ | 334 | |
 | Google | ティール | 170 | Gemini のカタログ・モデル分類に対応 |
 
-4色相は、現行10系列の識別性を同時に検証して定めている。
+4色相は、辞書の現行11系列を対象に識別性を検証している。
 
 OpenAI がブルーなのは、サイドバーで見慣れた Codex の色に揃えるため。**xAI がバイオレット (296)
 ではなくマゼンタなのは、バイオレットがこのブルーから 46° しか離れず、1型で ΔE 0.019、2型で
@@ -56,15 +56,17 @@ OpenAI がブルーなのは、サイドバーで見慣れた Codex の色に揃
 段は `TIER_LADDER` にハードコードする。名前からの自動推定はしない。
 
 ```
-anthropic: fable-5.1 > opus-5.5 > sonnet-5.5 > haiku-4.5 (4 rungs)
-openai:    gpt-6-astra > gpt-6.1-sol > gpt-6-luna          (3 rungs)
-xai:       grok-4.7                                      (1 rung)
-google:    gemini-3.8-flash > gemini-3.5-flash-lite         (2 rungs)
+anthropic: fable-5.2 > opus-5.5 > sonnet-5.5 > haiku-5.5          (4 rungs)
+openai:    gpt-6.2-astra > gpt-6.2-sol > gpt-6-luna                (3 rungs)
+xai:       grok-4.7                                              (1 rung)
+google:    gemini-4-carbon > gemini-4-hydrogen > gemini-3.5-flash-lite (3 rungs)
 ```
 
 同じティアの旧世代 (`opus-4.8`、`gpt-5.4` など) は段を増やさず、`LEGACY_FAMILIES` で親段に紐づけて
 **その段の muted 色**にする。muted は L と h を据え置き、ガマット clamp **後**の彩度に 0.55 を
 掛けて作る (clamp 前に掛けると彩度が伸びない色相で差が潰れる)。
+Gemini 3.8 Flash は Hydrogen と同じ高速段の muted 色にする。Carbon と Hydrogen の
+確認済み Antigravity effort 付き ID は、対応するモデルと同じ塗りを使う。
 
 `model` 軸では variant が畳まれた display family (`gpt-5.6`) が届く。ティアが確定しないので
 `FAMILY_REPRESENTATIVE` で代表段に解決する。**未登録扱いにはしない** (ハッチを出さない)。
@@ -94,14 +96,14 @@ CSS の `repeating-linear-gradient` で同じ見た目を作る (CSS から SVG 
 会社軸に最淡段を使ってはいけない。その会社の最下位モデル (haiku / gpt-5.5) と同色になり、
 かつ段数の違う会社どうしで明度が揃わなくなる。
 
-## 識別性の実測 (2026-09-30)
+## 識別性の実測 (2026-11-18)
 
-現行の10系列 (Anthropic 4 + OpenAI 3 + xAI 1 + Google 2) の最小 OKLab ΔE:
+現行の11系列 (Anthropic 4 + OpenAI 3 + xAI 1 + Google 3) の最小 OKLab ΔE。
 
 | 視覚 | 最小 ΔE | 床 |
 |---|---|---|
 | 正常 | 0.0548 | 0.035 |
-| 1型 (protan) | 0.0466 | 0.025 |
+| 1型 (protan) | 0.0326 | 0.025 |
 | 2型 (deutan) | 0.0592 | 0.025 |
 | 3型 (tritan) | 0.0390 | 0.025 |
 
@@ -110,8 +112,15 @@ Google も同じ床で機械検証する。旧世代は対応する現行段の 
 
 ### 取り込みの範囲
 
+Codex ログではキャッシュ書き込みの保持時間を区別できないため、GPT-6.2 の書き込みはすべて30分の単価で見積もる。
+
 Gemini は既存の対応ログ形式にモデル名と使用量が記録された場合の分類・単価・配色に対応する。
 Gemini CLI / Antigravity 固有ログの直接取り込みは未実装。トークン量が無い記録から使用量は推定しない。
+`gemini-4-carbon` と `gemini-4-hydrogen` には Gemini Developer API Standard の参考額を使う。
+Carbon は2026-12-01からの通常単価を採用する。Hydrogen の Standard 単価に期間の条件はない。
+2026-11-30までの Carbon の記録は、この通常単価で換算するため導入期間の実額より高く出る。
+Antigravity の effort 付き ID は系列と色を持ち、単価は未確認の扱いになる。
+[Gemini 4 Carbon の料金表](https://aistudio.google.com/docs/pricing#gemini-4-carbon) · [Gemini 4 Hydrogen の料金表](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen)
 
 ## 契約テスト
 
@@ -122,7 +131,7 @@ Gemini CLI / Antigravity 固有ログの直接取り込みは未実装。トー�
 - **色相の一致**: 同一会社の全色の OKLCH 色相差が 0.5°未満 (ガマット clamp は彩度しか動かさない)
 - **明度の単調性**: 各社のティア順に L が厳格に増加する。**彩度の単調性はアサートしない** —
   ティール色相は低 L で sRGB ガマットに当たるため実測で非単調になる
-- **隣接段の ΔE** 0.035 以上、**10系列のペアワイズ ΔE** (色覚シミュレーション込み)
+- **隣接段の ΔE** 0.035 以上、**11系列のペアワイズ ΔE** (色覚シミュレーション込み)
 - **実測 hex 表との一致** (回帰検知。丸め差 1〜2 LSB は許容)
 - **`price.rs` との parity**: `DEFAULT_PRICES` の全モデルが段を持つこと、`FAMILY_STEMS` の全 family が
   段か `LEGACY_FAMILIES` に載っていること、`ModelProvider::as_str()` の全 provider が色相を持つか

@@ -3,7 +3,7 @@ import { getAgentDormancyRecord, getWindowFragments, type PreviewArtifactInfo } 
 import { PEER_WEB_TRANSCRIPT_UNAVAILABLE } from "../../stores/webPaneTranscriptStore";
 import { dormantAgentDescription, resolveDormantResumeIdentity } from "../../lib/agentDormancy";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
-import { useCallback, useEffect, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { WebPaneTranscriptEntry } from "../../stores/webPaneTranscriptStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useComposerStore, type DashboardOptimisticMessage } from "../../stores/composerStore";
@@ -91,6 +91,15 @@ export function ChatColumn({
   detailLoaded?: boolean;
 }) {
   const sessionId = card.tab.sessionId;
+  const { workspaceId, paneId } = card;
+  const canPreviewInternally = card.tab.type === undefined || card.tab.type === "terminal";
+  const linkContext = useMemo(() => ({
+    workspaceId,
+    paneId,
+    sessionId,
+    canPreviewInternally,
+    openInDashboardPreview: onPreviewArtifact,
+  }), [workspaceId, paneId, sessionId, canPreviewInternally, onPreviewArtifact]);
   const [navigationTarget, setNavigationTarget] = useState<HTMLDivElement | null>(null);
   const dormantDescription = card.neverStarted || card.telemetryHealth === "live" ? undefined : dormantAgentDescription(card.mark);
   const savedRecord = useSessionAttentionStore((state) => state.dormantCompletionsBySession[sessionId]?.receipt);
@@ -252,13 +261,7 @@ export function ChatColumn({
         targetEventRequest={active ? targetEventRequest : 0}
         syntheticSource={active ? syntheticSource : null}
         detailLoaded={recordKey ? recordLoaded : detailLoaded}
-        linkContext={{
-          workspaceId: card.workspaceId,
-          paneId: card.paneId,
-          sessionId: card.tab.sessionId,
-          canPreviewInternally: card.tab.type === undefined || card.tab.type === "terminal",
-          openInDashboardPreview: onPreviewArtifact,
-        }}
+        linkContext={linkContext}
         archiveEnabled={archiveEligible}
         archiveDescriptor={archiveDescriptor}
         onArchiveUserMessages={archiveEcho}

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { DashboardStatusLabel, DashboardUiScope } from "./DashboardUi";
@@ -13,6 +13,7 @@ import { ToolOutputNote } from "./ToolOutputText";
 import { MarkdownView } from "./MarkdownView";
 import {
   toChatTranscriptRows,
+  sameTranscriptEvents,
   chatMessageIdForEvent,
   userTurnIndexFromTops,
   userTurnLabelFrom,
@@ -31,12 +32,21 @@ function clockLabel(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-const ChatBubble = memo(function ChatBubble({ message, context, highlighted, compact }: { message: ChatMessage; context: DashboardLinkContext | null; highlighted: boolean; compact: boolean }) {
+const ChatBubble = memo(function ChatBubble({ message, context, highlighted, compact, registerEventElement }: {
+  message: ChatMessage;
+  context: DashboardLinkContext | null;
+  highlighted: boolean;
+  compact: boolean;
+  registerEventElement: (eventId: string, element: HTMLDivElement | null) => void;
+}) {
+  const elementRef = useCallback((element: HTMLDivElement | null) => {
+    registerEventElement(message.id, element);
+  }, [message.id, registerEventElement]);
   const className = `cmux-dashboard-msg ${message.role === "assistant" ? "is-agent" : message.role === "error" ? "is-error" : "is-user"}${highlighted ? " is-source-highlighted" : ""}`;
-  if (compact && (message.role === "assistant" || message.role === "user")) return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className} role="group" aria-label={message.role === "user" ? dashboardStrings.chatRoleUser : dashboardStrings.chatRoleAgent} title={clockLabel(message.at)}>{message.role === "assistant" ? <MarkdownView text={message.text} context={context} /> : <div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div>}</div>;
-  if (message.role === "assistant") return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><MarkdownView text={message.text} context={context} /></div>;
-  if (message.role === "error") return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
-  return <div id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
+  if (compact && (message.role === "assistant" || message.role === "user")) return <div ref={elementRef} id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className} role="group" aria-label={message.role === "user" ? dashboardStrings.chatRoleUser : dashboardStrings.chatRoleAgent} title={clockLabel(message.at)}>{message.role === "assistant" ? <MarkdownView text={message.text} context={context} /> : <div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div>}</div>;
+  if (message.role === "assistant") return <div ref={elementRef} id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><MarkdownView text={message.text} context={context} /></div>;
+  if (message.role === "error") return <div ref={elementRef} id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
+  return <div ref={elementRef} id={`dashboard-event-${message.id}`} data-dashboard-event={message.id} className={className}><MessageLabel message={message} /><div className="cmux-dashboard-msg-plain"><DashboardLinkedText text={message.text} context={context} /></div></div>;
 });
 
 function MessageLabel({ message }: { message: ChatMessage }) {
@@ -199,7 +209,7 @@ export function ChatTranscript(props: Parameters<typeof LegacyChatTranscript>[0]
 }
 
 function LegacyChatTranscript({
-  events,
+  events: incomingEvents,
   compact = false,
   sessionId = null,
   navigationTarget = null,
@@ -232,11 +242,27 @@ function LegacyChatTranscript({
   detailLoaded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const findEventElement = useCallback((eventId: string): HTMLElement | undefined => (
-    Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-dashboard-event]") ?? [])
-      .find((element) => element.dataset.dashboardEvent === eventId)
-  ), []);
-  const targetMessageId = targetEventId ? chatMessageIdForEvent(events, targetEventId) : null;
+  const eventElements = useRef(new Map<string, HTMLDivElement>());
+  const syntheticSourceElement = useRef<HTMLDivElement>(null);
+  const syntheticSourceId = syntheticSource?.eventId;
+  const registerEventElement = useCallback((eventId: string, element: HTMLDivElement | null) => {
+    if (element) eventElements.current.set(eventId, element);
+    else eventElements.current.delete(eventId);
+  }, []);
+  const findEventElement = useCallback((eventId: string) => {
+    const synthetic = syntheticSourceElement.current;
+    return synthetic?.dataset.dashboardEvent === eventId ? synthetic : eventElements.current.get(eventId);
+  }, []);
+
+  // Live event polling can return a fresh copy of the same slice.
+  const [previousEvents, setPreviousEvents] = useState(incomingEvents);
+  const events = useMemo(() => (
+    sameTranscriptEvents(previousEvents, incomingEvents) ? previousEvents : incomingEvents
+  ), [previousEvents, incomingEvents]);
+  if (events !== previousEvents) setPreviousEvents(events);
+  const targetMessageId = useMemo(() => (
+    targetEventId ? chatMessageIdForEvent(events, targetEventId) : null
+  ), [events, targetEventId]);
   const lastSourceRequestRef = useRef<string | null>(null);
   const followRef = useRef(true);
   const navRafRef = useRef<number | null>(null);
@@ -264,7 +290,7 @@ function LegacyChatTranscript({
   });
 
   const refreshUserTurnNav = useCallback(() => {
-    if (navRafRef.current != null) cancelAnimationFrame(navRafRef.current);
+    if (navRafRef.current != null) return;
     navRafRef.current = requestAnimationFrame(() => {
       navRafRef.current = null;
       if (!userTurns.length) {
@@ -275,18 +301,15 @@ function LegacyChatTranscript({
         return;
       }
       const node = scrollRef.current;
-      const containerTop = node?.getBoundingClientRect().top ?? 0;
       const followingBottom = !node || followRef.current;
-      const tops = userTurns.map((turn) => {
-        const element = findEventElement(turn.id);
-        return element?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-      });
-      const index = userTurnIndexFromTops(tops, containerTop, followingBottom);
-      const safeIndex = index < 0 ? 0 : index;
+      const containerTop = followingBottom ? 0 : node.getBoundingClientRect().top;
+      const index = userTurnIndexFromTops(userTurns.length, containerTop, followingBottom, (turnIndex) => (
+        findEventElement(userTurns[turnIndex].id)?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY
+      ));
       const next = {
-        index: safeIndex,
+        index,
         total: userTurns.length,
-        label: userTurnLabelFrom(userTurns[safeIndex]?.text ?? ""),
+        label: userTurnLabelFrom(userTurns[index].text),
         followingBottom,
       };
       const prev = lastNavRef.current;
@@ -319,10 +342,11 @@ function LegacyChatTranscript({
     refreshUserTurnNav();
   }, [lastEventId, lastId, refreshUserTurnNav, rows.length]);
 
-  useEffect(() => () => {
+  // Cancel a pending measurement when its turn list is replaced.
+  useLayoutEffect(() => () => {
     if (navRafRef.current != null) cancelAnimationFrame(navRafRef.current);
     navRafRef.current = null;
-  }, []);
+  }, [refreshUserTurnNav]);
 
   useEffect(() => {
     if (!targetEventId || !targetMessageId) {
@@ -336,7 +360,7 @@ function LegacyChatTranscript({
     lastSourceRequestRef.current = requestKey;
     followRef.current = false;
     node.scrollIntoView({ block: "nearest" });
-  }, [findEventElement, sessionId, targetEventId, targetMessageId, targetEventRequest, rows]);
+  }, [findEventElement, sessionId, targetEventId, targetMessageId, targetEventRequest, rows, syntheticSourceId]);
 
   const onToolGroupToggle = useCallback((key: string, open: boolean) => {
     setExpandedToolGroups((current) => {
@@ -406,6 +430,30 @@ function LegacyChatTranscript({
     scrollToUserTurn(target);
   }, [detailLoaded, scrollToUserTurn, tabId, userTurnRequest, userTurns]);
 
+  const rowElements = useMemo(() => rows.map((row) => {
+    if (row.kind === "message") {
+      if (row.message.role === "question") return null;
+      return <ChatBubble
+        key={row.message.id}
+        message={row.message}
+        compact={compact}
+        context={linkContext}
+        registerEventElement={registerEventElement}
+        highlighted={row.message.id === targetMessageId}
+      />;
+    }
+    const disclosureKey = `${sessionId ?? "none"}:${row.id}`;
+    const tools = row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />);
+    return <details
+      key={row.id}
+      className="cmux-dashboard-toolfold"
+      open={expandedToolGroups.has(disclosureKey)}
+      onToggle={(event) => onToolGroupToggle(disclosureKey, event.currentTarget.open)}
+    >
+      <summary>{compact ? <><span className="cmux-dashboard-tool-marker">▸ </span><span className="cmux-dashboard-tool-name">{`ツール実行 ${row.tools.length}件`}</span><span className="cmux-dashboard-tool-target">{row.tools[0]?.target}</span><span className="cmux-dashboard-tool-time">{clockLabel(events.find((event) => event.eventId === row.id)?.occurredAt ?? 0)}</span></> : `▸ ツール実行 ${row.tools.length}件`}</summary>
+      {compact ? <div className="cmux-dashboard-tool-content">{tools}</div> : tools}
+    </details>;
+  }), [rows, compact, linkContext, targetMessageId, registerEventElement, sessionId, expandedToolGroups, onToolGroupToggle, events]);
   const footer = compact ? null : <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
   // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと
   // 会話が消えたように読めるので、取得できていない側は別文言+理由を出す。
@@ -434,16 +482,11 @@ function LegacyChatTranscript({
   return <div className="cmux-dashboard-chat-transcript">
     {compact && navigationTarget ? createPortal(navigation, navigationTarget) : navigation}
     <div ref={scrollRef} onScroll={onScroll} role="log" aria-label={dashboardStrings.chatAriaLabel} className="cmux-dashboard-chat">
-    {syntheticSource ? <div id={`dashboard-event-${syntheticSource.eventId}`} data-dashboard-event={syntheticSource.eventId} className={`cmux-dashboard-msg is-agent is-status-source${syntheticSource.eventId === targetEventId ? " is-source-highlighted" : ""}`}>
+    {syntheticSource ? <div ref={syntheticSourceElement} id={`dashboard-event-${syntheticSource.eventId}`} data-dashboard-event={syntheticSource.eventId} className={`cmux-dashboard-msg is-agent is-status-source${syntheticSource.eventId === targetEventId ? " is-source-highlighted" : ""}`}>
       <div className="cmux-dashboard-msg-who"><span>状態イベント</span><span>{clockLabel(syntheticSource.at)}</span></div>
       <div className="cmux-dashboard-msg-plain">{syntheticSource.text}</div>
     </div> : null}
-    {rows.map((row) => row.kind === "message"
-      ? row.message.role === "question" ? null : <ChatBubble key={row.message.id} message={row.message} compact={compact} context={linkContext} highlighted={row.message.id === targetMessageId} />
-      : <details key={row.id} className="cmux-dashboard-toolfold" open={expandedToolGroups.has(`${sessionId ?? "none"}:${row.id}`)} onToggle={(event) => onToolGroupToggle(`${sessionId ?? "none"}:${row.id}`, event.currentTarget.open)}>
-        <summary>{compact ? <><span className="cmux-dashboard-tool-marker">▸ </span><span className="cmux-dashboard-tool-name">{`ツール実行 ${row.tools.length}件`}</span><span className="cmux-dashboard-tool-target">{row.tools[0]?.target}</span><span className="cmux-dashboard-tool-time">{clockLabel(events.find((event) => event.eventId === row.id)?.occurredAt ?? 0)}</span></> : `▸ ツール実行 ${row.tools.length}件`}</summary>
-        {compact ? <div className="cmux-dashboard-tool-content">{row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}</div> : row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}
-      </details>)}
+    {rowElements}
     {footer}
   </div>
   </div>;

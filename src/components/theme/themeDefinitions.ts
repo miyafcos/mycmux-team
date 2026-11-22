@@ -74,6 +74,27 @@ function completeTheme(theme: ThemeDraft): ThemeDefinition {
 
 const THEME_DRAFTS: ThemeDraft[] = [
   {
+    id: "hanabi",
+    name: "花火",
+    group: "vivid-dark",
+    description: "冬の藍空、森の灯りとコーラルの花火",
+    colorScheme: "dark",
+    terminal: {
+      background: "#171535", foreground: "#ecebf5", cursor: "#ffd9b8", selectionBackground: "#4b3c68",
+      black: "#24213f", red: "#f0a07c", green: "#78b8a5", yellow: "#edc586",
+      blue: "#9baee8", magenta: "#c2a0da", cyan: "#89c8ca", white: "#d9d7e8",
+      brightBlack: "#918aaf", brightRed: "#ffbea4", brightGreen: "#a0d4bd", brightYellow: "#ffe0a8",
+      brightBlue: "#bfccff", brightMagenta: "#e1bdef", brightCyan: "#b5e3df", brightWhite: "#faf5ff",
+    },
+    chrome: {
+      background: "#100f2c", surface: "#15143a", border: "#3a3766",
+      text: "#ecebf5", textMuted: "#b0a9c8", textDim: "#9e97b8", accent: "#e9967a",
+      hover: "#302947", selected: "#3b3156", danger: "#f0a09b",
+    },
+    status: { working: "#a8b9ed", waiting: "#efc58f", done: "#8bc7af", error: "#f0a09b", stall: "#c7a6dd" },
+    notification: "#efc58f",
+  },
+  {
     id: "mayonaka",
     name: "真夜中",
     group: "calm-dark",
