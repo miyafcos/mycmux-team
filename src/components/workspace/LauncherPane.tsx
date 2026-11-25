@@ -11,13 +11,14 @@
  * is the real working layout. Everything here is a single column for that
  * reason.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { AgentKindIcon } from "../icons/AgentIcons";
 import {
   buildLaunchSpecEnv,
   getCatalogEntry,
   getLaunchEfforts,
+  isLaunchAccountTarget,
   isValidLaunchSpecValue,
 } from "../../lib/agentCatalog";
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
@@ -58,7 +59,8 @@ import {
   type SpecRow,
 } from "./launcherModel";
 import { launcherStrings as S } from "./launcherStrings";
-import { isLaunchAccountTarget, LaunchAccountRow, useLaunchAccounts } from "./LaunchAccountRow";
+import { LauncherCoveredContext, useLaunchAccountCheck } from "../../lib/tabAccounts";
+import { ACCOUNT_MANAGEMENT_CHIP, LaunchAccountRow, useLaunchAccounts } from "./LaunchAccountRow";
 
 interface LauncherPaneProps {
   workspaceId: string;
@@ -300,7 +302,11 @@ function FolderGlyph({ anken }: { anken: boolean }) {
   );
 }
 
-export default function LauncherPane({
+export default function LauncherPane(props: LauncherPaneProps) {
+  return <LauncherTab key={props.tabId} {...props} />;
+}
+
+function LauncherTab({
   workspaceId,
   paneId,
   tabId,
@@ -308,6 +314,7 @@ export default function LauncherPane({
   isActive,
   cwd,
 }: LauncherPaneProps) {
+  const covered = useContext(LauncherCoveredContext);
   const [query, setQuery] = useState("");
   const view = useLauncherDirsStore((state) => state.view);
   const loadDirs = useLauncherDirsStore((state) => state.load);
@@ -319,11 +326,10 @@ export default function LauncherPane({
   const [specOpening, setSpecOpening] = useState(0);
   const [manualModel, setManualModel] = useState(false);
   const [effort, setEffort] = useState("");
-  const [account, setAccount] = useState("");
+  const [selectedAccount, setSelectedAccount] = useState({ id: "" });
+  const account = selectedAccount.id;
+  const setAccount = (id: string) => setSelectedAccount(previous => previous.id === id ? previous : { id });
   const [accountCursor, setAccountCursor] = useState("");
-  const [accountRegistrationActive, setAccountRegistrationActive] = useState(false);
-  const accountRegistrationInteracted = useRef(false);
-  const launchAccounts = useLaunchAccounts(specTarget);
   const [cursor, setCursor] = useState(0);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -357,6 +363,26 @@ export default function LauncherPane({
   const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
   const hasUnavailableChoices = modelUnavailable || effortUnavailable;
   const specLaunchBlocked = hasUnavailableChoices || (manualModel && modelRejected);
+  const selected = useMemo(() => selectedAccount.id
+    ? [{ slot: 0, target: specTarget ?? undefined, account: selectedAccount.id }] : [], [selectedAccount, specTarget]);
+  const draft = useMemo(() => specTarget && !specLaunchBlocked && !covered
+    ? { workspaceId, paneId, specOpening, specTarget, model, effort, targetCwd, isActive } : null,
+    [workspaceId, paneId, specOpening, specTarget, model, effort, targetCwd, isActive, specLaunchBlocked, covered]);
+  const accountCheck = useLaunchAccountCheck(selected, draft);
+  const { clearError: clearAccountError } = accountCheck;
+  const launchAccounts = useLaunchAccounts(specTarget, true, isActive, accountCheck.onListRead);
+  const refreshAccounts = launchAccounts.refresh;
+  useEffect(() => {
+    const pane = paneRef.current;
+    const scope = pane?.closest(".terminal-pane-border") ?? pane;
+    if (!scope) return;
+    const onFocusIn = (event: Event) => {
+      const previous = (event as FocusEvent).relatedTarget;
+      if (!(previous instanceof Node) || !scope.contains(previous)) refreshAccounts();
+    };
+    scope.addEventListener("focusin", onFocusIn);
+    return () => scope.removeEventListener("focusin", onFocusIn);
+  }, [refreshAccounts]);
   // Leave an effort row for clearing a selection even if the current model has no effort choices.
   const rowEfforts = effortUnavailable && specEfforts.length === 0 ? [effort] : specEfforts;
   const specRows = specRowsFor({ models: specModels, efforts: rowEfforts }, isLaunchAccountTarget(specTarget));
@@ -654,20 +680,23 @@ export default function LauncherPane({
     setManualModel(false);
     setModel("");
     setEffort("");
-    setAccount("");
+    setSelectedAccount(previous => previous.id ? { id: "" } : previous);
     setAccountCursor("");
-    accountRegistrationInteracted.current = false;
-  }, [serviceVisible]);
+    clearAccountError();
+  }, [serviceVisible, clearAccountError]);
 
   const closeSpec = () => {
+    accountCheck.cancel();
     setSpecTarget(null);
     inputRef.current?.focus();
   };
 
   const launchSpec = () => {
-    if (accountRegistrationActive || specLaunchBlocked) return;
-    if (account && !launchAccounts.choices.some(choice => choice.id === account && choice.available)) return;
-    if (specTarget) launchAgent(specTarget, { model, effort, account });
+    if (!specTarget) return;
+    void accountCheck.run(
+      () => paneRef.current !== null && !paneRef.current.closest("[inert]"),
+      () => launchAgent(specTarget, { model, effort, account }),
+    );
   };
 
   const onManualModelKeyDown = (event: React.KeyboardEvent) => {
@@ -680,12 +709,12 @@ export default function LauncherPane({
   };
 
   const onModelKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!isActive || !specEntry || event.nativeEvent.isComposing) return;
+    if (!isActive || !specEntry || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (!["Enter", "Escape", "ArrowDown", "ArrowUp", "Tab"].includes(event.key)) return;
     event.preventDefault();
     // Focus can change below; do not let the document listener handle this key again.
     event.stopPropagation();
-    if (event.key === "Enter") launchSpec();
+    if (event.key === "Enter") void launchSpec();
     else if (event.key === "Escape") {
       if (manualModel) selectModelChip("");
       else closeSpec();
@@ -714,10 +743,14 @@ export default function LauncherPane({
         event.preventDefault();
         const step = event.key === "ArrowLeft" ? -1 : 1;
         if (specRow === "account") {
-          const next = cycleChoice(accountCursor, launchAccounts.choices.map(choice => choice.id), step);
+          const ids = launchAccounts.choices.map(choice => choice.id);
+          if (launchAccounts.showManagement) ids.push(ACCOUNT_MANAGEMENT_CHIP);
+          const next = cycleChoice(accountCursor, ids, step);
           setAccountCursor(next);
-          if (!next || launchAccounts.choices.some(choice => choice.id === next && choice.available)) setAccount(next);
-          if (!accountRegistrationActive) accountRegistrationInteracted.current = false;
+          if (!next || launchAccounts.choices.some(choice => choice.id === next && choice.available)) {
+            setAccount(next);
+            clearAccountError();
+          }
         } else if (specRow === "model" && specModels.length > 0) {
           selectModelChip(cycleChoice(model, specModels.map((choice) => choice.value), step));
         } else if (specRow === "effort") {
@@ -725,15 +758,14 @@ export default function LauncherPane({
         }
       } else if (event.key === "Enter") {
         event.preventDefault();
-        if (accountRegistrationActive || accountRegistrationInteracted.current) return;
-        if (specRow === "account" && launchAccounts.choices.some(choice => choice.id === accountCursor && !choice.available)) {
-          const choice = [...(paneRef.current?.querySelectorAll<HTMLElement>("[data-launch-account-choice]") ?? [])]
-            .find(node => node.dataset.launchAccountChoice === accountCursor);
-          const register = choice?.querySelector<HTMLButtonElement>("[data-claude-setup-token] button:not(:disabled), [data-launch-account-register]:not(:disabled)");
-          if (register) { accountRegistrationInteracted.current = true; register.click(); }
-          return;
+        if (specRow === "account") {
+          if (accountCursor === ACCOUNT_MANAGEMENT_CHIP && launchAccounts.showManagement) {
+            accountCursorChipRef.current?.click();
+            return;
+          }
+          if (accountCursor !== account && launchAccounts.choices.some(choice => choice.id === accountCursor && !choice.available)) return;
         }
-        launchSpec();
+        void launchSpec();
       } else if (event.key === "Escape") {
         event.preventDefault();
         closeSpec();
@@ -789,11 +821,13 @@ export default function LauncherPane({
   useEffect(() => {
     if (!isActive) return undefined;
     const handler = (event: KeyboardEvent) => {
+      const pane = paneRef.current;
       const active = document.activeElement as HTMLElement | null;
-      const typingElsewhere = active
-        && active !== inputRef.current
+      if (event.defaultPrevented || !pane || !active || pane.closest("[inert]")) return;
+      if (!pane.contains(active) && active !== pane.closest(".terminal-pane-border")) return;
+      const typingElsewhere = active !== inputRef.current
         && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
-      if (typingElsewhere && !(event.key === "Escape" && paneRef.current?.contains(active) && active.closest("[data-claude-setup-token]"))) return;
+      if (typingElsewhere && !(event.key === "Escape" && pane.contains(active) && active.closest("[data-claude-setup-token]"))) return;
       keyHandlerRef.current(event);
     };
     document.addEventListener("keydown", handler);
@@ -1127,11 +1161,9 @@ export default function LauncherPane({
                 {effortUnavailable && <div>{S.effortUnavailable(effort)}</div>}
               </div>
             )}
-            <LaunchAccountRow key={specTarget} accounts={launchAccounts} surface="launcher" ownerKey={`launcher:${tabId}`} value={account} cursorId={accountCursor}
-              onChange={id => { setAccount(id); setAccountCursor(id); setSpecRow("account"); accountRegistrationInteracted.current = false; }}
-              onRegistrationStart={() => { accountRegistrationInteracted.current = true; }}
-              onRegistrationActivityChange={active => { setAccountRegistrationActive(active); if (!active) accountRegistrationInteracted.current = false; }}
-              onRegistrationEnd={saved => { accountRegistrationInteracted.current = false; if (saved) inputRef.current?.focus(); }}
+            <LaunchAccountRow key={specTarget} accounts={launchAccounts} value={account} cursorId={accountCursor} error={accountCheck.error}
+              onChange={id => { setAccount(id); setAccountCursor(id); setSpecRow("account"); clearAccountError(); }}
+              onOpenManagement={accountCheck.cancel}
               highlighted={isActive && specRow === "account"} cursorChipRef={accountCursorChipRef} labelRef={accountLabelRef} onMouseDown={keepFocus} />
             <div ref={modelLabelRef} style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
             {specModels.length > 0 && (
@@ -1224,9 +1256,9 @@ export default function LauncherPane({
           <div style={{ display: "flex", flex: "0 0 auto", gap: 5 }}>
             <button
               type="button"
-              disabled={specLaunchBlocked}
+              disabled={specLaunchBlocked || accountCheck.checking}
               onMouseDown={keepFocus}
-              onClick={launchSpec}
+              onClick={() => void launchSpec()}
               style={{ ...specControl, cursor: "pointer", borderColor: "var(--cmux-accent)", color: "var(--cmux-accent)", width: "auto", flex: 1, ...(isActive && specRow === "launch" ? { backgroundColor: "var(--cmux-selected)" } : null) }}
             >
               {S.launchButton}

@@ -1,6 +1,6 @@
 import { getTabDisplayLabel } from "./tabDisplayLabel";
 import { canTransferTab, paneTabKind } from "./paneKindCapabilities";
-import type { DetachedPaneOrigin, WorkspaceConfig } from "./ipc";
+import type { DetachedPaneOrigin, PaneConfig, PaneTabConfig, WorkspaceConfig } from "./ipc";
 import type { PaneDropZone } from "../stores/paneDragStore";
 import type { PaneTab, Workspace } from "../types";
 
@@ -36,16 +36,94 @@ export interface SavedWindow {
   frame?: WorkspaceConfig["window_frame"];
 }
 
-/** Old unmarked workspaces remain in main; old detached panes stay separate.
- * Repeated partitioning is pure and stable, and duplicate IDs are not revived. */
+function savedPaneTabs(pane: PaneConfig): PaneTabConfig[] {
+  // The legacy one-tab restore generates its own tab and PTY identities.
+  // active_tab_id is a selection hint, not that tab's identity.
+  return pane.tabs ?? [{
+    agent_id: pane.agent_id,
+    label: pane.label,
+    type: "terminal",
+    cwd: pane.cwd,
+    last_process: pane.last_process,
+    claude_session_id: pane.claude_session_id,
+    agent_kind: pane.agent_kind,
+    agent_session_id: pane.agent_session_id,
+    suppressed_agent_sessions: pane.suppressed_agent_sessions,
+    launch_env: pane.launch_env,
+  }];
+}
+
+/** Merge surviving tabs before resolving which tab owns a saved conversation. */
+export function coalesceSavedWorkspaceRows(configs: readonly WorkspaceConfig[]): SavedWindowWorkspace[] {
+  const byId = new Map<string, SavedWindowWorkspace>();
+  for (const config of configs) {
+    const first = byId.get(config.id);
+    if (!first) {
+      byId.set(config.id, config);
+      continue;
+    }
+
+    const panes = [...first.panes];
+    const tabsById = new Map<string, PaneTabConfig>();
+    for (const pane of panes) {
+      for (const tab of pane.tabs ?? []) {
+        if (tab.tab_id) tabsById.set(tab.tab_id, tab);
+      }
+    }
+    const replacements = new Map<PaneTabConfig, PaneTabConfig>();
+    for (const pane of config.panes) {
+      const index = pane.pane_id ? panes.findIndex(existing => existing.pane_id === pane.pane_id) : -1;
+      const tabs = savedPaneTabs(pane).filter((tab) => {
+        if (!tab.tab_id) return true;
+        const existing = tabsById.get(tab.tab_id);
+        if (existing) {
+          if (existing.lifecycle != null && existing.lifecycle !== "declared"
+            && (tab.lifecycle == null || tab.lifecycle === "declared")
+            && !replacements.has(existing)) replacements.set(existing, tab);
+          return false;
+        }
+        tabsById.set(tab.tab_id, tab);
+        return true;
+      });
+      if (tabs.length === 0) continue;
+      if (index >= 0) {
+        const existing = panes[index];
+        panes[index] = { ...existing, tabs: [...savedPaneTabs(existing), ...tabs] };
+      } else {
+        panes.push(pane.tabs == null ? pane : { ...pane, tabs });
+      }
+    }
+
+    const updated = {
+      ...first,
+      panes: replacements.size > 0 ? panes.map(pane => pane.tabs
+        ? { ...pane, tabs: pane.tabs.map(tab => replacements.get(tab) ?? tab) }
+        : pane) : panes,
+    };
+    if (panes.length !== first.panes.length) {
+      const added = panes.slice(first.panes.length).map((_, index) => [index + first.panes.length]);
+      if (first.split_columns || !first.split_rows) {
+        updated.split_columns = [...(first.split_columns ?? first.panes.map((_, index) => [index])), ...added];
+      } else {
+        updated.split_rows = [...first.split_rows, ...added];
+      }
+      updated.column_widths = null;
+      updated.row_heights_per_col = null;
+      updated.column_divider_pins = null;
+      updated.row_divider_pins_per_col = null;
+    }
+    byId.set(config.id, updated);
+  }
+  return [...byId.values()];
+}
+
+/** Old unmarked workspaces remain in main; old detached panes stay separate. */
 export function partitionSavedWindows(configs: readonly WorkspaceConfig[]): {
   main: WorkspaceConfig[]; windows: SavedWindow[];
 } {
   const main: WorkspaceConfig[] = [], groups = new Map<string, SavedWindow>();
-  const legacy: SavedWindow[] = [], seen = new Set<string>();
-  for (const config of configs as readonly SavedWindowWorkspace[]) {
-    if (seen.has(config.id)) continue;
-    seen.add(config.id);
+  const legacy: SavedWindow[] = [];
+  for (const config of coalesceSavedWorkspaceRows(configs)) {
     const group = config.window_group;
     const label = group?.label;
     const validChild = typeof label === "string" && /^mycmux-w[1-9]\d*$/.test(label)

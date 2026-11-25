@@ -22,7 +22,7 @@ import { buildTerminalPaneLaunch } from "../../lib/terminalPaneLaunch";
 import { consumeCodexRestoreReason } from "../../lib/codexRestore";
 import { otherWindowWorkspaces, requestPeerTabStart, serializeOtherWindowPanes, type TabStartResult } from "../../lib/socketTabWindows";
 import {
-  listenForPeerSocketCommandEvent, requestPeerSocketCommand,
+  listenForPeerSocketCommandEvent, requestPeerSocketCommand, SocketCommandDeadlineError,
   type PeerSocketCommandRequest, type SocketArgs,
 } from "../../lib/socketCommandWindows";
 import type { TerminalLaunchRequest } from "../terminal/terminalLaunchParams";
@@ -176,7 +176,7 @@ export function listenForPeerSpawns(ready: () => Promise<void> = async () => {})
   return listenForPeerSocketCommandEvent(request => request.cmd === "pane.spawn" || request.cmd === "pane.spawn_tab", executePeerSocketCommand, ready, SPAWN_EVENTS);
 }
 
-export function listenForPeerSocketCommands(ready: () => Promise<void> = async () => {}) {
+export function listenForPeerSocketCommands(ready: (request: PeerSocketCommandRequest) => Promise<void> = async () => {}) {
   return listenForPeerSocketCommandEvent(request => SOCKET_COMMAND_NAMES.includes(request.cmd as SocketCommandName)
     && socketCommandTargets(request.cmd, request.args).length > 0, executePeerSocketCommand, ready);
 }
@@ -230,16 +230,27 @@ async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPan
       else await requestPeerSocketCommand(owner, cmd, groupArgs, context, { preflightOnly: true });
     }
     const results: Awaited<ReturnType<typeof closeTabs>>[] = [];
-    let unexecutedTabIds: string[] | undefined;
+    let partial: { unexecutedTabIds: string[]; unknownTabIds?: string[]; reason: string } | undefined;
     for (const [index, { owner, groupArgs }] of requests.entries()) {
       try {
         results.push(await (owner === label ? handleSocketCommand(cmd, groupArgs, {
           context, expiresAt: context.deadline,
         }) : requestPeerSocketCommand(owner, cmd, groupArgs, context)) as Awaited<ReturnType<typeof closeTabs>>);
       } catch (error) {
-        // Peer replies carry errors as messages. This refusal precedes execution.
-        if (!(error instanceof Error) || error.message !== SOCKET_LAYOUT_QUIT_REFUSAL) throw error;
-        unexecutedTabIds = requests.slice(index).flatMap(({ groupArgs }) => groupArgs.tabIds);
+        const message = error instanceof Error ? error.message : "";
+        const reason = error instanceof SocketCommandDeadlineError
+          ? (error.phase === "before_dispatch" ? "window_deadline" : "window_no_response")
+          : message === SOCKET_LAYOUT_QUIT_REFUSAL ? "window_quitting"
+            : message === "socket command owner window is closing" ? "window_closing"
+              : results.length > 0 && message.startsWith("pane.close_tabs tab not found: ") ? "window_target_changed"
+                : results.length > 0 ? "window_close_failed" : null;
+        if (!reason) throw error;
+        const unknown = reason === "window_no_response" || reason === "window_close_failed";
+        partial = {
+          unexecutedTabIds: requests.slice(index + (unknown ? 1 : 0)).flatMap(({ groupArgs }) => groupArgs.tabIds),
+          ...(unknown ? { unknownTabIds: groupArgs.tabIds } : {}),
+          reason,
+        };
         break;
       }
     }
@@ -253,7 +264,7 @@ async function routeSocketCommand(cmd: string, args: SocketArgs, context: WebPan
       affectedWorkspaces: [...new Set(results.flatMap(result => result.affectedWorkspaces ?? []))],
       staleRevision: results.some(result => result.staleRevision),
       victims: results.flatMap(result => result.victims),
-      ...(unexecutedTabIds ? { unexecutedTabIds, reason: "window_quitting" } : {}),
+      ...partial,
     } };
   }
   const owner = groups.keys().next().value!;
@@ -2983,6 +2994,10 @@ const layoutSocketCommands = new Set<SocketCommandName>([
   "pane.rename_tab", "pane.move", "web.open", "web.focus", "web.close",
 ]);
 
+export function isSocketLayoutMutation(cmd: string): boolean {
+  return layoutSocketCommands.has(cmd as SocketCommandName);
+}
+
 async function runSocketLayoutOperation<T>(dispatch: () => Promise<T>): Promise<T> {
   const finish = beginLayoutOperation();
   if (!finish) throw new Error(SOCKET_LAYOUT_QUIT_REFUSAL);
@@ -3009,7 +3024,7 @@ export async function handleSocketCommand(
       "../../stores/workspaceStore"
     );
     if (execution) {
-      if (Date.now() >= execution.expiresAt) throw new Error(`${cmd} owner request expired`);
+      if (Date.now() >= execution.expiresAt) throw new SocketCommandDeadlineError(cmd, "before_dispatch");
       const { windowLabel } = await import("../../lib/windowContext");
       socketCommandWindowsForRequest(cmd, args, useWorkspaceListStore.getState().workspaces, [], windowLabel());
       if (execution.preflightOnly) {
@@ -3227,7 +3242,7 @@ export async function handleSocketCommand(
         throw new Error(`Unknown socket command: ${cmd}`);
     }
   };
-  return layoutSocketCommands.has(cmd as SocketCommandName)
+  return isSocketLayoutMutation(cmd)
     ? runSocketLayoutOperation(dispatch)
     : dispatch();
 }

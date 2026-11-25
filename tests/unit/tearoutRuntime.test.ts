@@ -35,7 +35,7 @@ import { tearoutOperationBusy, beginTearoutOperation, endTearoutOperation, tearo
   reserveIncomingTearout, finishIncomingTearout, localTearoutRefusal } from "../../src/lib/tearout/operation";
 import { activeTearoutRecords, TearoutRecord } from "../../src/lib/tearout/record";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
-import { ensurePresendTab, forgetPresendTab, presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
+import { ensurePresendTab, forgetPresendTab, pausePresendTab, presendTab, setPresendTabEnabled, sharedPresendTabEnabled } from "../../src/lib/presendReading";
 import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
 import { buildWindowFragment, toTransferConfig } from "../../src/components/layout/SocketListener";
 import type { Workspace } from "../../src/types";
@@ -105,6 +105,54 @@ describe("review settled reservation recovery", () => {
     const cfg = config(workspace(id)); cfg.panes[0].tabs![0].tab_id = `${id}-tab`; cfg.panes[0].tabs![0].session_id = `pty-${id}`;
     return cfg;
   };
+  it("L3 95 releases the receiver reservation if reading the delivery throws", async () => {
+    const token = "l3-bad-delivery";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      dispatch("mycmux://tearout-delivery", { token, source: "peer", configs: null }, "main");
+      await flush();
+      expect(tearoutDisplayReasons().incomingTransfers).toBe(0);
+    } finally {
+      finishIncomingTearout(token);
+      warn.mockRestore();
+    }
+  });
+
+  it("L3 fix2 20 releases the receiver reservation if the workspace list read throws", async () => {
+    const token = "l3-fix2-throwing-list";
+    const workspaceStore = vi.spyOn(useWorkspaceListStore, "getState").mockImplementationOnce(() => {
+      throw new Error("synthetic workspace read failure");
+    });
+    try {
+      dispatch("mycmux://tearout-delivery", { token, source: "peer", configs: [receivedConfig("incoming")] }, "main");
+      await flush();
+      expect(tearoutDisplayReasons().incomingTransfers).toBe(0);
+      expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt",
+        expect.objectContaining({ token, ok: false, reason: "synthetic workspace read failure" }));
+    } finally {
+      finishIncomingTearout(token);
+      workspaceStore.mockRestore();
+    }
+  });
+
+  it("L3 fix2 10 rejects delivery after the named destination became a different window", async () => {
+    const token = "abandoned-creation-delivery";
+    vi.stubGlobal("__MYCMUX_WORKSPACE_CREATION_ID__", "successor");
+    try {
+      dispatch("mycmux://tearout-delivery", {
+        token, source: "peer", configs: [receivedConfig("incoming")], receiverCreationId: "first-window",
+      }, "main");
+      await flush();
+      expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", {
+        token, ok: false, error: "tearout_receiver_unavailable",
+      });
+      expect(tearoutDisplayReasons().incomingTransfers).toBe(0);
+      expect(useWorkspaceListStore.getState().workspaces.map(({ id }) => id)).toEqual(["source"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("review releases an orphan reservation only when no incoming entry exists", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     reserveIncomingTearout("review-orphan");
@@ -1157,6 +1205,87 @@ describe("mixed-session transfer reliability", () => {
     await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith("peer", "mycmux://tearout-receipt", { token: "mixed-receive", ok: true }), { timeout: 2000 });
     expect(mocks.attachments).toHaveBeenCalledWith(["pty-incoming-live"]);
     expect(mocks.invoke.mock.calls.filter(([cmd]) => cmd === "is_session_alive").map(([, args]) => args.sessionId)).toEqual(["pty-incoming-live"]);
+  });
+  it.each([false, true])("retains the receiver's failed pause on redelivery (resume elsewhere: %s)", async resumedElsewhere => {
+    const id = resumedElsewhere ? "remote-resume" : "still-paused";
+    const cfg = toTransferConfig(workspace(id));
+    const sessionId = "pty-" + id;
+    const first = id + "-first", second = id + "-second", revokeAck = id + "-revoke";
+    cfg.panes[0].session_id = sessionId;
+    cfg.panes[0].tabs![0].tab_id = id + "-tab";
+    cfg.panes[0].tabs![0].session_id = sessionId;
+    const delivery = { source: "peer", configs: [cfg], liveSessions: [sessionId], pendingPresendPauses: [] };
+    const present = () => useWorkspaceListStore.getState().workspaces.some(ws =>
+      ws.panes.some(pane => pane.tabs.some(tab => tab.sessionId === sessionId)));
+    const baseInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "configure_presend_reading" && args.sessionId === sessionId) {
+        if (args.tabEnabled === false) throw new Error("synthetic pause save failure");
+        return true;
+      }
+      return baseInvoke(command, args);
+    });
+    let attach = () => {};
+    mocks.attachmentReady = new Promise<void>(resolve => { attach = resolve; });
+    try {
+      dispatch("mycmux://tearout-delivery", { ...delivery, token: first }, "main");
+      await vi.waitFor(() => expect(present()).toBe(true));
+      pausePresendTab(sessionId);
+      await vi.waitFor(() => expect(presendTab(sessionId)?.paused).toBe("failed"));
+      dispatch("mycmux://tearout-revoke", { token: first, source: "peer", ack: revokeAck }, "main");
+      await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith(
+        "peer", "mycmux://tearout-receipt", { token: revokeAck, ok: true },
+      ));
+      expect(present()).toBe(false);
+      expect(presendTab(sessionId)).toMatchObject({ enabled: false, paused: "failed" });
+      if (resumedElsewhere) {
+        // The other renderer can explicitly write ON to the native preference.
+        // The recipient's own failed pause still needs an acknowledgement here.
+        expect(await sharedPresendTabEnabled(sessionId, true)).toBe(true);
+      }
+      expect(await sharedPresendTabEnabled(sessionId)).toBe(true);
+      attach();
+      dispatch("mycmux://tearout-delivery", { ...delivery, token: second }, "main");
+      await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith(
+        "peer", "mycmux://tearout-receipt", { token: second, ok: true },
+      ));
+      expect(present()).toBe(true);
+      expect(presendTab(sessionId)).toMatchObject({ enabled: false, paused: "failed" });
+    } finally {
+      attach();
+      forgetPresendTab(sessionId);
+    }
+  });
+  it("carries a failed pre-send pause into a receiving window", async () => {
+    const cfg = toTransferConfig(workspace("unacknowledged-presend-pause"));
+    const sessionId = "pty-unacknowledged-presend-pause";
+    cfg.panes[0].session_id = sessionId;
+    cfg.panes[0].tabs![0].tab_id = "unacknowledged-presend-pause-tab";
+    cfg.panes[0].tabs![0].session_id = sessionId;
+    const baseInvoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, args: { sessionId?: string; tabEnabled?: boolean }) => {
+      if (command === "configure_presend_reading" && args.sessionId === sessionId) {
+        if (args.tabEnabled === false) throw new Error("synthetic pause save failure");
+        return true;
+      }
+      return baseInvoke(command, args);
+    });
+    try {
+      pausePresendTab(sessionId);
+      await vi.waitFor(() => expect(presendTab(sessionId)?.paused).toBe("failed"));
+      await sendTearoutWorkspaces("peer", [cfg], [sessionId]);
+      const sent = mocks.emitTo.mock.calls.find(([, event]) => event.endsWith("tearout-delivery"))![2];
+      // The destination has no renderer cache entry, and shared IPC still reports ON.
+      forgetPresendTab(sessionId);
+      expect(presendTab(sessionId)).toBeUndefined();
+      dispatch("mycmux://tearout-delivery", { ...sent, source: "peer" }, "main");
+      await vi.waitFor(() => expect(mocks.emitTo).toHaveBeenCalledWith(
+        "peer", "mycmux://tearout-receipt", { token: sent.token, ok: true },
+      ));
+      expect(presendTab(sessionId)).toMatchObject({ enabled: false, paused: "failed" });
+    } finally {
+      forgetPresendTab(sessionId);
+    }
   });
   it("rejects a second start during recovery with a reason and no synthetic release", async () => {
     let attached = () => {};

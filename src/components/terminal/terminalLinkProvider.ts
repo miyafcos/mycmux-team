@@ -9,8 +9,10 @@ const GENERIC_FILE_EXTENSION_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_~-]{0,9}
 const GENERIC_FILE_EXTENSION_SUFFIX_PATTERN = String.raw`${GENERIC_FILE_EXTENSION_PATTERN}(?:\.${GENERIC_FILE_EXTENSION_PATTERN})*`;
 const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s\x60"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;
 const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
+const WINDOWS_DRIVE_PREFIX_PATTERN = String.raw`(?:\\\\\?\\)?[A-Za-z]:[\\/]`;
+export const WINDOWS_ABSOLUTE_PATH_REGEX = new RegExp(`^${WINDOWS_DRIVE_PREFIX_PATTERN}`);
 const ARTIFACT_LINK_REGEX = new RegExp(
-  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|file:\/\/\/[^\r\n"'<>+\uFF0B]*?[\\/]|[A-Za-z]:[\\/](?![\\/])(?:[^\r\n"'<>+\uFF0B]*?[\\/])?|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?[\\/])${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
+  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${WINDOWS_DRIVE_PREFIX_PATTERN}(?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|file:\/\/\/[^\r\n"'<>+\uFF0B]*?[\\/]|${WINDOWS_DRIVE_PREFIX_PATTERN}(?![\\/])(?:[^\r\n"'<>+\uFF0B]*?[\\/])?|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?[\\/])${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",
 );
 const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
@@ -33,10 +35,14 @@ const LOCAL_PATH_RESOLUTION_MISS_TTL_MS = 3_000;
 const LOCAL_PATH_PREWARM_DEBOUNCE_MS = 250;
 const LOCAL_PATH_PREWARM_CONTEXT_LINES = 8;
 const LOCAL_PATH_PREWARM_MAX_CANDIDATES = 64;
-const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
-  /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
-const BARE_LOCAL_PATH_PREFIX_REGEX =
-  /file:\/\/\/|(?<![A-Za-z0-9._\\/:])[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\//gi;
+const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX = new RegExp(
+  String.raw`(?:file:\/\/\/|${WINDOWS_DRIVE_PREFIX_PATTERN}|${MSYS_DRIVE_PREFIX_PATTERN})`,
+  "i",
+);
+const BARE_LOCAL_PATH_PREFIX_REGEX = new RegExp(
+  String.raw`file:\/\/\/|(?<![A-Za-z0-9._\\/:])${WINDOWS_DRIVE_PREFIX_PATTERN}|${MSYS_DRIVE_PREFIX_PATTERN}`,
+  "gi",
+);
 const RELATIVE_LOCAL_PATH_PREFIX_REGEX =
   /(?<![\p{L}\p{N}._\\/:])(?:~[\\/]|\.{1,2}[\\/]|[\p{L}\p{N}._~-]+[\\/])/giu;
 const BARE_LOCAL_FILE_PREFIX_REGEX =
@@ -269,7 +275,7 @@ function mapWrappedStringOffset(
 }
 
 function hasOpenArtifactPath(text: string): boolean {
-  const startMatches = [...text.matchAll(/(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/gi)];
+  const startMatches = [...text.matchAll(new RegExp(ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.source, "gi"))];
   const lastStart = startMatches[startMatches.length - 1];
   if (!lastStart || lastStart.index === undefined) return false;
   const tail = text.slice(lastStart.index);
@@ -392,7 +398,7 @@ function activationUriForResolvedLocalPath(
   if (!resolved.isDir || /[\\/]$/.test(existingPrefix)) {
     return existingPrefix;
   }
-  if (/^[A-Za-z]:[\\/]/.test(existingPrefix)) {
+  if (WINDOWS_ABSOLUTE_PATH_REGEX.test(existingPrefix)) {
     return `${existingPrefix}\\`;
   }
   return `${existingPrefix}/`;
@@ -416,7 +422,7 @@ type PathCandidateVariant = {
 };
 
 function isAbsoluteLocalPath(text: string): boolean {
-  return /^file:\/\/\//i.test(text) || /^[A-Za-z]:[\\/]/.test(text) || /^\/[A-Za-z]\//.test(text);
+  return /^file:\/\/\//i.test(text) || WINDOWS_ABSOLUTE_PATH_REGEX.test(text) || /^\/[A-Za-z]\//.test(text);
 }
 
 function withTrailingPathSeparator(base: string): string {

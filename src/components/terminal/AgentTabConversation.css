@@ -87,10 +87,9 @@
 .terminal-transcript-panel--tab table { display: block; overflow-x: auto; }
 .terminal-transcript-panel--tab .cmux-archive-row > .cmux-archive-tool,
 .terminal-transcript-panel--tab .cmux-archive-tool,
-.terminal-transcript-panel--tab .cmux-dashboard-toolfold { color: var(--cmux-text-secondary); border: 0; border-radius: 0; padding: 0; background: none; opacity: .5; }
-.terminal-transcript-panel--tab :is(.cmux-archive-tool, .cmux-dashboard-toolfold):is(:hover, :focus-within, [open]) { opacity: 1; }
+.terminal-transcript-panel--tab .cmux-dashboard-toolfold { color: var(--cmux-text-secondary); border: 0; border-radius: 0; padding: 0; background: none; }
 .terminal-transcript-panel--tab .cmux-archive-tool summary,
-.terminal-transcript-panel--tab .cmux-dashboard-toolfold summary { padding: 1px 0; color: var(--cmux-text-secondary); font-size: var(--cmux-dash-font-size); cursor: pointer; overflow-wrap: anywhere; }
+.terminal-transcript-panel--tab .cmux-dashboard-toolfold summary { padding: 1px 0; color: var(--cmux-text); font-size: var(--cmux-dash-font-size); cursor: pointer; overflow-wrap: anywhere; }
 .terminal-transcript-panel--tab .cmux-archive-tool:not([open]) summary,
 .terminal-transcript-panel--tab .cmux-dashboard-toolfold:not([open]) summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .terminal-transcript-panel--tab .cmux-dashboard-tool-name,

@@ -4,6 +4,7 @@
 export const terminalPaneStrings = {
   paneActions: "タブの操作",
   searchTerminal: "端末内を検索",
+  searchConversationTitle: (shortcut: string) => `会話履歴を検索 (${shortcut})`,
   searchTerminalTitle: (shortcut: string) => `端末内を検索 (${shortcut})`,
   searchPlaceholder: "検索…",
   searchUnavailable: "実行中の端末タブで検索できます",

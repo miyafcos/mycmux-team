@@ -148,7 +148,9 @@ describe("content-free terminal progress diagnostics (P2)", () => {
     const source = readFileSync("src/components/terminal/XTermWrapper.tsx", "utf8");
     const callbackStart = source.indexOf("writeTerm.write(rewrittenOutput, () => {");
     expect(callbackStart).toBeGreaterThan(-1);
-    const callback = source.slice(callbackStart, callbackStart + 1_000);
+    const callbackEnd = source.indexOf("\n          });", callbackStart);
+    expect(callbackEnd).toBeGreaterThan(callbackStart);
+    const callback = source.slice(callbackStart, callbackEnd);
     expect(callback).toContain("terminalProgressDiagnostics.finishWrite(sessionId, progressWrite)");
     const watchdog = source.slice(source.indexOf("const watchdog = window.setTimeout"), source.indexOf("const finish =", source.indexOf("const watchdog = window.setTimeout")));
     expect(watchdog).not.toContain("finishWrite");

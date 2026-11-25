@@ -630,6 +630,7 @@ describe("grouping production boundary contract", () => {
     ]);
 
     expect(scanProductionMutationCallsites()).toEqual([
+      "src/components/layout/SocketListener.tsx -> call _replaceWorkspaces",
       "src/components/layout/groupingStoreAdapter.ts -> call _restoreGroupingLayout",
       "src/components/layout/socketCommands.ts -> call _replaceWorkspaces",
       "src/components/layout/tabGroupingEngine.ts -> call replaceWorkspaces",

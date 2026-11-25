@@ -60,6 +60,43 @@ describe("saved window ownership and schema-1 upgrade", () => {
       x: 240, y: 180, width: 840, height: 620 });
   });
 
+  it("L3 74 keeps unfinished startup restores out of main when quit refuses their creation", async () => {
+    const children = [config("queued", "mycmux-w1"), config("not-opened", "mycmux-w2", true)];
+    ipc.openWorkspaceWindow.mockResolvedValueOnce("mycmux-w1")
+      .mockRejectedValueOnce("Application is preparing to quit");
+    await reopenSavedWindows(partitionSavedWindows(children).windows);
+    expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+    expect(children[1].window_group?.frame).toEqual({ x: 240, y: 180, width: 840, height: 620 });
+  });
+
+  it("L3 75 publishes an interrupted startup adoption under its saved identity", () => {
+    const origin = config("origin");
+    restoreWorkspaceConfigs([origin]);
+    const rescued = {
+      ...config("rescued", "mycmux-w1", true),
+      detached_from: { workspace_id: origin.id, pane_id: origin.panes[0].pane_id!, tab_id: "rescued-tab", index: 1 },
+      preserve_workspace_identity: true,
+    };
+    const result = restoreWorkspaceConfigs([rescued], { dockDetached: true });
+    expect(result.restoredWorkspaceIds).toEqual(["rescued"]);
+    const workspaces = useWorkspaceListStore.getState().workspaces;
+    expect(workspaces.map((row) => row.id)).toEqual(["origin", "rescued"]);
+    expect(workspaces.flatMap((row) => row.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)))).toEqual(["origin-tab", "rescued-tab"]);
+  });
+
+  it("L3 79 80 retains distinct tabs and conversations from duplicate workspace rows", () => {
+    const first = config("shared", "mycmux-w2");
+    first.panes[0].tabs![0].agent_session_id = "first-conversation";
+    const duplicate = config("shared", "mycmux-w3");
+    duplicate.panes[0].tabs![0] = {
+      ...duplicate.panes[0].tabs![0], tab_id: "other-tab", session_id: "pty-other", agent_session_id: "other-conversation",
+    };
+    const [group] = partitionSavedWindows([first, duplicate]).windows;
+    expect(group.configs.map((row) => row.id)).toEqual(["shared"]);
+    expect(group.configs[0].panes.flatMap((pane) => pane.tabs?.map((tab) => [tab.tab_id, tab.agent_session_id]) ?? []))
+      .toEqual([["shared-tab", "first-conversation"], ["other-tab", "other-conversation"]]);
+  });
+
   it("falls back without losing a failed group's layouts or retaining detached marks", async () => {
     ipc.openWorkspaceWindow.mockRejectedValue(new Error("cannot build window"));
     await reopenSavedWindows(partitionSavedWindows([config("a", "mycmux-w2"), config("b", "mycmux-w2")]).windows);

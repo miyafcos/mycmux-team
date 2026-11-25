@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { homeDir } from "@tauri-apps/api/path";
 import { confirm } from "../lib/appConfirmation";
 import { isPreparingLayoutQuit } from "../lib/layoutQuit";
+import { createWorkspaceAtCwd } from "../lib/workspaceBootstrap";
 import {
   beginCliLogin,
   cancelCliLogin,
@@ -29,6 +30,7 @@ import {
 import { evictTerminalCache } from "../components/terminal/terminalCache";
 import type { Pane, PaneTab } from "../types";
 import { useCliAccountStore } from "./cliAccountStore";
+import { useDashboardViewStore } from "./dashboardViewStore";
 import { usePaneMetadataStore } from "./paneMetadataStore";
 import { useToastStore } from "./toastStore";
 import { useUiStore } from "./uiStore";
@@ -51,8 +53,8 @@ export interface CliLoginEntry {
 
 export interface CliLoginState {
   byProvider: Record<SwitchableCliProvider, CliLoginEntry | null>;
-  start(provider: SwitchableCliProvider, mode: CliLoginMode, expectedProfileId?: string, purpose?: CliLoginPurpose): Promise<void>;
-  startAccountHome(provider: "codex" | "grok", profileId: string): Promise<void>;
+  start(provider: SwitchableCliProvider, mode: CliLoginMode, expectedProfileId?: string, purpose?: CliLoginPurpose): Promise<boolean>;
+  startAccountHome(provider: "codex" | "grok", profileId: string): Promise<boolean>;
   cancel(provider: SwitchableCliProvider): Promise<void>;
   handleCompleted(payload: CliLoginCompletedPayload): Promise<void>;
   handleFailed(payload: CliLoginFailedPayload): void;
@@ -68,7 +70,7 @@ export interface CliLoginState {
 const EMPTY_BY_PROVIDER: Record<SwitchableCliProvider, CliLoginEntry | null> = { claude: null, codex: null, grok: null };
 
 const NO_HOST_PANE_MESSAGE =
-  "原因: ログイン画面を開くタブを用意できませんでした。次にすること: ターミナルのタブをひとつ開いてから、もう一度お試しください。";
+  "ログインのタブを開けませんでした。もう一度お試しください。";
 
 interface HostPane {
   workspaceId: string;
@@ -84,15 +86,14 @@ function hasTerminalTab(pane: Pane): boolean {
 }
 
 /**
- * A login opens as a new tab of an existing pane, never as a new pane: a pane
- * whose tabs are all ephemeral would be dropped from the saved layout, taking
- * its column with it.
+ * Prefer an existing pane. A login-only pane has no persistent tab to
+ * retain its position after a restart.
  */
 function pickHostPane(): HostPane | null {
   const listState = useWorkspaceListStore.getState();
   const workspace =
-    listState.workspaces.find((candidate) => candidate.id === listState.activeWorkspaceId)
-    ?? listState.workspaces[0];
+    listState.workspaces.find(candidate => candidate.id === listState.activeWorkspaceId && candidate.panes.length > 0)
+    ?? listState.workspaces.find(candidate => candidate.panes.length > 0);
   if (!workspace) return null;
   const activeSessionId = useUiStore.getState().activePaneId;
   const pane =
@@ -117,30 +118,43 @@ function tabsOf(host: HostPane): PaneTab[] {
   );
 }
 
-async function openLoginTab(
-  session: CliLoginSession,
-  mode: CliLoginMode,
-): Promise<{ sessionId: string; tabId: string } | null> {
-  const host = pickHostPane();
-  if (!host) return null;
-  // Home rather than the project directory: a project cwd makes the CLI write
-  // `hasTrustDialogAccepted: false` into the staging config and greet the user
-  // with a trust prompt before the login can even start.
-  const home = await homeDir().catch(() => undefined);
+function openLoginTab(home: string | undefined, label: string, launchEnv: Record<string, string>) {
   if (isPreparingLayoutQuit()) return null;
-  const before = new Set(tabsOf(host).map((tab) => tab.id));
+  let host = pickHostPane();
+  if (!host) {
+    createWorkspaceAtCwd(home, { name: "ログイン", gridTemplateId: "1x1" });
+    host = pickHostPane();
+  }
+  if (!host) return null;
+  const before = new Set(tabsOf(host).map(tab => tab.id));
   useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(host.workspaceId, host.paneId, {
-    // Plain shell: the agent presets inject resume/handoff variables that have
-    // no meaning for a login and would confuse session tracking.
-    agentId: "shell",
-    label: loginTabLabel(session.provider, mode),
-    cwd: home,
-    launchEnv: { MYCMUX_CLI_LOGIN_ID: session.login_id },
-    ephemeral: true,
-    activate: true,
+    agentId: "shell", label, cwd: home, launchEnv, ephemeral: true, activate: true,
   });
-  const added = tabsOf(host).find((tab) => !before.has(tab.id));
-  return added ? { sessionId: added.sessionId, tabId: added.id } : null;
+  const tab = tabsOf(host).find(item => !before.has(item.id));
+  if (!tab) return null;
+  const workspaces = useWorkspaceListStore.getState();
+  if (workspaces.activeWorkspaceId !== host.workspaceId) workspaces.setActiveWorkspace(host.workspaceId);
+  useUiStore.getState().setZoomedPaneId(null);
+  useUiStore.getState().setWorkspaceSetupVisible(false);
+  useDashboardViewStore.getState().close();
+  return tab;
+}
+
+let openingGemini = false;
+
+export async function openGeminiLogin(): Promise<boolean> {
+  if (openingGemini) return false;
+  openingGemini = true;
+  try {
+    const home = await homeDir().catch(() => undefined);
+    if (openLoginTab(home, "Gemini ログイン", { MYCMUX_LAUNCH_TARGET: "agy" })) return true;
+  } catch {
+    // The layout can change while the home directory is being resolved.
+  } finally {
+    openingGemini = false;
+  }
+  useToastStore.getState().pushToast(NO_HOST_PANE_MESSAGE, "error");
+  return false;
 }
 
 function closeLoginTab(sessionId: string): void {
@@ -210,11 +224,12 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
    * must never be skipped: a login left holding `busyByProvider` locks switch
    * and capture for the rest of the session.
    */
-  const finalize = (provider: SwitchableCliProvider, options: { closeTab: boolean }) => {
-    const entry = get().byProvider[provider];
+  const finalize = (provider: SwitchableCliProvider, entry: CliLoginEntry, options: { closeTab: boolean }) => {
+    if (get().byProvider[provider] !== entry) return false;
     setEntry(provider, null);
     useCliAccountStore.getState().setLoginBusy(provider, null);
-    if (options.closeTab && entry?.sessionId) closeLoginTab(entry.sessionId);
+    if (options.closeTab && entry.sessionId) closeLoginTab(entry.sessionId);
+    return true;
   };
 
   const providerForLogin = (loginId: string): SwitchableCliProvider | null =>
@@ -227,11 +242,11 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
 
     start: async (provider, mode, expectedProfileId, purpose) => {
       const accounts = useCliAccountStore.getState();
-      if (accounts.busyByProvider[provider] !== null) return;
+      if (accounts.busyByProvider[provider] !== null) return false;
       // Claimed before the first await so a double click cannot start two
       // logins while `begin_cli_login` is in flight.
       accounts.setLoginBusy(provider, `login:${provider}`);
-      setEntry(provider, {
+      const starting: CliLoginEntry = {
         stage: "spawning",
         loginId: null,
         mode,
@@ -239,7 +254,8 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         startedAt: Date.now(),
         sessionId: null,
         tabId: null,
-      });
+      };
+      setEntry(provider, starting);
 
       let session: CliLoginSession;
       try {
@@ -247,22 +263,30 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
           ? await beginCliLogin(provider, mode, expectedProfileId, purpose)
           : await beginCliLogin(provider, mode, expectedProfileId);
       } catch (error) {
-        useToastStore.getState().pushToast(cliAccountMessage(error), "error");
-        finalize(provider, { closeTab: false });
-        return;
+        if (get().byProvider[provider] === starting) {
+          useToastStore.getState().pushToast(cliAccountMessage(error), "error");
+          finalize(provider, starting, { closeTab: false });
+        }
+        return false;
       }
 
-      let opened: { sessionId: string; tabId: string } | null = null;
+      // A project directory may produce a trust prompt in the isolated login.
+      const home = await homeDir().catch(() => undefined);
+      if (get().byProvider[provider] !== starting) {
+        void cancelCliLogin(session.login_id).catch(() => {});
+        return false;
+      }
+      let opened: PaneTab | null = null;
       try {
-        opened = await openLoginTab(session, mode);
+        opened = openLoginTab(home, loginTabLabel(session.provider, mode), { MYCMUX_CLI_LOGIN_ID: session.login_id });
       } catch {
         opened = null;
       }
       if (!opened) {
         cancelCliLogin(session.login_id).catch(() => {});
         useToastStore.getState().pushToast(NO_HOST_PANE_MESSAGE, "error");
-        finalize(provider, { closeTab: false });
-        return;
+        finalize(provider, starting, { closeTab: false });
+        return false;
       }
 
       setEntry(provider, {
@@ -272,8 +296,9 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         ...(purpose ? { purpose } : {}),
         startedAt: Date.now(),
         sessionId: opened.sessionId,
-        tabId: opened.tabId,
+        tabId: opened.id,
       });
+      return true;
     },
 
     cancel: async (provider) => {
@@ -282,7 +307,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
       // Clear locally first: the backend answers a cancel with a
       // `login_cancelled` failure event, and an already-cleared entry makes
       // that event a no-op instead of a second toast.
-      finalize(provider, { closeTab: true });
+      finalize(provider, entry, { closeTab: true });
       if (entry.loginId) await cancelCliLogin(entry.loginId).catch(() => {});
     },
 
@@ -290,14 +315,18 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
       const provider = providerForLogin(payload.login_id);
       if (!provider) return;
       const entry = get().byProvider[provider];
-      if (entry) setEntry(provider, { ...entry, stage: "capturing" });
+      if (!entry || entry.stage === "capturing") return;
+      const completing: CliLoginEntry = { ...entry, stage: "capturing" };
+      setEntry(provider, completing);
 
-      if (payload.purpose?.kind === "account_home" || entry?.purpose?.kind === "account_home") {
+      if (payload.purpose?.kind === "account_home" || entry.purpose?.kind === "account_home") {
         useToastStore.getState().pushToast("タブ用のログインが完了しました。", "info");
-        finalize(provider, { closeTab: true });
+        finalize(provider, completing, { closeTab: true });
         return;
       }
       const label = payload.profile.label;
+      const newAccount = !payload.updated_existing;
+      if (newAccount) useCliAccountStore.getState().noteAdded(payload.profile);
       useToastStore
         .getState()
         .pushToast(
@@ -305,6 +334,10 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
             ? `「${label}」の登録を更新しました。`
             : `「${label}」を登録しました。`,
           "info",
+          newAccount ? {
+            label: "このアカウントをタブ用にも登録",
+            run: () => useUiStore.getState().requestSettingsTab("usage", provider, payload.profile.id),
+          } : undefined,
         );
       await Promise.all([
         useCliAccountStore.getState().fetch(),
@@ -312,16 +345,17 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
       ]);
       // Release before offering the switch: `switchTo` refuses to run while the
       // provider is busy.
-      finalize(provider, { closeTab: true });
-      offerSwitch(provider, payload.profile);
+      if (finalize(provider, completing, { closeTab: true })) offerSwitch(provider, payload.profile);
     },
 
     handleFailed: (payload) => {
       const provider = providerForLogin(payload.login_id);
       if (!provider) return;
-      const privateHome = get().byProvider[provider]?.purpose?.kind === "account_home";
+      const entry = get().byProvider[provider];
+      if (!entry) return;
+      const privateHome = entry.purpose?.kind === "account_home";
       useToastStore.getState().pushToast(privateHome ? cliAccountHomeLoginMessage(payload.code) : cliAccountMessage(payload.code), "error");
-      finalize(provider, { closeTab: true });
+      finalize(provider, entry, { closeTab: true });
     },
 
     handleIdentityMismatch: (payload) => {
@@ -340,7 +374,7 @@ export const useCliLoginStore = create<CliLoginState>((set, get) => {
         const entry = get().byProvider[provider];
         if (!entry?.sessionId || liveSessionIds.has(entry.sessionId)) continue;
         const loginId = entry.loginId;
-        finalize(provider, { closeTab: false });
+        finalize(provider, entry, { closeTab: false });
         if (loginId) cancelCliLogin(loginId).catch(() => {});
       }
     },

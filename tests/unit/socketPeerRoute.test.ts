@@ -622,6 +622,71 @@ describe("owner-window execution with real socket handlers", () => {
       unexecutedTabIds: ["peer-target-tab", "later-target-tab"], reason: "window_quitting",
     });
   });
+  it("L3 86 returns prior closes when the next owner begins closing", async () => {
+    let ownerRequests = 0;
+    const owner = await connectOwner(async () => {
+      if (++ownerRequests === 2) throw new Error("socket command owner window is closing");
+    });
+    const result = await handleSocketCommand("pane.close_tabs", {
+      tabIds: ["local-target-tab", "peer-target-tab"],
+    }).catch((error: Error) => ({ error: error.message }));
+    expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("local-target-pty");
+    expect(owner().workspaces[0].panes[0].tabs.map(({ id }) => id)).toContain("peer-target-tab");
+    expect(result).toMatchObject({ closed: ["local-target-tab"], unexecutedTabIds: ["peer-target-tab"], reason: "window_closing" });
+  });
+
+  it("L3 fix3 10 keeps the first close when the next tab moved after preflight", async () => {
+    let ownerRequests = 0;
+    await connectOwner(async () => {
+      if (++ownerRequests === 2) {
+        const owner = workspace("peer");
+        owner.panes[0].tabs = owner.panes[0].tabs.filter(({ id }) => id !== "peer-target-tab");
+        useWorkspaceListStore.setState({ workspaces: [owner] });
+      }
+    });
+    const result = await handleSocketCommand("pane.close_tabs", {
+      tabIds: ["local-target-tab", "peer-target-tab"],
+    }).catch((error: Error) => ({ error: error.message }));
+    expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("local-target-pty");
+    expect(result).toMatchObject({
+      closed: ["local-target-tab"], unexecutedTabIds: ["peer-target-tab"], reason: "window_target_changed",
+    });
+    expect(result).not.toHaveProperty("unknownTabIds");
+  });
+
+  it("L3 fix2 18 keeps peer closes confirmed before the next local group expires", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(0);
+    await connectOwner();
+    const emit = mocks.emitTo.getMockImplementation()!;
+    mocks.emitTo.mockImplementation(async (target, event, payload) => {
+      await emit(target, event, payload);
+      if (event === REQUEST && !payload.preflightOnly) vi.setSystemTime(25_001);
+    });
+    const result = await handleSocketCommand("pane.close_tabs", {
+      tabIds: ["peer-target-tab", "local-target-tab"],
+    }).catch((error: Error) => ({ error: error.message }));
+    expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("peer-target-pty");
+    expect(result).toMatchObject({
+      closed: ["peer-target-tab"], unexecutedTabIds: ["local-target-tab"], reason: "window_deadline",
+    });
+  });
+
+  it("L3 fix2 18 marks a peer group that expired before sending as unexecuted", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(0);
+    await connectOwner();
+    mocks.kill.mockImplementationOnce(async () => { vi.setSystemTime(25_001); });
+    const result = await handleSocketCommand("pane.close_tabs", {
+      tabIds: ["local-target-tab", "peer-target-tab"],
+    }).catch((error: Error) => ({ error: error.message }));
+    expect(mocks.kill).toHaveBeenCalledExactlyOnceWith("local-target-pty");
+    expect(result).toMatchObject({
+      closed: ["local-target-tab"], unexecutedTabIds: ["peer-target-tab"], reason: "window_deadline",
+    });
+    expect(result).not.toHaveProperty("unknownTabIds");
+  });
+
   it("checks the peer's last-tab guard before any part of a cross-window bulk close", async () => {
     await connectOwner(() => {
       const ws = workspace("peer"); ws.panes[0].tabs = ws.panes[0].tabs.slice(0, 1);

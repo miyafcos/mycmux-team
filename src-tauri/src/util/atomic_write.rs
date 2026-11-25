@@ -61,6 +61,7 @@ pub struct AtomicWrite {
     replace_prefix: String,
     parent_missing: String,
     create_parents: bool,
+    temp_prefix: Option<String>,
 }
 
 impl AtomicWrite {
@@ -73,6 +74,7 @@ impl AtomicWrite {
             replace_prefix: replace_prefix.into(),
             parent_missing: "Atomic write path has no parent".to_string(),
             create_parents: false,
+            temp_prefix: None,
         }
     }
 
@@ -85,6 +87,12 @@ impl AtomicWrite {
     /// Create the destination's parent directory chain before writing.
     pub fn create_parents(mut self) -> Self {
         self.create_parents = true;
+        self
+    }
+
+    /// Give one writer's interrupted files a recognizable name.
+    pub(crate) fn temp_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.temp_prefix = Some(prefix.into());
         self
     }
 
@@ -113,7 +121,11 @@ impl AtomicWrite {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Failed to create parent directory: {error}"))?;
         }
-        let mut temp = tempfile::NamedTempFile::new_in(parent)
+        let mut builder = tempfile::Builder::new();
+        if let Some(prefix) = &self.temp_prefix {
+            builder.prefix(prefix);
+        }
+        let mut temp = builder.tempfile_in(parent)
             .map_err(|error| format!("Failed to create {}: {error}", self.temp_label))?;
         fill(temp.as_file_mut())?;
         temp.flush()
@@ -125,6 +137,38 @@ impl AtomicWrite {
             .map(|_| ())
             .map_err(|error| format!("{}: {}", self.replace_prefix, error.error))
     }
+}
+
+/// Move an identified interrupted write aside while its caller holds the writer lock.
+pub(crate) fn preserve_in_old(source: &Path) -> std::io::Result<std::path::PathBuf> {
+    use std::io::{Error, ErrorKind};
+    let (Some(parent), Some(name)) = (source.parent(), source.file_name()) else {
+        return Err(Error::new(ErrorKind::InvalidInput, "missing source name"));
+    };
+    if !fs::symlink_metadata(source)?.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "source is not a regular file"));
+    }
+    let directory = parent.join("_old");
+    fs::create_dir_all(&directory)?;
+    if !fs::symlink_metadata(&directory)?.is_dir() {
+        return Err(Error::new(ErrorKind::InvalidInput, "_old is not a regular directory"));
+    }
+    let mut destination = directory.join(name);
+    let mut serial = 0u64;
+    loop {
+        match fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+            Ok(_) => {
+                serial += 1;
+                let mut copy = name.to_os_string();
+                copy.push(format!(".{serial}"));
+                destination = directory.join(copy);
+            }
+        }
+    }
+    fs::rename(source, &destination)?;
+    Ok(destination)
 }
 
 /// Write `bytes` to `path` (truncating an existing file) and fsync before

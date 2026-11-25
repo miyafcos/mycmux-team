@@ -90,7 +90,8 @@ export function restoreWorkspaceConfigs(
           ? { kind: "pane" as const, workspaceId: placement.workspaceId, paneId: placement.paneId, index: destination.tabs.length }
           : placement
         : undefined;
-    const target = validPlacement ?? (selection.dockDetached
+    const dockDetached = selection.dockDetached && !cfg.preserve_workspace_identity;
+    const target = validPlacement ?? (dockDetached
       ? resolveDetachedReturnTarget(cfg, currentWorkspaces)
       : { kind: "workspace" as const });
     if (target.kind === "pane-zone" && target.zone !== "center") {
@@ -177,7 +178,7 @@ export function restoreWorkspaceConfigs(
         activate: false,
       },
     );
-    if (cfg.detached && !selection.dockDetached) {
+    if (cfg.detached && !dockDetached) {
       const current = useWorkspaceListStore.getState();
       current._replaceWorkspaces(current.workspaces.map((workspace) =>
         workspace.id === cfg.id ? { ...workspace, ...detachedMetadata(cfg) } : workspace));

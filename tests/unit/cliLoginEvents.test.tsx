@@ -120,7 +120,8 @@ describe("existing CLI login events refresh the account list for all providers",
     expect(useCliAccountStore.getState().fetchError).toBeNull();
     expect(useCliLoginStore.getState().byProvider[provider]).toBeNull();
     expect(useCliAccountStore.getState().busyByProvider[provider]).toBeNull();
-    expect(mocks.pushToast).toHaveBeenCalledWith(`「${profile.label}」を登録しました。`, "info");
+    expect(mocks.pushToast).toHaveBeenCalledWith(`「${profile.label}」を登録しました。`, "info",
+      expect.objectContaining({ label: "このアカウントをタブ用にも登録" }));
   });
 
   it.each(providers)("refreshes the existing %s row on reauthentication without duplicating it", async (provider) => {
@@ -137,7 +138,7 @@ describe("existing CLI login events refresh the account list for all providers",
     expect(mocks.listCliAccounts).toHaveBeenCalledOnce();
     expect(mocks.usageFetch).toHaveBeenCalledOnce();
     expect(useCliAccountStore.getState().busyByProvider[provider]).toBeNull();
-    expect(mocks.pushToast).toHaveBeenCalledWith(`「${profile.label}」の登録を更新しました。`, "info");
+    expect(mocks.pushToast).toHaveBeenCalledWith(`「${profile.label}」の登録を更新しました。`, "info", undefined);
   });
 
   it("ignores completion for an unrelated login ID", async () => {

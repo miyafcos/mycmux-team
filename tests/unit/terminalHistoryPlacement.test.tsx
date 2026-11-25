@@ -103,3 +103,18 @@ describe("L29 history in the U3 one-row header", () => {
     expect(request.signal.aborted).toBe(true);
   });
 });
+
+
+it("L6 labels the search for whichever terminal content is visible", async () => {
+  const { useAgentTabViewStore } = await import("../../src/stores/agentTabViewStore");
+  const tabId = workspace.panes[0].activeTabId!;
+  useAgentTabViewStore.getState().setConversationVisible(tabId, true);
+  try {
+    await render();
+    await menu();
+    expect([...host.querySelectorAll(".pane-actions-menu [role=menuitem]")].map(item => item.textContent))
+      .toContain("会話履歴を検索");
+  } finally {
+    await act(async () => useAgentTabViewStore.getState().setConversationVisible(tabId, false));
+  }
+});

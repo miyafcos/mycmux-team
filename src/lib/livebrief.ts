@@ -176,6 +176,18 @@ export interface LiveSessionEvents {
   briefRevision: number;
   telemetryHealth: string;
   events: SemanticEventEnvelope[];
+  presendReplySource?: {
+    ptyGeneration: number;
+    agentKind: string;
+    agentSessionId: string;
+    occurredAt: number;
+    eventId: string;
+    sourceRevision: number;
+    sourceByteStart: number;
+    sourceByteEnd: number;
+    fileGeneration: number;
+    contentDigest: string;
+  };
 }
 
 export interface InterventionExpectation {
@@ -224,8 +236,10 @@ export const LIVE_EVENT_LIST_LIMIT = 12;
 /** 詳細ペイン ([経緯] タブ) が出す行数。1 セッションぶんだけ深く取る。 */
 export const LIVE_EVENT_DETAIL_LIMIT = 200;
 
-export function getLiveEvents(ptySessionIds: string[], limit: number = LIVE_EVENT_LIMIT): Promise<LiveSessionEvents[]> {
-  return invoke<LiveSessionEvents[]>("get_live_events", { ptySessionIds, limit });
+export function getLiveEvents(ptySessionIds: string[], limit: number = LIVE_EVENT_LIMIT, includePresendSource = false): Promise<LiveSessionEvents[]> {
+  return invoke<LiveSessionEvents[]>("get_live_events", {
+    ptySessionIds, limit, ...(includePresendSource ? { includePresendSource } : {}),
+  });
 }
 
 /** One prompt the operator typed, straight out of the transcript. */

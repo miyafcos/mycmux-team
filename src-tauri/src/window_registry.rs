@@ -26,7 +26,7 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -59,27 +59,37 @@ pub struct WindowFragment {
 }
 
 /// Display-only index. Never copy a fragment's scrollback into a polling read.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WindowTabIndex {
     pub window_label: String,
     pub pending: bool,
+    #[serde(default)]
+    pub account_management_ready: bool,
+    #[serde(default)]
+    pub account_management_subscription: Option<WindowAccountManagementSubscription>,
     pub workspaces: Vec<WindowTabWorkspace>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowAccountManagementSubscription {
+    pub publication_id: String,
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WindowTabWorkspace {
     pub id: String,
     pub name: String,
     pub panes: Vec<WindowTabPane>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WindowTabPane {
     pub id: String,
     pub tabs: Vec<WindowTabIndexTab>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WindowTabIndexTab {
     pub tab_id: String,
     pub session_id: String,
@@ -225,14 +235,35 @@ pub fn workspace_config_ids(values: &[Value]) -> Vec<String> {
     values.iter().filter_map(workspace_config_id).collect()
 }
 
+enum StartupRow {
+    Awaiting(Option<String>),
+    MetadataOnly,
+}
+
+struct WorkspaceWindowCreation {
+    id: String,
+    source: String,
+    active: std::sync::Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct WindowPublisher {
+    publication_id: String,
+    account_management_document: u64,
+    account_management_sequence: u64,
+    account_management_subscription: Option<String>,
+}
+
 #[derive(Default)]
 pub struct WindowRegistry {
+    workspace_window_creations: DashMap<String, WorkspaceWindowCreation>,
     assignments: DashMap<String, String>,
     fragments: DashMap<String, WindowFragment>,
+    fragment_publishers: Mutex<HashMap<String, WindowPublisher>>,
     pending_adoptions: DashMap<String, Vec<Value>>,
     // Process startup only. Stays initialized after the last hold is cleared so
     // a later read cannot put deliberately closed workspaces back under guard.
-    startup_workspaces: Mutex<Option<HashMap<String, String>>>,
+    startup_workspaces: Mutex<Option<HashMap<String, StartupRow>>>,
     pub(crate) child_window_labels: crate::commands::window::ChildWindowLabelReservations,
     revision: AtomicU64,
     leader: std::sync::Mutex<Option<String>>,
@@ -242,15 +273,48 @@ pub struct WindowRegistry {
 
 impl WindowRegistry {
     pub fn new() -> Self {
-        Self::default()
+        let registry = Self::default();
+        // The configured main window is created once per process.
+        registry.fragment_publishers.lock().unwrap()
+            .insert(MAIN_WINDOW_LABEL.into(), WindowPublisher::default());
+        registry
     }
 
-    pub fn hold_startup_workspaces<'a>(&self, owners: impl Iterator<Item = (&'a str, &'a str)>) {
+    pub fn hold_startup_workspaces<'a>(&self, owners: impl Iterator<Item = (&'a str, Option<&'a str>)>) {
         self.startup_workspaces.lock().unwrap().get_or_insert_with(|| {
-            owners.filter(|(id, _)| !id.is_empty())
-                .map(|(id, label)| (id.to_string(), label.to_string()))
-                .collect()
+            let mut rows = HashMap::new();
+            for (id, label) in owners.filter(|(id, _)| !id.is_empty()) {
+                let current = rows.entry(id.to_owned()).or_insert(StartupRow::MetadataOnly);
+                if let (StartupRow::MetadataOnly, Some(label)) = (&*current, label) {
+                    *current = StartupRow::Awaiting(Some(label.to_owned()));
+                }
+            }
+            rows
         });
+    }
+
+    pub(crate) fn track_workspace_window(
+        &self, label: &str, id: String, source: String,
+    ) -> std::sync::Arc<AtomicBool> {
+        let active = std::sync::Arc::new(AtomicBool::new(true));
+        self.workspace_window_creations.insert(label.to_owned(), WorkspaceWindowCreation {
+            id, source, active: active.clone(),
+        });
+        active
+    }
+
+    pub(crate) fn matches_workspace_window(&self, label: &str, id: &str, source: &str) -> bool {
+        self.workspace_window_creations.get(label).is_some_and(|creation| {
+            creation.id == id && creation.source == source && creation.active.load(Ordering::Acquire)
+        })
+    }
+
+    pub(crate) fn cancel_workspace_window(&self, label: &str, id: &str, source: &str) {
+        if let Some(creation) = self.workspace_window_creations.get(label) {
+            if creation.id == id && creation.source == source {
+                creation.active.store(false, Ordering::Release);
+            }
+        }
     }
 
     /// A process-wide mutex makes competing claims exclusive and repeatable.
@@ -277,6 +341,22 @@ impl WindowRegistry {
     pub fn set_close_intent(&self, label: &str, closing: bool) {
         let mut labels = self.closing.lock().unwrap();
         if closing { labels.insert(label.to_string()); } else { labels.remove(label); }
+    }
+
+    pub(crate) fn set_publisher_close_intent(
+        &self,
+        label: &str,
+        publication_id: Option<&str>,
+        closing: bool,
+    ) -> bool {
+        let publishers = self.fragment_publishers.lock().unwrap();
+        if publishers.get(label).map(|publisher| publisher.publication_id.as_str())
+            != Some(publication_id.unwrap_or_default())
+        {
+            return false;
+        }
+        self.set_close_intent(label, closing);
+        true
     }
 
     pub fn is_closing(&self, label: &str) -> bool {
@@ -318,8 +398,8 @@ impl WindowRegistry {
         for workspace_id in workspace_ids {
             self.assignments
                 .insert(workspace_id.clone(), label.to_string());
-            if let Some(owner) = startup.as_mut().and_then(|held| held.get_mut(workspace_id)) {
-                *owner = label.to_string();
+            if let Some(StartupRow::Awaiting(owner)) = startup.as_mut().and_then(|held| held.get_mut(workspace_id)) {
+                *owner = Some(label.to_string());
             }
         }
         self.bump();
@@ -387,6 +467,88 @@ impl WindowRegistry {
             }
         }
         self.bump();
+    }
+
+    pub(crate) fn register_fragment_publisher(&self, label: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.fragment_publishers.lock().unwrap().insert(label.to_owned(), WindowPublisher {
+            publication_id: id.clone(),
+            ..Default::default()
+        });
+        id
+    }
+
+    pub(crate) fn unregister_fragment_publisher(&self, label: &str) {
+        self.fragment_publishers.lock().unwrap().remove(label);
+    }
+
+    pub(crate) fn account_management_document(
+        &self,
+        label: &str,
+        publication_id: Option<&str>,
+    ) -> Option<u64> {
+        self.fragment_publishers.lock().unwrap().get(label)
+            .filter(|publisher| publisher.publication_id == publication_id.unwrap_or_default())
+            .map(|publisher| publisher.account_management_document)
+    }
+
+    pub(crate) fn account_management_window<T>(
+        &self,
+        label: &str,
+        expected: &WindowAccountManagementSubscription,
+        get_window: impl FnOnce() -> Option<T>,
+    ) -> Option<T> {
+        let publishers = self.fragment_publishers.lock().unwrap();
+        let publisher = publishers.get(label)?;
+        if publisher.publication_id != expected.publication_id
+            || publisher.account_management_subscription.as_deref() != Some(expected.subscription_id.as_str())
+        {
+            return None;
+        }
+        get_window()
+    }
+
+    pub(crate) fn invalidate_account_management_document(&self, label: &str) {
+        if let Some(publisher) = self.fragment_publishers.lock().unwrap().get_mut(label) {
+            publisher.account_management_document += 1;
+            publisher.account_management_sequence = 0;
+            publisher.account_management_subscription = None;
+        }
+    }
+
+    pub(crate) fn set_account_management_ready(
+        &self,
+        label: &str,
+        publication_id: Option<&str>,
+        document: u64,
+        sequence: u64,
+        subscription_id: Option<String>,
+    ) -> bool {
+        let mut publishers = self.fragment_publishers.lock().unwrap();
+        let Some(publisher) = publishers.get_mut(label).filter(|publisher| {
+            publisher.publication_id == publication_id.unwrap_or_default()
+                && publisher.account_management_document == document
+        }) else { return false; };
+        if sequence > publisher.account_management_sequence {
+            publisher.account_management_sequence = sequence;
+            publisher.account_management_subscription = subscription_id;
+        }
+        true
+    }
+
+    pub(crate) fn publish_live_fragment(&self, fragment: WindowFragment, publication_id: Option<&str>) -> bool {
+        // Hold the generation check through the mutation. Destruction either
+        // clears an earlier publish or invalidates the source before it writes.
+        let publishers = self.fragment_publishers.lock().unwrap();
+        let closing = self.closing.lock().unwrap();
+        if publishers.get(&fragment.window_label).map(|publisher| publisher.publication_id.as_str())
+            != Some(publication_id.unwrap_or_default())
+            || closing.contains(&fragment.window_label)
+        {
+            return false;
+        }
+        self.publish_fragment(fragment);
+        true
     }
 
     /// Store a window's latest view and re-derive ownership from it. Ownership
@@ -458,17 +620,41 @@ impl WindowRegistry {
     /// Project while holding each entry guard; only small display fields escape.
     /// Liveness is filled by the caller after every registry guard is released.
     pub fn tab_index(&self, caller: &str) -> Vec<WindowTabIndex> {
+        let mut ready_windows: HashMap<_, _> = {
+            let publishers = self.fragment_publishers.lock().unwrap();
+            let closing = self.closing.lock().unwrap();
+            publishers.iter()
+                .filter(|(label, _)| label.as_str() != caller && !closing.contains(*label))
+                .filter_map(|(label, publisher)| {
+                    Some((label.clone(), WindowAccountManagementSubscription {
+                        publication_id: publisher.publication_id.clone(),
+                        subscription_id: publisher.account_management_subscription.clone()?,
+                    }))
+                })
+                .collect()
+        };
         let mut index = Vec::new();
         for entry in self.fragments.iter() {
             if entry.key() == caller {
                 continue;
             }
+            let subscription = ready_windows.remove(entry.key());
             index.push(WindowTabIndex {
                 window_label: entry.key().clone(),
                 pending: false,
+                account_management_ready: subscription.is_some(),
+                account_management_subscription: subscription,
                 workspaces: display_workspace_index(&entry.value().workspaces),
             });
         }
+        // A subscribed shell can answer before it publishes any layout data.
+        index.extend(ready_windows.into_iter().map(|(window_label, subscription)| WindowTabIndex {
+            window_label,
+            pending: false,
+            account_management_ready: true,
+            account_management_subscription: Some(subscription),
+            workspaces: Vec::new(),
+        }));
         for entry in self.pending_adoptions.iter() {
             if entry.value().is_empty() {
                 continue;
@@ -476,6 +662,8 @@ impl WindowRegistry {
             index.push(WindowTabIndex {
                 window_label: entry.key().clone(),
                 pending: true,
+                account_management_ready: false,
+                account_management_subscription: None,
                 workspaces: display_workspace_index(entry.value()),
             });
         }
@@ -541,49 +729,91 @@ impl WindowRegistry {
         if ids.is_empty() {
             // Nothing published, but a queued adoption may never have been
             // picked up (window died between open and boot).
-            let pending = self.take_pending_adoption(from_label);
-            if !pending.is_empty() {
-                self.queue_adoption(to_label, pending.clone());
-            }
-            return pending;
+            return self.rescue_pending_adoption(from_label, to_label);
         }
         let mut moved = self.release_workspaces(from_label, &ids, to_label);
-        let pending = self.take_pending_adoption(from_label);
-        if !pending.is_empty() {
-            self.queue_adoption(to_label, pending.clone());
-            moved.extend(pending);
-        }
+        moved.extend(self.rescue_pending_adoption(from_label, to_label));
         moved
+    }
+
+    fn rescue_pending_adoption(&self, from_label: &str, to_label: &str) -> Vec<Value> {
+        let mut pending = self.take_pending_adoption(from_label);
+        if pending.is_empty() {
+            return pending;
+        }
+        // A startup row is still held for disk carry-over until its ID is
+        // published. Recover it under that ID, including its detached origin.
+        let startup = self.startup_workspaces.lock().unwrap();
+        if let Some(held) = startup.as_ref() {
+            for config in &mut pending {
+                let is_held = workspace_config_id(config)
+                    .is_some_and(|id| matches!(held.get(&id), Some(StartupRow::Awaiting(_))));
+                if let Some(row) = config.as_object_mut().filter(|_| is_held) {
+                    row.insert("preserve_workspace_identity".into(), Value::Bool(true));
+                }
+            }
+        }
+        drop(startup);
+        self.queue_adoption(to_label, pending.clone());
+        pending
     }
 
     /// Drop everything the registry knows about a window. Call only after its
     /// workspaces have been released, or they are lost.
     pub fn forget_window(&self, label: &str) {
+        let mut startup = self.startup_workspaces.lock().unwrap();
+        if let Some(held) = startup.as_mut() {
+            for (id, row) in held {
+                if let StartupRow::Awaiting(owner) = row {
+                    if owner.as_deref() == Some(label) &&
+                        self.assignments.get(id).is_some_and(|actual| actual.value() == label) {
+                        // The receiver took its queue but died before publishing.
+                        *owner = None;
+                    }
+                }
+            }
+        }
+        self.clear_window(label);
+    }
+
+    pub fn forget_closed_window(&self, label: &str) {
+        let mut startup = self.startup_workspaces.lock().unwrap();
+        if let Some(held) = startup.as_mut() {
+            held.retain(|_, row| !matches!(row, StartupRow::Awaiting(Some(owner)) if owner == label));
+        }
+        self.clear_window(label);
+    }
+
+    fn clear_window(&self, label: &str) {
+        self.workspace_window_creations.remove(label);
         self.fragments.remove(label);
         self.pending_adoptions.remove(label);
         self.assignments.retain(|_, owner| owner != label);
         self.bump();
     }
 
-    pub fn forget_closed_window(&self, label: &str) {
-        let mut startup = self.startup_workspaces.lock().unwrap();
-        if let Some(held) = startup.as_mut() {
-            held.retain(|_, owner| owner != label);
-        }
-        self.forget_window(label);
-    }
-
     /// Ids still held by published fragments, handoff queues or startup.
     ///
     /// Only the ids, because the save path asks this on every write and the
     /// values are whole workspaces.
+    #[cfg(test)]
     pub fn held_workspace_ids(&self) -> std::collections::HashSet<String> {
+        self.workspace_ids(false)
+    }
+
+    pub fn workspace_ids_for_save(&self) -> std::collections::HashSet<String> {
+        self.workspace_ids(true)
+    }
+
+    fn workspace_ids(&self, include_metadata: bool) -> std::collections::HashSet<String> {
         // Do not let publication remove a startup hold between reading these
         // IDs and reading the fragment that supersedes them.
         let startup = self.startup_workspaces.lock().unwrap();
         let mut ids = std::collections::HashSet::new();
         if let Some(held) = startup.as_ref() {
-            ids.extend(held.keys().cloned());
+            ids.extend(held.iter().filter_map(|(id, row)| {
+                (include_metadata || matches!(row, StartupRow::Awaiting(_))).then(|| id.clone())
+            }));
         }
         for entry in self.fragments.iter() {
             ids.extend(workspace_config_ids(&entry.value().workspaces));
@@ -635,6 +865,141 @@ mod tests {
         assert!(index
             .iter()
             .all(|entry| entry.pending || entry.window_label != "main"));
+    }
+
+    #[test]
+    fn dashboard_tab_index_defaults_account_management_readiness_to_false() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        let publisher = registry.register_fragment_publisher(label);
+        assert!(registry.publish_live_fragment(fragment(label, &["peer"]), Some(&publisher)));
+        registry.queue_adoption(label, vec![workspace("pending")]);
+
+        let index = serde_json::to_value(registry.tab_index("main")).unwrap();
+        assert_eq!(index[0]["account_management_ready"], json!(false));
+        assert_eq!(index[1]["account_management_ready"], json!(false));
+        let old: WindowTabIndex = serde_json::from_value(json!({
+            "window_label": label, "pending": false, "workspaces": [],
+        })).unwrap();
+        assert!(!old.account_management_ready);
+        assert!(old.account_management_subscription.is_none());
+        let old_ready: WindowTabIndex = serde_json::from_value(json!({
+            "window_label": label, "pending": false, "workspaces": [], "account_management_ready": true,
+        })).unwrap();
+        assert!(old_ready.account_management_subscription.is_none());
+    }
+
+    #[test]
+    fn dashboard_account_management_readiness_tracks_subscription_close_and_window_generation() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        let first = registry.register_fragment_publisher(label);
+        assert!(registry.set_account_management_ready(label, Some(&first), 0, 1, Some("first-listen".into())));
+        let mut rows = registry.tab_index("main");
+        assert_eq!(rows.len(), 1);
+        let row = rows.pop().unwrap();
+        assert!(row.workspaces.is_empty());
+        let wire = serde_json::to_value(row).unwrap();
+        assert_eq!(wire["account_management_ready"], json!(true));
+        let restored: WindowTabIndex = serde_json::from_value(wire).unwrap();
+        assert!(restored.account_management_ready);
+        assert_eq!(restored.account_management_subscription, Some(WindowAccountManagementSubscription {
+            publication_id: first.clone(), subscription_id: "first-listen".into(),
+        }));
+        assert_eq!(restored.window_label, label);
+        assert!(registry.fragment(label).is_none());
+        assert!(registry.tab_index(label).is_empty());
+
+        assert!(registry.publish_live_fragment(fragment(label, &["peer"]), Some(&first)));
+        assert!(registry.tab_index("main")[0].account_management_ready);
+        registry.set_close_intent(label, true);
+        assert!(!registry.tab_index("main")[0].account_management_ready);
+        registry.set_close_intent(label, false);
+        assert!(registry.tab_index("main")[0].account_management_ready);
+        assert!(registry.set_account_management_ready(label, Some(&first), 0, 2, None));
+        assert!(!registry.tab_index("main")[0].account_management_ready);
+
+        registry.unregister_fragment_publisher(label);
+        registry.forget_window(label);
+        let second = registry.register_fragment_publisher(label);
+        assert!(!registry.set_account_management_ready(label, Some(&first), 0, 1, Some("first-listen".into())));
+        assert!(registry.tab_index("main").is_empty());
+        assert!(registry.set_account_management_ready(label, Some(&second), 0, 1, Some("second-listen".into())));
+        assert!(registry.tab_index("main")[0].account_management_ready);
+    }
+
+    #[test]
+    fn account_management_rejects_a_delayed_close_intent_after_label_reuse() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        let first = registry.register_fragment_publisher(label);
+        assert!(registry.publish_live_fragment(fragment(label, &["old"]), Some(&first)));
+        let delayed_intent = || registry.set_publisher_close_intent(label, Some(&first), true);
+
+        registry.unregister_fragment_publisher(label);
+        registry.forget_window(label);
+        let successor = registry.register_fragment_publisher(label);
+        assert!(registry.publish_live_fragment(fragment(label, &["successor"]), Some(&successor)));
+        assert!(registry.set_account_management_ready(label, Some(&successor), 0, 1, Some("successor-listen".into())));
+
+        let late_result = delayed_intent();
+        assert!(registry.tab_index("main")[0].account_management_ready);
+        assert!(registry.publish_live_fragment(fragment(label, &["still-live"]), Some(&successor)));
+        assert!(!late_result);
+
+        assert!(registry.set_publisher_close_intent(label, Some(&successor), true));
+        assert!(!registry.set_publisher_close_intent(label, Some(&first), false));
+        assert!(!registry.tab_index("main")[0].account_management_ready);
+        assert!(registry.set_publisher_close_intent(label, Some(&successor), false));
+        assert!(registry.tab_index("main")[0].account_management_ready);
+    }
+
+    #[test]
+    fn account_management_ignores_older_publications_and_subscriptions() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        let publication = registry.register_fragment_publisher(label);
+        let update = |sequence, subscription_id: Option<&str>| {
+            assert!(registry.set_account_management_ready(
+                label, Some(&publication), 0, sequence, subscription_id.map(str::to_owned),
+            ));
+        };
+        update(2, None);
+        update(1, Some("removed-listen"));
+        assert!(registry.tab_index("main").is_empty());
+        update(3, Some("current-listen"));
+        update(3, Some("duplicate-sequence"));
+        update(2, None);
+        let index = registry.tab_index("main");
+        assert_eq!(index[0].account_management_subscription.as_ref().unwrap().subscription_id, "current-listen");
+    }
+
+    #[test]
+    fn legacy_settings_flag_does_not_change_workspace_fragments() {
+        let legacy = json!({
+            "window_label": "mycmux-w1",
+            "workspaces": [{
+                "id": "peer",
+                "name": "Peer",
+                "grid_template_id": "1x1",
+                "created_at": 0,
+                "panes": [],
+                "window_group": { "label": "mycmux-w1", "active_workspace_id": "peer" },
+            }],
+            "active_workspace_id": "peer",
+            "active_pane_id": "pane",
+            "active_tab_id": "tab",
+        });
+        let mut with_settings_flag = legacy.clone();
+        with_settings_flag["settings_available"] = json!(true);
+        let decode = |value| serde_json::from_value::<WindowFragment>(value).unwrap();
+        let decoded = serde_json::to_value(decode(with_settings_flag)).unwrap();
+
+        assert!(decoded.get("settings_available").is_none());
+        assert_eq!(decoded, serde_json::to_value(decode(legacy.clone())).unwrap());
+        for key in ["window_label", "workspaces", "active_workspace_id", "active_pane_id", "active_tab_id"] {
+            assert_eq!(decoded[key], legacy[key]);
+        }
     }
 
     #[test]
@@ -811,6 +1176,48 @@ mod tests {
     }
 
     #[test]
+    fn l3_78_reusing_and_closing_a_label_does_not_release_an_old_crash_hold() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        registry.hold_startup_workspaces([("old", Some(label))].into_iter());
+        registry.queue_adoption(label, vec![workspace("old")]);
+        registry.take_pending_adoption(label); // Before first publish.
+        registry.forget_window(label);
+        assert!(registry.held_workspace_ids().contains("old"));
+        registry.queue_adoption(label, vec![workspace("new")]);
+        registry.forget_closed_window(label);
+        assert_eq!(registry.held_workspace_ids(), std::collections::HashSet::from(["old".into()]));
+    }
+
+    #[test]
+    fn l3_fix2_10_a_failed_or_cancelled_window_creation_cannot_claim_a_reused_label() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        let first = registry.track_workspace_window(label, "first".into(), "main".into());
+        assert!(registry.matches_workspace_window(label, "first", "main"));
+        registry.cancel_workspace_window(label, "first", "main");
+        assert!(!first.load(Ordering::Acquire));
+        registry.forget_window(label);
+        let next = registry.track_workspace_window(label, "successor".into(), "main".into());
+        registry.cancel_workspace_window(label, "first", "main");
+        assert!(next.load(Ordering::Acquire));
+        assert!(!registry.matches_workspace_window(label, "first", "main"));
+        assert!(!registry.matches_workspace_window(label, "successor", "other"));
+        assert!(registry.matches_workspace_window(label, "successor", "main"));
+    }
+
+    #[test]
+    fn l3_75_recovered_startup_adoption_marks_the_workspace_identity_to_keep() {
+        let registry = WindowRegistry::new();
+        let label = "mycmux-w1";
+        registry.hold_startup_workspaces([("startup", Some(label))].into_iter());
+        registry.queue_adoption(label, vec![workspace("startup")]);
+        registry.release_all(label, "main");
+        let rescued = registry.take_pending_adoption("main");
+        assert_eq!(rescued[0]["preserve_workspace_identity"], true);
+    }
+
+    #[test]
     fn release_all_rescues_an_adoption_that_was_never_picked_up() {
         // Child died between open_workspace_window and its boot handshake.
         let registry = WindowRegistry::new();
@@ -835,6 +1242,26 @@ mod tests {
 
         assert!(registry.release_all("mycmux-w1", "main").is_empty());
         assert!(registry.take_pending_adoption("main").is_empty());
+    }
+
+    #[test]
+    fn l3_fix3_13_a_delayed_fragment_cannot_revive_a_destroyed_window() {
+        let registry = WindowRegistry::new();
+        let old = fragment("mycmux-w1", &["closed"]);
+        let first = registry.register_fragment_publisher("mycmux-w1");
+        assert!(registry.publish_live_fragment(old.clone(), Some(&first)));
+        registry.set_close_intent("mycmux-w1", true);
+        registry.unregister_fragment_publisher("mycmux-w1");
+        assert!(registry.take_close_intent("mycmux-w1"));
+        registry.forget_closed_window("mycmux-w1");
+
+        assert!(!registry.publish_live_fragment(old.clone(), Some(&first)));
+        assert!(registry.fragment("mycmux-w1").is_none());
+        let second = registry.register_fragment_publisher("mycmux-w1");
+        assert!(registry.publish_live_fragment(fragment("mycmux-w1", &["successor"]), Some(&second)));
+        assert!(!registry.publish_live_fragment(old, Some(&first)));
+        assert_eq!(registry.window_for_workspace("successor").as_deref(), Some("mycmux-w1"));
+        assert!(registry.window_for_workspace("closed").is_none());
     }
 
     #[test]

@@ -1,5 +1,7 @@
+use crate::db::storage;
 use chrono::{DateTime, Local};
 use serde::Deserialize;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -10,20 +12,10 @@ pub const RETENTION_DAYS: u64 = 30;
 
 const DAY_SECS: u64 = 24 * 60 * 60;
 const SESSION_ID_PREFIX: &str = "pty";
-const APP_DATA_DIR_PREFIX: &str = "com.miyazaki.mycmux";
+use storage::APP_LAYOUT_DIR_PREFIX as APP_DATA_DIR_PREFIX;
 const SESSIONS_DIR: &str = "sessions";
 const PANE_SESSIONS_DIR: &str = "pane-sessions";
 const TRASH_DIR: &str = "sessions-trash";
-
-fn current_schema_version() -> u32 {
-    crate::db::storage::CURRENT_SCHEMA_VERSION
-}
-
-#[derive(Debug, Deserialize)]
-struct RetentionSchemaProbe {
-    #[serde(default = "current_schema_version")]
-    schema_version: u32,
-}
 
 #[derive(Debug, Deserialize)]
 struct RetentionData {
@@ -43,6 +35,8 @@ struct RetentionPane {
     #[serde(default)]
     pane_id: Option<String>,
     #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
     tabs: Option<Vec<RetentionPaneTab>>,
 }
 
@@ -50,12 +44,16 @@ struct RetentionPane {
 struct RetentionPaneTab {
     #[serde(default)]
     tab_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Debug)]
 struct RetentionRoots {
     app_data_parent: PathBuf,
+    profile_dir: PathBuf,
     mycmux_dir: PathBuf,
+    scrollback_startup_cutoff: SystemTime,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -64,26 +62,33 @@ struct RetentionSummary {
     skipped: usize,
 }
 
+#[derive(PartialEq, Eq)]
 struct LiveSessions {
     all_ids: HashSet<String>,
     tab_ids: HashSet<String>,
     scrollback_keep_sets: Vec<(PathBuf, HashSet<String>)>,
     data_json_fingerprints: Vec<DataJsonFingerprint>,
+    #[cfg(test)]
+    recovery_fingerprints: BTreeMap<PathBuf, [u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DataJsonFingerprint {
     path: PathBuf,
+    #[cfg(test)]
     sha256: [u8; 32],
     tab_count: usize,
 }
 
-pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Option<PathBuf>) {
+pub fn run_startup_retention(
+    profile_dir: Option<PathBuf>, mycmux_dir: Option<PathBuf>, scrollback_startup_cutoff: SystemTime,
+) {
     let _retention_task = tauri::async_runtime::spawn_blocking(move || {
-        let Some(app_data_parent) = app_data_parent else {
-            eprintln!("[session_retention] skipped: app data parent was not resolved");
+        let Some(profile_dir) = profile_dir else {
+            eprintln!("[session_retention] skipped: app data directory was not resolved");
             return;
         };
+        let Some(app_data_parent) = profile_dir.parent().map(Path::to_path_buf) else { return; };
         let Some(mycmux_dir) = mycmux_dir else {
             eprintln!("[session_retention] skipped: home/.mycmux was not resolved");
             return;
@@ -91,7 +96,9 @@ pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Optio
 
         let roots = RetentionRoots {
             app_data_parent,
+            profile_dir,
             mycmux_dir,
+            scrollback_startup_cutoff,
         };
         match run_retention_once(&roots, SystemTime::now()) {
             Ok(summary) => eprintln!(
@@ -107,9 +114,10 @@ pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Optio
 }
 
 fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<RetentionSummary, String> {
-    run_retention_once_with_reprobe_hooks(roots, now, || Ok(()), || Ok(()))
+    run_retention_once_with_reprobe_hooks(roots, now, || Ok(()), |_| Ok(()))
 }
 
+#[cfg(test)]
 fn run_retention_once_with_before_reprobe<F>(
     roots: &RetentionRoots,
     now: SystemTime,
@@ -118,7 +126,7 @@ fn run_retention_once_with_before_reprobe<F>(
 where
     F: FnOnce() -> Result<(), String>,
 {
-    run_retention_once_with_reprobe_hooks(roots, now, before_reprobe, || Ok(()))
+    run_retention_once_with_reprobe_hooks(roots, now, before_reprobe, |_| Ok(()))
 }
 
 fn run_retention_once_with_reprobe_hooks<F, G>(
@@ -129,42 +137,62 @@ fn run_retention_once_with_reprobe_hooks<F, G>(
 ) -> Result<RetentionSummary, String>
 where
     F: FnOnce() -> Result<(), String>,
-    G: FnOnce() -> Result<(), String>,
+    G: FnOnce(&LiveSessions) -> Result<(), String>,
 {
     // A startup sweep can be the first reader after a previous run broke the
     // layout. Compare with the last sweep as well as the first in-run probe.
     let checkpoint = roots.mycmux_dir.join("session-retention-live-tabs.json");
-    let mut previous = read_tab_counts(&checkpoint)?;
+    let (mut previous, corrupt_counts) = match read_tab_counts(&checkpoint) {
+        Ok(counts) => (counts, false),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => (BTreeMap::new(), true),
+        Err(error) => return Err(format!("read retention tab counts failed: {:?}", error.kind())),
+    };
     let initial = collect_live_sessions(&roots.app_data_parent)?;
     for file in initial.data_json_fingerprints {
         let count = previous.entry(file.path).or_default();
         *count = (*count).max(file.tab_count);
     }
     before_reprobe()?;
-    // Re-probe before any scrollback deletion or record move.
+    // Hold the publication gate from the final observation through retirement.
+    // Saving another layout or publishing new history waits for this sweep.
+    let _activity = storage::lock_layout_activity(&roots.app_data_parent, Duration::from_secs(30))?;
     let live_sessions = collect_live_sessions(&roots.app_data_parent)?;
-    after_reprobe()?;
+    after_reprobe(&live_sessions)?;
     let current: BTreeMap<_, _> = live_sessions.data_json_fingerprints.iter()
         .map(|file| (file.path.clone(), file.tab_count))
         .collect();
+    if corrupt_counts {
+        crate::util::atomic_write::preserve_in_old(&checkpoint)
+            .map_err(|error| format!("could not preserve invalid tab counts: {:?}", error.kind()))?;
+        crate::diag_warn!("session_retention", "preserved invalid tab counts");
+        write_tab_counts(&checkpoint, &current)?;
+        return Ok(RetentionSummary::default());
+    }
+    if !checkpoint.exists() && checkpoint.with_file_name("_old").join("session-retention-live-tabs.json").is_file() {
+        // Recovery stopped after moving the invalid data but before recording
+        // a fresh baseline. This pass records that baseline before pruning.
+        write_tab_counts(&checkpoint, &current)?;
+        return Ok(RetentionSummary::default());
+    }
     for (path, before) in previous {
         let after = current.get(&path).copied().unwrap_or_default();
         if crate::db::storage::large_tab_drop(before, after) {
             crate::diag_warn!("session_retention",
-                "skipped sweep after live tabs dropped {before}->{after} in {}", path.display());
+                "skipped sweep after live tabs dropped {before}->{after}");
             write_tab_counts(&checkpoint, &current)?;
             return Ok(RetentionSummary::default());
         }
     }
-    let expected_fingerprints = &live_sessions.data_json_fingerprints;
-    let mut ensure_unchanged = || {
-        ensure_retention_inputs_unchanged(&roots.app_data_parent, expected_fingerprints)
-    };
-    for (scrollback_dir, keep) in &live_sessions.scrollback_keep_sets {
-        crate::pty::scrollback_store::gc_guarded(scrollback_dir, keep, || {
-            ensure_unchanged().map_err(std::io::Error::other)
-        })
-            .map_err(|error| format!("sweep scrollback {} failed: {error}", scrollback_dir.display()))?;
+    // Older versions of another profile may commit a layout without taking
+    // this gate. Only retire history in the profile this instance owns.
+    let own_scrollback = roots.profile_dir.join("scrollback");
+    if let Some((dir, keep)) = live_sessions.scrollback_keep_sets.iter()
+        .find(|(dir, _)| dir == &own_scrollback && roots.scrollback_startup_cutoff <= now)
+    {
+        // A new history file can precede the first layout that refers to it.
+        let cutoff = roots.scrollback_startup_cutoff;
+        crate::pty::scrollback_store::gc_guarded(dir, keep, Some(cutoff), || Ok(()))
+            .map_err(|error| format!("sweep scrollback failed: {:?}", error.kind()))?;
     }
     let trash_month = trash_month(now);
     let max_age = Duration::from_secs(RETENTION_DAYS * DAY_SECS);
@@ -182,7 +210,6 @@ where
         now,
         max_age,
         &mut summary,
-        &mut ensure_unchanged,
     )?;
     retain_pane_session_files(
         &roots.mycmux_dir.join(PANE_SESSIONS_DIR),
@@ -196,19 +223,18 @@ where
         now,
         max_age,
         &mut summary,
-        &mut ensure_unchanged,
     )?;
 
     write_tab_counts(&checkpoint, &current)?;
     Ok(summary)
 }
 
-fn read_tab_counts(path: &Path) -> Result<BTreeMap<PathBuf, usize>, String> {
+fn read_tab_counts(path: &Path) -> std::io::Result<BTreeMap<PathBuf, usize>> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parse {} failed: {error}", path.display())),
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(error) => Err(format!("read {} failed: {error}", path.display())),
+        Err(error) => Err(error),
     }
 }
 
@@ -217,141 +243,120 @@ fn write_tab_counts(path: &Path, counts: &BTreeMap<PathBuf, usize>) -> Result<()
     crate::util::atomic_write::AtomicWrite::new(
         "retention tab counts", "Failed to install retention tab counts",
     ).create_parents().write_bytes(path, &bytes)
+        .map_err(|_| "could not write retention tab counts".into())
+}
+
+fn read_retention_layout(bytes: &[u8], backup: bool) -> Result<Option<RetentionData>, String> {
+    let envelope = match storage::parse_layout_bytes(bytes) {
+        Ok(envelope) => envelope,
+        Err(_) if backup => return Ok(None),
+        Err(_) => return Err("invalid main layout".into()),
+    };
+    if !envelope.supported {
+        let kind = if backup { "recovery backup" } else { "main layout" };
+        return Err(format!("{kind} uses unsupported schema version {}", envelope.schema_version));
+    }
+    // Also honor legacy pane-level session IDs that the product schema
+    // accepts as extra fields. Validate the entire product layout first.
+    let contents = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    serde_json::from_slice::<RetentionData>(contents)
+        .map(Some).map_err(|_| "invalid retention layout references".into())
+}
+
+fn collect_profile(
+    data_path: PathBuf, live: &mut LiveSessions,
+) -> Result<bool, String> {
+    let mut session_ids = HashSet::new();
+    let mut tab_ids = HashSet::new();
+    let main = match fs::read(&data_path) {
+        Ok(contents) => {
+            let data = read_retention_layout(&contents, false)?.ok_or("invalid main layout")?;
+            insert_live_session_ids(&data, &mut session_ids, &mut tab_ids);
+            live.data_json_fingerprints.push(DataJsonFingerprint {
+                path: data_path.clone(),
+                #[cfg(test)]
+                sha256: Sha256::digest(&contents).into(),
+                tab_count: tab_ids.len(),
+            });
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("read main layout failed: {:?}", error.kind())),
+    };
+
+    let backups = storage::scan_recovery_backups(&data_path)
+        .map_err(|error| format!("list recovery backups failed: {:?}", error.kind()))?;
+    for backup in backups {
+        let contents = fs::read(&backup)
+            .map_err(|error| format!("read recovery backup failed: {:?}", error.kind()))?;
+        if let Some(layout) = read_retention_layout(&contents, true)? {
+            insert_live_session_ids(&layout, &mut session_ids, &mut tab_ids);
+            #[cfg(test)]
+            live.recovery_fingerprints.insert(backup, Sha256::digest(&contents).into());
+        }
+    }
+
+    live.all_ids.extend(session_ids.iter().cloned());
+    live.tab_ids.extend(tab_ids.iter().cloned());
+    if main {
+        let scrollback_dir = data_path.with_file_name("scrollback");
+        tab_ids.extend(session_ids.iter().map(|id|
+            crate::pty::scrollback_store::scrollback_storage_id(id).to_owned()));
+        tab_ids.extend(session_ids);
+        live.scrollback_keep_sets.push((scrollback_dir, tab_ids));
+    }
+    Ok(main)
+}
+
+#[cfg(test)]
+thread_local! {
+    static OBSERVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String> {
-    let entries = fs::read_dir(app_data_parent).map_err(|error| {
-        format!(
-            "read app data parent {} failed: {error}",
-            app_data_parent.display()
-        )
-    })?;
-    let mut live_sessions = LiveSessions {
+    #[cfg(test)]
+    OBSERVATIONS.with(|count| count.set(count.get() + 1));
+    let entries = fs::read_dir(app_data_parent)
+        .map_err(|error| format!("read app data parent failed: {:?}", error.kind()))?;
+    let mut live = LiveSessions {
         all_ids: HashSet::new(),
         tab_ids: HashSet::new(),
         scrollback_keep_sets: Vec::new(),
         data_json_fingerprints: Vec::new(),
+        #[cfg(test)]
+        recovery_fingerprints: BTreeMap::new(),
     };
-    let mut parsed_data_files = 0usize;
+    let mut has_main = false;
 
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "read app data entry under {} failed: {error}",
-                app_data_parent.display()
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|error| {
-            format!(
-                "read app data entry type {} failed: {error}",
-                entry.path().display()
-            )
-        })?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if !name.starts_with(APP_DATA_DIR_PREFIX) {
+        let entry = entry.map_err(|error| format!("read app data entry failed: {:?}", error.kind()))?;
+        if !entry.file_type().map_err(|error| format!("read app data entry type failed: {:?}", error.kind()))?.is_dir()
+            || !entry.file_name().to_str().is_some_and(|name| name.starts_with(APP_DATA_DIR_PREFIX))
+        {
             continue;
         }
 
-        let mut data_paths = vec![entry.path().join("data.json")];
+        has_main |= collect_profile(entry.path().join("data.json"), &mut live)?;
         let profiles_dir = entry.path().join("profiles");
-        match fs::read_dir(&profiles_dir) {
-            Ok(profile_entries) => {
-                for profile_entry in profile_entries {
-                    let profile_entry = profile_entry.map_err(|error| {
-                        format!("read profile under {} failed: {error}", profiles_dir.display())
-                    })?;
-                    if profile_entry.file_type().map_err(|error| {
-                        format!("read profile type {} failed: {error}", profile_entry.path().display())
-                    })?.is_dir() {
-                        data_paths.push(profile_entry.path().join("data.json"));
+        match fs::read_dir(profiles_dir) {
+            Ok(profiles) => {
+                for profile in profiles {
+                    let profile = profile.map_err(|error| format!("read profile failed: {:?}", error.kind()))?;
+                    if profile.file_type().map_err(|error| format!("read profile type failed: {:?}", error.kind()))?.is_dir() {
+                        has_main |= collect_profile(profile.path().join("data.json"), &mut live)?;
                     }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("read {} failed: {error}", profiles_dir.display())),
-        }
-
-        for data_path in data_paths {
-            match fs::metadata(&data_path) {
-                Ok(metadata) if metadata.is_file() => {
-                    let contents = fs::read(&data_path).map_err(|error| {
-                        format!("read {} failed: {error}", data_path.display())
-                    })?;
-                    let probe: RetentionSchemaProbe =
-                        serde_json::from_slice(&contents).map_err(|error| {
-                            format!("parse {} failed: {error}", data_path.display())
-                        })?;
-                    if probe.schema_version != crate::db::storage::CURRENT_SCHEMA_VERSION {
-                        return Err(format!(
-                            "skip retention: {} uses unsupported schema version {}",
-                            data_path.display(),
-                            probe.schema_version
-                        ));
-                    }
-                    let data: RetentionData = serde_json::from_slice(&contents).map_err(|error| {
-                        format!("parse {} failed: {error}", data_path.display())
-                    })?;
-                    let mut local_ids = HashSet::new();
-                    let mut local_tab_ids = HashSet::new();
-                    insert_live_session_ids(&data, &mut local_ids, &mut local_tab_ids);
-                    live_sessions.data_json_fingerprints.push(DataJsonFingerprint {
-                        path: data_path.clone(),
-                        sha256: Sha256::digest(&contents).into(),
-                        tab_count: local_tab_ids.len(),
-                    });
-                    live_sessions.all_ids.extend(local_ids.iter().cloned());
-                    live_sessions.tab_ids.extend(local_tab_ids.iter().cloned());
-                    let scrollback_dir = data_path.parent()
-                        .ok_or_else(|| format!("data path has no parent: {}", data_path.display()))?
-                        .join("scrollback");
-                    live_sessions.scrollback_keep_sets.push((scrollback_dir, local_tab_ids));
-                    parsed_data_files += 1;
-                }
-                Ok(_) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(format!("metadata {} failed: {error}", data_path.display()));
-                }
-            }
+            Err(error) => return Err(format!("list saved profiles failed: {:?}", error.kind())),
         }
     }
-
-    if parsed_data_files == 0 {
-        return Err(format!(
-            "no data.json files found under {}",
-            app_data_parent.display()
-        ));
+    if !has_main {
+        return Err("no data.json files found under the app data parent".into());
     }
-
-    live_sessions
-        .data_json_fingerprints
-        .sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(live_sessions)
-}
-
-fn ensure_retention_inputs_unchanged(
-    app_data_parent: &Path,
-    expected: &[DataJsonFingerprint],
-) -> Result<(), String> {
-    let actual = collect_live_sessions(app_data_parent)?.data_json_fingerprints;
-    if actual == expected {
-        return Ok(());
-    }
-    let changed_path = expected
-        .iter()
-        .zip(actual.iter())
-        .find_map(|(before, after)| (before != after).then_some(&after.path))
-        .or_else(|| actual.get(expected.len()).map(|fingerprint| &fingerprint.path))
-        .or_else(|| expected.get(actual.len()).map(|fingerprint| &fingerprint.path));
-    Err(format!(
-        "{} changed after the final retention scan; aborting before destructive action",
-        changed_path.map_or(app_data_parent, PathBuf::as_path).display()
-    ))
+    live.data_json_fingerprints.sort_by(|left, right| left.path.cmp(&right.path));
+    live.scrollback_keep_sets.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(live)
 }
 
 fn insert_live_session_ids(
@@ -361,15 +366,21 @@ fn insert_live_session_ids(
 ) {
     for workspace in &data.workspaces {
         for pane in &workspace.panes {
-            let Some(pane_id) = pane.pane_id.as_deref().filter(|value| !value.is_empty()) else {
-                continue;
-            };
+            if let Some(id) = pane.session_id.as_ref().filter(|value| !value.is_empty()) {
+                live_ids.insert(id.clone());
+            }
+            let pane_id = pane.pane_id.as_deref().filter(|value| !value.is_empty());
             for tab in pane.tabs.as_deref().unwrap_or_default() {
+                if let Some(id) = tab.session_id.as_ref().filter(|value| !value.is_empty()) {
+                    live_ids.insert(id.clone());
+                }
                 let Some(tab_id) = tab.tab_id.as_deref().filter(|value| !value.is_empty()) else {
                     continue;
                 };
-                live_ids.insert(make_session_id(&workspace.id, pane_id, tab_id));
                 tab_ids.insert(tab_id.to_string());
+                if let Some(pane_id) = pane_id {
+                    live_ids.insert(make_session_id(&workspace.id, pane_id, tab_id));
+                }
             }
         }
     }
@@ -387,7 +398,6 @@ fn retain_directory_records(
     now: SystemTime,
     max_age: Duration,
     summary: &mut RetentionSummary,
-    before_move: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let entries = match fs::read_dir(source_dir) {
         Ok(entries) => entries,
@@ -395,8 +405,7 @@ fn retain_directory_records(
         Err(error) => {
             summary.skipped += 1;
             eprintln!(
-                "[session_retention] skipped {}: read_dir failed: {error}",
-                source_dir.display()
+                "[session_retention] list session records failed: {:?}", error.kind()
             );
             return Ok(());
         }
@@ -427,7 +436,7 @@ fn retain_directory_records(
         {
             continue;
         }
-        move_record(&path, trash_dir, &entry.file_name(), summary, before_move)?;
+        move_record(&path, trash_dir, &entry.file_name(), summary)?;
     }
     Ok(())
 }
@@ -440,7 +449,6 @@ fn retain_pane_session_files(
     now: SystemTime,
     max_age: Duration,
     summary: &mut RetentionSummary,
-    before_move: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let entries = match fs::read_dir(source_dir) {
         Ok(entries) => entries,
@@ -448,8 +456,7 @@ fn retain_pane_session_files(
         Err(error) => {
             summary.skipped += 1;
             eprintln!(
-                "[session_retention] skipped {}: read_dir failed: {error}",
-                source_dir.display()
+                "[session_retention] list pane mappings failed: {:?}", error.kind()
             );
             return Ok(());
         }
@@ -481,7 +488,7 @@ fn retain_pane_session_files(
         {
             continue;
         }
-        move_record(&path, trash_dir, &entry.file_name(), summary, before_move)?;
+        move_record(&path, trash_dir, &entry.file_name(), summary)?;
     }
     Ok(())
 }
@@ -512,36 +519,28 @@ fn move_record(
     trash_dir: &Path,
     file_name: &std::ffi::OsStr,
     summary: &mut RetentionSummary,
-    before_move: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let target_path = trash_dir.join(file_name);
     if target_path.exists() {
         summary.skipped += 1;
         eprintln!(
-            "[session_retention] skipped {}: trash target already exists at {}",
-            source_path.display(),
-            target_path.display()
+            "[session_retention] skipped record because its trash target exists"
         );
         return Ok(());
     }
     if let Err(error) = fs::create_dir_all(trash_dir) {
         summary.skipped += 1;
         eprintln!(
-            "[session_retention] skipped {}: create trash dir {} failed: {error}",
-            source_path.display(),
-            trash_dir.display()
+            "[session_retention] create record trash directory failed: {:?}", error.kind()
         );
         return Ok(());
     }
-    before_move()?;
     match fs::rename(source_path, &target_path) {
         Ok(()) => summary.moved += 1,
         Err(error) => {
             summary.skipped += 1;
             eprintln!(
-                "[session_retention] skipped {}: rename to {} failed: {error}",
-                source_path.display(),
-                target_path.display()
+                "[session_retention] could not move record to trash: {:?}", error.kind()
             );
         }
     }
@@ -558,9 +557,12 @@ mod tests {
     use super::*;
 
     fn roots(temp: &tempfile::TempDir) -> RetentionRoots {
+        let app_data_parent = temp.path().join("appdata");
         RetentionRoots {
-            app_data_parent: temp.path().join("appdata"),
+            profile_dir: app_data_parent.join(APP_DATA_DIR_PREFIX),
+            app_data_parent,
             mycmux_dir: temp.path().join(".mycmux"),
+            scrollback_startup_cutoff: SystemTime::now() + Duration::from_secs(60),
         }
     }
 
@@ -572,18 +574,21 @@ mod tests {
             .map(|(workspace_id, pane_id, tab_id)| {
                 serde_json::json!({
                     "id": workspace_id,
-                    "panes": [
-                        {
-                            "pane_id": pane_id,
-                            "tabs": [
-                                { "tab_id": tab_id }
-                            ]
-                        }
-                    ]
+                    "name": workspace_id,
+                    "grid_template_id": "1x1",
+                    "created_at": 0,
+                    "panes": [{
+                        "pane_id": pane_id,
+                        "agent_id": "shell",
+                        "tabs": [{ "tab_id": tab_id, "agent_id": "shell" }],
+                    }]
                 })
             })
             .collect::<Vec<_>>();
-        let json = serde_json::json!({ "workspaces": workspaces });
+        let json = serde_json::json!({
+            "workspaces": workspaces,
+            "settings": storage::AppSettings::default(),
+        });
         fs::write(app_dir.join("data.json"), serde_json::to_string(&json).unwrap()).unwrap();
     }
 
@@ -859,6 +864,281 @@ mod tests {
         assert!(scrollback_path(&roots, app, &missing).is_file());
     }
 
+    fn review_layout_with_tabs(count: usize, omit_pane_identity: bool) -> Vec<u8> {
+        let tabs = (1..=count).map(|number| serde_json::json!({
+            "tab_id": format!("aaaaaaaa-0000-4000-8000-{number:012}"),
+            "agent_id": "terminal",
+        })).collect::<Vec<_>>();
+        let mut pane = serde_json::json!({ "agent_id": "terminal", "tabs": tabs });
+        if !omit_pane_identity {
+            pane["pane_id"] = serde_json::json!("pane");
+        }
+        let data: crate::db::storage::PersistentData = serde_json::from_value(serde_json::json!({
+            "settings": crate::db::storage::AppSettings::default(),
+            "workspaces": [{
+                "id": "saved", "name": "Saved", "grid_template_id": "single",
+                "created_at": 1, "panes": [pane],
+            }]
+        })).unwrap();
+        serde_json::to_vec(&data).unwrap()
+    }
+
+    fn review_layout_paths(roots: &RetentionRoots, directory: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let app = roots.app_data_parent.join(directory);
+        let backups = app.join("data-backups");
+        fs::create_dir_all(&backups).unwrap();
+        (app.join("data.json"), backups.join("data-1000-42.json"), app.join("scrollback"))
+    }
+
+    #[test]
+    fn l3_fix2_01_bom_generation_restores_its_tab_and_scrollback_bytes() {
+        use crate::db::storage;
+        use crate::pty::scrollback_store;
+        let _serial = storage::persistence_test_lock();
+        storage::reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let (main, backup, scrollback) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(&main, review_layout_with_tabs(9, false)).unwrap();
+        let mut bom = vec![0xef, 0xbb, 0xbf];
+        bom.extend(review_layout_with_tabs(10, false));
+        fs::write(backup, bom).unwrap();
+        let tab = "aaaaaaaa-0000-4000-8000-000000000010";
+        let session = make_session_id("saved", "pane", tab);
+        scrollback_store::save(&scrollback, &session, 0, 6, b"output").unwrap();
+
+        run_retention_once(&roots, future_old_now()).unwrap();
+        fs::rename(&main, main.with_file_name("missing-main.fixture")).unwrap();
+        let restored = storage::load(main.as_path()).unwrap();
+        drop(_serial);
+        let tabs = restored.workspaces[0].panes[0].tabs.as_ref().unwrap();
+        assert_eq!(tabs[9].tab_id.as_deref(), Some(tab));
+        assert_eq!(scrollback_store::load(&scrollback, &session).unwrap().data, b"output");
+    }
+
+    #[test]
+    fn l3_fix2_02_old_tab_identity_does_not_require_a_saved_pane_id() {
+        use crate::pty::scrollback_store;
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let (main, backup, scrollback) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(&main, review_layout_with_tabs(1, true)).unwrap();
+        fs::write(backup, review_layout_with_tabs(2, true)).unwrap();
+        for tab_number in 1..=2 {
+            let tab = format!("aaaaaaaa-0000-4000-8000-{tab_number:012}");
+            let session = make_session_id("saved", "regenerated-pane", &tab);
+            scrollback_store::save(&scrollback, &session, 0, 6, b"output").unwrap();
+        }
+        run_retention_once(&roots, future_old_now()).unwrap();
+        for tab_number in 1..=2 {
+            let tab = format!("aaaaaaaa-0000-4000-8000-{tab_number:012}");
+            let session = make_session_id("saved", "different-pane", &tab);
+            assert_eq!(scrollback_store::load(&scrollback, &session).unwrap().data, b"output");
+        }
+    }
+
+    #[test]
+    fn l3_fix2_08_unreadable_backup_directory_cannot_discard_scrollback() {
+        use crate::pty::scrollback_store;
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let (main, backup, scrollback) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(&main, review_layout_with_tabs(9, false)).unwrap();
+        fs::write(&backup, review_layout_with_tabs(10, false)).unwrap();
+        let backups = backup.parent().unwrap();
+        let temporarily_unavailable = main.with_file_name("unavailable-backups.fixture");
+        fs::rename(backups, &temporarily_unavailable).unwrap();
+        fs::write(backups, b"directory read cannot succeed").unwrap();
+        let session = make_session_id("saved", "pane", "aaaaaaaa-0000-4000-8000-000000000010");
+        scrollback_store::save(&scrollback, &session, 0, 6, b"output").unwrap();
+
+        let _sweep = run_retention_once(&roots, future_old_now());
+        fs::rename(backups, main.with_file_name("unavailable-file.fixture")).unwrap();
+        fs::rename(temporarily_unavailable, backups).unwrap();
+        assert!(backup.is_file());
+        assert_eq!(scrollback_store::load(&scrollback, &session).unwrap().data, b"output");
+    }
+
+    #[test]
+    fn l3_fix3_03_a_history_commit_before_the_first_layout_save_survives_startup() {
+        use crate::pty::scrollback_store;
+        let temp = tempfile::tempdir().unwrap();
+        let mut roots = roots(&temp);
+        let app = APP_DATA_DIR_PREFIX;
+        let tab = "aaaaaaaa-0000-4000-8000-000000000032";
+        let session = make_session_id("pending", "pane", tab);
+        write_data_json(&roots, app, &[]);
+        let path = scrollback_path(&roots, app, tab);
+        let directory = path.parent().unwrap();
+        let cutoff = SystemTime::now();
+        roots.scrollback_startup_cutoff = cutoff;
+        let mut written = None;
+        assert!(scrollback_store::save_if_changed(directory, &session, 0, 6, b"output", &mut written).unwrap());
+        fs::File::options().write(true).open(&path).unwrap()
+            .set_modified(cutoff + Duration::from_secs(1)).unwrap();
+
+        run_retention_once(&roots, cutoff).unwrap();
+        write_data_json(&roots, app, &[("pending", "pane", tab)]);
+
+        assert!(!scrollback_store::save_if_changed(directory, &session, 0, 6, b"output", &mut written).unwrap());
+        assert_eq!(scrollback_store::load(directory, &session).map(|saved| saved.data), Some(b"output".to_vec()));
+    }
+
+    #[test]
+    fn l3_fix3_08_retention_leaves_history_in_another_profile_for_legacy_writers() {
+        use crate::pty::scrollback_store;
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let profile = format!("{APP_DATA_DIR_PREFIX}/profiles/older-writer");
+        let tab = "aaaaaaaa-0000-4000-8000-000000000082";
+        let session = make_session_id("pending", "pane", tab);
+        write_data_json(&roots, APP_DATA_DIR_PREFIX, &[]);
+        write_data_json(&roots, &profile, &[]);
+        let path = scrollback_path(&roots, &profile, tab);
+        let directory = path.parent().unwrap();
+        scrollback_store::save(directory, &session, 0, 6, b"output").unwrap();
+
+        run_retention_once_with_reprobe_hooks(&roots, future_old_now(), || Ok(()), |_| {
+            // The old writer commits after the real final scan and does not
+            // update the history file. No additional scan follows this hook.
+            write_data_json(&roots, &profile, &[("pending", "pane", tab)]);
+            Ok(())
+        }).unwrap();
+
+        assert_eq!(scrollback_store::load(directory, &session).map(|saved| saved.data), Some(b"output".to_vec()));
+    }
+
+    #[test]
+    fn l3_fix2_25_retention_scans_once_more_before_entering_its_protected_sweep() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let (main, backup, scrollback) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(main, review_layout_with_tabs(1, false)).unwrap();
+        fs::write(backup, review_layout_with_tabs(1, false)).unwrap();
+        let now = future_old_now();
+        for number in 0..10 {
+            let session = make_session_id("unreferenced", "pane", &format!("orphan-{number}"));
+            create_records(&roots, &session);
+            crate::pty::scrollback_store::save(&scrollback, &session, 0, 6, b"output").unwrap();
+        }
+        OBSERVATIONS.with(|count| count.set(0));
+        let result = run_retention_once(&roots, now).unwrap();
+        assert_eq!(result.moved, 20);
+        assert_eq!(fs::read_dir(scrollback).unwrap().count(), 0);
+        assert_eq!(OBSERVATIONS.with(|count| count.get()), 2);
+    }
+
+    #[test]
+    fn l3_fix2_26_diagnostics_do_not_repeat_input_path_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_parent = temp.path().join("fictional.editor@example.test");
+        let roots = RetentionRoots {
+            profile_dir: app_data_parent.join(APP_DATA_DIR_PREFIX),
+            app_data_parent,
+            mycmux_dir: temp.path().join("runtime"),
+            scrollback_startup_cutoff: future_old_now(),
+        };
+        let (main, backup, _) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(&main, review_layout_with_tabs(1, false)).unwrap();
+        fs::write(backup.with_file_name("data-1000-42.json"), br#"{"schema_version":999}"#).unwrap();
+        let diagnostic = run_retention_once(&roots, SystemTime::now()).unwrap_err();
+        assert!(diagnostic.contains("schema"));
+        assert!(!diagnostic.contains("fictional.editor@example.test"), "{diagnostic}");
+        assert!(!diagnostic.contains("data-1000-42.json"), "{diagnostic}");
+    }
+
+    #[test]
+    fn l3_fix2_31_backup_only_profile_protects_shared_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let (main, _, _) = review_layout_paths(&roots, APP_DATA_DIR_PREFIX);
+        fs::write(main, review_layout_with_tabs(0, false)).unwrap();
+        let profile = format!("{APP_DATA_DIR_PREFIX}/profiles/BackupOnly");
+        let (_, backup, _) = review_layout_paths(&roots, &profile);
+        fs::write(backup, review_layout_with_tabs(1, false)).unwrap();
+        let session = make_session_id("saved", "pane", "aaaaaaaa-0000-4000-8000-000000000001");
+        create_records(&roots, &session);
+
+        run_retention_once(&roots, future_old_now()).unwrap();
+        assert!(session_path(&roots, &session).is_dir());
+        assert!(pane_session_path(&roots, &session).is_file());
+    }
+
+    #[test]
+    fn l3_fix2_14_retention_keeps_scrollback_referenced_by_a_recoverable_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let app = "com.miyazaki.mycmux";
+        let ids = [("ws1", "pane1", "tab1"), ("ws2", "pane2", "tab2")];
+        let session = make_session_id("ws2", "pane2", "tab2");
+        write_data_json(&roots, app, &ids);
+        write_legacy_scrollback(&roots, app, &session, b"recover this output");
+        let app_dir = roots.app_data_parent.join(app);
+        let backups = app_dir.join("data-backups");
+        fs::create_dir(&backups).unwrap();
+        fs::copy(app_dir.join("data.json"), backups.join("data-1000-42.json")).unwrap();
+        write_data_json(&roots, app, &ids[..1]);
+
+        run_retention_once(&roots, future_old_now()).unwrap();
+        let _serial = crate::db::storage::persistence_test_lock();
+        storage::reset_quarantined_schema_for_test();
+        let main = app_dir.join("data.json");
+        fs::rename(&main, app_dir.join("missing-main.fixture")).unwrap();
+        let restored = crate::db::storage::load(main.as_path()).unwrap();
+        drop(_serial);
+        assert!(restored.workspaces.iter().any(|row| row.id == "ws2"),
+            "the backup used by the retention test must also load in the product");
+        let history = crate::pty::scrollback_store::load(&app_dir.join("scrollback"), &session)
+            .expect("the restored session's history must be readable");
+        assert_eq!(history.data, b"recover this output");
+    }
+
+    #[test]
+    fn l3_88_retention_keeps_legacy_names_and_the_actual_saved_session_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let app = "com.miyazaki.mycmux";
+        let former_key = "pty-old-pane-legacy-tab";
+        let canonical = "aaaaaaaa-0000-4000-8000-000000000001";
+        let canonical_upper = canonical.to_ascii_uppercase();
+        let primary = serde_json::json!({
+            "settings": storage::AppSettings::default(),
+            "workspaces": [{"id": "new", "name": "New", "created_at": 0, "grid_template_id": "1x1", "panes": [{
+                "pane_id": "pane", "agent_id": "shell", "tabs": [
+                    {"tab_id": "other-id", "agent_id": "shell", "session_id": format!("pty-old-pane-{canonical}")},
+                    {"tab_id": "legacy-tab", "agent_id": "shell", "session_id": former_key}
+                ]
+            }]}]
+        });
+        write_raw_data_json(&roots, app, &primary.to_string());
+        write_legacy_scrollback(&roots, app, former_key, b"legacy text");
+        write_legacy_scrollback(&roots, app, &canonical_upper, b"stable text");
+        run_retention_once(&roots, future_old_now()).unwrap();
+        assert!(scrollback_path(&roots, app, former_key).is_file());
+        assert!(scrollback_path(&roots, app, &canonical_upper).is_file());
+    }
+
+    #[test]
+    fn l3_103_corrupt_retention_counts_are_preserved_and_the_next_sweep_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let app = "com.miyazaki.mycmux";
+        write_data_json(&roots, app, &[("ws", "pane", "live")]);
+        fs::create_dir_all(&roots.mycmux_dir).unwrap();
+        let name = "session-retention-live-tabs.json";
+        let checkpoint = roots.mycmux_dir.join(name);
+        fs::write(&checkpoint, b"{broken").unwrap();
+        let orphan = make_session_id("other", "pane", "old");
+        write_legacy_scrollback(&roots, app, &orphan, b"unused output");
+
+        run_retention_once(&roots, future_old_now()).unwrap();
+        assert!(scrollback_path(&roots, app, &orphan).exists());
+        assert_eq!(read_tab_counts(&checkpoint).unwrap().values().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(fs::read(roots.mycmux_dir.join("_old").join(name)).unwrap(), b"{broken");
+        run_retention_once(&roots, future_old_now()).unwrap();
+        assert!(!scrollback_path(&roots, app, &orphan).exists());
+    }
+
     #[test]
     fn startup_sweep_keeps_live_scrollback_and_removes_orphans() {
         let temp = tempfile::tempdir().unwrap();
@@ -870,7 +1150,7 @@ mod tests {
         crate::pty::scrollback_store::save(&scrollback_dir, &live_id, 0, 1, b"a").unwrap();
         crate::pty::scrollback_store::save(&scrollback_dir, &orphan_id, 0, 1, b"b").unwrap();
 
-        run_retention_once(&roots, SystemTime::now()).unwrap();
+        run_retention_once(&roots, future_old_now()).unwrap();
 
         assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &live_id).exists());
         assert!(!scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
@@ -903,7 +1183,7 @@ mod tests {
             );
         }
 
-        run_retention_once(&roots, SystemTime::now()).unwrap();
+        run_retention_once(&roots, future_old_now()).unwrap();
 
         for tab_id in tab_ids {
             let legacy_id = make_session_id(old_workspace, pane_id, tab_id);
@@ -977,8 +1257,8 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(error.contains(&data_path.display().to_string()));
         assert!(error.contains("schema version 999"));
+        assert!(!error.contains(&data_path.display().to_string()));
         assert!(session_path(&roots, &orphan_id).exists());
         assert!(pane_session_path(&roots, &orphan_id).exists());
         assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
@@ -1009,19 +1289,24 @@ mod tests {
             &roots,
             now,
             || Ok(()),
-            || {
+            |observed| {
                 write_data_json(
                     &roots,
                     "com.miyazaki.mycmux",
                     &[("ws-race", "pane-race", "tab-race")],
                 );
+                // This fixture deliberately bypasses the current profile's
+                // gate. Only this injected test performs a third scan.
+                if *observed != collect_live_sessions(&roots.app_data_parent)? {
+                    return Err("layout changed after the final retention scan; aborting before destructive action".into());
+                }
                 Ok(())
             },
         )
         .unwrap_err();
 
-        assert!(error.contains(&data_path.display().to_string()));
         assert!(error.contains("changed after the final retention scan"));
+        assert!(!error.contains(&data_path.display().to_string()));
         assert!(session_path(&roots, &orphan_id).exists());
         assert!(pane_session_path(&roots, &orphan_id).exists());
         assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
@@ -1043,7 +1328,7 @@ mod tests {
 
         let error = run_retention_once(&roots, now).unwrap_err();
 
-        assert!(error.contains("parse"));
+        assert!(error.contains("invalid main layout"));
         assert!(session_path(&roots, &orphan_id).exists());
         assert!(pane_session_path(&roots, &orphan_id).exists());
         assert!(!trash_session_path(&roots, now, &orphan_id).exists());

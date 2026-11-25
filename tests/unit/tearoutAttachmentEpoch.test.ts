@@ -9,6 +9,7 @@ const native = vi.hoisted(() => ({ invoke: vi.fn(), next: 0, send: vi.fn(), live
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {}, emit: async () => {}, emitTo: async () => {} }));
 vi.mock("../../src/lib/windowContext", () => ({ windowLabel: () => "main", hasWindowRole: () => true, setWindowRole: () => {}, isMainWindow: () => true }));
 vi.mock("../../src/lib/tearout/runtime", () => ({
+  watchTearoutWindowOpening: () => ({ ready: Promise.resolve(), signal: new AbortController().signal, dispose: () => {} }),
   waitForTearoutReceiver: async () => {}, sendTearoutWorkspaces: native.send,
   visitTearoutLocation: () => {}, isPreOwnershipTearoutRefusal: () => false,
 }));

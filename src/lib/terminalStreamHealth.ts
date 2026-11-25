@@ -12,8 +12,11 @@ export const TERMINAL_RECOVERY_LIMIT = 5;
 export class TerminalStreamHealth {
   private visibleSince: number | null = null;
   private lastAppliedAt: number;
-  private lastReceivedAt: number;
-  private progress?: { source: PtyReadGeneration; generation: number; receivedEnd: number; parsedEnd?: number };
+  private lastAppliedElapsed: number;
+  private lastReceivedElapsed: number;
+  private unparsedSince: number | null = null;
+  private progress?: { source: PtyReadGeneration; generation: number; receivedEnd: number };
+  private parsedPosition?: { source: PtyReadGeneration; generation: number | undefined; end: number };
   private parseCount = 0;
   private paintCount = 0;
   private sampledParse = 0;
@@ -23,11 +26,23 @@ export class TerminalStreamHealth {
   private firstPaintPairAt: number | null = null;
   private lastPaintPairAt: number | null = null;
   private attempts: number[] = [];
-  constructor(private readonly now: () => number = () => Date.now()) {
-    this.lastAppliedAt = this.lastReceivedAt = now();
+  private readonly now: () => number;
+  private readonly elapsed: () => number;
+  constructor(clock?: () => number) {
+    this.now = clock ?? (() => Date.now());
+    this.elapsed = clock ?? (() => performance.now());
+    this.lastAppliedAt = this.now();
+    this.lastAppliedElapsed = this.lastReceivedElapsed = this.elapsed();
   }
-  received(): void { this.lastReceivedAt = this.now(); }
-  applied(): void { this.lastAppliedAt = this.now(); }
+  received(unparsed = true): void {
+    this.lastReceivedElapsed = this.elapsed();
+    if (unparsed) this.unparsedSince ??= this.lastReceivedElapsed;
+  }
+  applied(): void {
+    this.lastAppliedAt = this.now();
+    this.lastAppliedElapsed = this.elapsed();
+    this.unparsedSince = null;
+  }
   observeReceipt(source: PtyReadGeneration, generation: number, end: number): void {
     const sample = this.progress;
     if (sample?.source !== source || sample.generation !== generation) {
@@ -35,23 +50,45 @@ export class TerminalStreamHealth {
     } else {
       sample.receivedEnd = Math.max(sample.receivedEnd, end);
     }
+    this.received(end > (this.matchedParse()?.end ?? -1));
   }
-  observeCurrentParse(sessionId: string, source: PtyReadGeneration, generation?: number, end?: number): void {
-    if (currentPtyRead(sessionId, source)) this.observeParse(source, generation, end);
+  observeCurrentParse(sessionId: string, source: PtyReadGeneration, generation?: number, end?: number): boolean {
+    return currentPtyRead(sessionId, source) && this.observeParse(source, generation, end);
   }
-  observeParse(source: PtyReadGeneration, generation?: number, end?: number): void {
-    this.parseCount++;
+  observeParse(source: PtyReadGeneration, generation?: number, end?: number): boolean {
     const sample = this.progress;
-    if (sample?.source === source && sample.generation === generation && end !== undefined) {
-      sample.parsedEnd = Math.max(sample.parsedEnd ?? 0, end);
-    }
+    if (sample?.source === source && generation !== undefined && sample.generation !== generation) return false;
+    const previous = this.parsedPosition;
+    // A delayed callback for an already covered position cannot account for newer backend output.
+    if (end !== undefined && previous?.source === source
+      && (generation === previous.generation || generation === undefined || previous.generation === undefined)
+      && end <= previous.end) return false;
+    this.applied();
+    this.parseCount++;
+    if (end !== undefined) this.parsedPosition = { source, generation, end };
+    return true;
+  }
+  resetReadProgress(): void {
+    this.progress = undefined;
+    this.parsedPosition = undefined;
+    this.unparsedSince = null;
+    this.lastReceivedElapsed = this.lastAppliedElapsed;
+  }
+  private matchedParse() {
+    const sample = this.progress;
+    const position = this.parsedPosition;
+    // A ring write has a PTY read lifetime and byte position, but no live channel ID.
+    if (sample && position?.source === sample.source
+      && (position.generation === undefined || position.generation === sample.generation)) return position;
+    return undefined;
   }
   diagnosticProgress(source: PtyReadGeneration): Record<string, number> {
     const sample = this.progress;
     if (sample?.source !== source) return {};
+    const parsed = this.matchedParse();
     return {
       generation: sample.generation, received_end: sample.receivedEnd,
-      ...(sample.parsedEnd === undefined ? {} : { parsed_end: sample.parsedEnd }),
+      ...(parsed ? { parsed_end: parsed.end } : {}),
     };
   }
   get renderCount(): number { return this.paintCount; }
@@ -68,7 +105,7 @@ export class TerminalStreamHealth {
     this.resetPaintEvidence();
   }
   inspectPaint(eligible: boolean, backendAt: number | null | undefined): boolean {
-    const now = this.now();
+    const now = this.elapsed();
     if (!eligible || backendAt == null) {
       this.resetPaintVisibility();
       return false;
@@ -89,18 +126,22 @@ export class TerminalStreamHealth {
     this.lastPaintPairAt = now;
     return now - this.firstPaintPairAt >= TERMINAL_STREAM_STALE_MS;
   }
-  attached(): void { this.lastAppliedAt = this.lastReceivedAt = this.now(); }
+  attached(): void {
+    this.applied();
+    this.lastReceivedElapsed = this.lastAppliedElapsed;
+  }
   inspect(visible: boolean, backendOutputAt: number | null | undefined): "channel-stall" | "write-stall" | null {
-    const now = this.now();
     if (!visible) { this.visibleSince = null; return null; }
-    this.visibleSince ??= now;
+    const elapsed = this.elapsed();
+    this.visibleSince ??= elapsed;
+    const stalledSince = Math.max(this.visibleSince, this.lastAppliedElapsed, this.unparsedSince ?? 0);
     if (backendOutputAt == null || backendOutputAt <= this.lastAppliedAt
-      || now - Math.max(this.visibleSince, this.lastAppliedAt) < TERMINAL_STREAM_STALE_MS) return null;
-    this.attempts = this.attempts.filter(at => now - at < TERMINAL_RECOVERY_WINDOW_MS);
+      || elapsed - stalledSince < TERMINAL_STREAM_STALE_MS) return null;
+    this.attempts = this.attempts.filter(at => elapsed - at < TERMINAL_RECOVERY_WINDOW_MS);
     if (this.attempts.length >= TERMINAL_RECOVERY_LIMIT
-      || (this.attempts.length > 0 && now - this.attempts[this.attempts.length - 1] < TERMINAL_RECOVERY_COOLDOWN_MS)) return null;
-    this.attempts.push(now);
-    return now - this.lastReceivedAt >= TERMINAL_STREAM_STALE_MS ? "channel-stall" : "write-stall";
+      || (this.attempts.length > 0 && elapsed - this.attempts[this.attempts.length - 1] < TERMINAL_RECOVERY_COOLDOWN_MS)) return null;
+    this.attempts.push(elapsed);
+    return elapsed - this.lastReceivedElapsed >= TERMINAL_STREAM_STALE_MS ? "channel-stall" : "write-stall";
   }
 }
 
@@ -140,18 +181,21 @@ export class TerminalHealthMonitor {
     try {
       const output = await withTerminalDeadline(this.snapshot(), "terminal health snapshot");
       if (this.recovering) return;
+      const paintVisibility = new Map<Watch, boolean>();
       for (const watch of active) {
         if (!this.watches.has(watch)) continue;
-        const reason = watch.health.inspect(watch.visible(), output[watch.sessionId]);
+        const visible = watch.visible();
+        if (watch.paint) paintVisibility.set(watch, visible);
+        const reason = watch.health.inspect(visible, output[watch.sessionId]);
         if (!reason) continue;
         this.recovering = true;
         void watch.recover(reason).catch(() => {}).finally(() => { this.recovering = false; });
         break;
       }
       if (!this.recovering) {
-        for (const watch of active) {
+        for (const [watch, visible] of paintVisibility) {
           if (!watch.paint || !this.watches.has(watch)) continue;
-          if (watch.health.inspectPaint(watch.visible() && watch.paint.sized(), output[watch.sessionId])) watch.paint.repair();
+          if (watch.health.inspectPaint(visible && watch.paint.sized(), output[watch.sessionId])) watch.paint.repair();
         }
       }
     } catch {

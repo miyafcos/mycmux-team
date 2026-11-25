@@ -77,6 +77,7 @@ pub fn open_workspace_window(
     width: Option<f64>,
     height: Option<f64>,
     deferred_adoption: Option<bool>,
+    creation_id: Option<String>,
 ) -> Result<String, String> {
     if crate::commands::quit::is_quitting(&app) {
         return Err("Application is preparing to quit".into());
@@ -91,6 +92,9 @@ pub fn open_workspace_window(
     }
 
     let deferred = deferred_adoption.unwrap_or(false);
+    if deferred && creation_id.as_ref().is_none_or(|id| id.is_empty() || id.len() > 128) {
+        return Err("A deferred workspace window requires a creation request ID".into());
+    }
     let restoring = saved_window_decoration(label.as_deref(), &workspaces);
     // Only the saved Windows native branch has the new placement contract.
     let maximized = if cfg!(target_os = "windows") && restoring.is_some() && native {
@@ -101,10 +105,13 @@ pub fn open_workspace_window(
     } else {
         resolve_child_window_label(&app, label)?
     };
-    let reservation = match resolved {
+    let mut reservation = match resolved {
         // An existing window still adopts: the queue is drained by the
         // `window-adopt` listener that every window registers.
         ResolvedChildWindow::Existing(label) => {
+            if deferred {
+                return Err("A deferred workspace move requires a new window".into());
+            }
             if restoring.is_some() {
                 restore_child_window_frame(&app, &label, x, y, width, height, restoring, maximized);
             }
@@ -125,55 +132,105 @@ pub fn open_workspace_window(
         ResolvedChildWindow::New(reservation) => reservation,
     };
     let label = reservation.label().to_string();
+    let active = creation_id.as_ref().filter(|_| deferred).map(|id| {
+        let active = state.window_registry.track_workspace_window(&label, id.clone(), from_label.clone());
+        reservation.track_workspace_creation(id.clone(), active.clone());
+        active
+    });
     crate::perf_timeline::mark("detach.rust.queued", Some(&label));
 
     // Queue *before* the window exists: the child asks for its adoption during
     // boot, so anything queued later would arrive after it decided it is empty.
     if !deferred { state.window_registry.queue_adoption(&label, workspaces); }
+    let pending_app = app.clone();
+    let failed_label = label.clone();
+    reservation.on_creation_failed(move || {
+        let Some(state) = pending_app.try_state::<AppState>() else { return; };
+        let mut moved_count = 0;
+        if !deferred {
+            let rescued = state.window_registry.release_all(&failed_label, &from_label);
+            moved_count = rescued.len();
+            if moved_count > 0 {
+                emit_adopt(&pending_app, WindowAdoptPayload {
+                    workspace_ids: workspace_config_ids(&rescued),
+                    from_label: failed_label.clone(),
+                    to_label: from_label.clone(),
+                });
+            }
+        }
+        state.window_registry.forget_window(&failed_label);
+        emit_registry_changed(&pending_app, state.window_registry.revision());
+        if active.is_none_or(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            let _ = pending_app.emit_to(from_label.as_str(), "mycmux://window-open-failed", serde_json::json!({
+                "label": failed_label,
+                "creation_id": creation_id,
+                "kind": if deferred { "move" } else { "restore" },
+                "moved_count": moved_count,
+            }));
+        }
+    });
     let spawned = if restoring.is_some() {
         spawn_child_window_with_restore(&app, reservation, x, y, width, height, restoring,
             Some(native), maximized)
     } else {
         spawn_child_window(&app, reservation, x, y, width, height)
     };
-    if let Err(err) = spawned {
-        // Never strand the workspaces (and their live sessions) in a queue no
-        // window will ever drain.
-        if !deferred {
-            let orphaned = state.window_registry.take_pending_adoption(&label);
-            state.window_registry.queue_adoption(&from_label, orphaned);
-        }
-        emit_registry_changed(&app, state.window_registry.revision());
-        return Err(err);
-    }
+    spawned?;
     emit_registry_changed(&app, state.window_registry.revision());
     Ok(label)
 }
 
-/// Every window publishes its own workspace list here on a debounced store
-/// subscription. Main merges the non-main fragments into its `data.json`
-/// snapshot — children never call `save_persistent_data`.
+/// Every window publishes its workspace list here on a debounced store
+/// subscription. An AppShell publishes listener readiness separately so it
+/// can receive management requests independently of layout publication.
 #[tauri::command(async)]
 pub async fn publish_window_fragment(
+    window: tauri::Window,
     state: State<'_, AppState>,
-    fragment: WindowFragment,
+    fragment: Option<WindowFragment>,
     require_published: Option<bool>,
-) -> Result<(), String> {
-    if fragment.window_label.is_empty() {
-        return Err("publish_window_fragment requires a window label".to_string());
+    publication_id: Option<String>,
+    account_management_ready: Option<bool>,
+    account_management_document: Option<u64>,
+    account_management_sequence: Option<u64>,
+    account_management_subscription_id: Option<String>,
+    read_account_management_document: Option<bool>,
+) -> Result<Option<u64>, String> {
+    if read_account_management_document == Some(true) {
+        return state.window_registry.account_management_document(window.label(), publication_id.as_deref())
+            .map(Some)
+            .ok_or_else(|| "window publisher has been replaced or destroyed".into());
     }
-    if state.window_registry.is_closing(&fragment.window_label) {
-        return if require_published == Some(true) {
-            Err("window is closing before its fragment could be published".into())
+    if let Some(ready) = account_management_ready {
+        if fragment.is_some() {
+            return Err("publish readiness separately from the window fragment".into());
+        }
+        let document = account_management_document.ok_or("window readiness document is missing")?;
+        let sequence = account_management_sequence.ok_or("window readiness sequence is missing")?;
+        let subscription = if ready {
+            Some(account_management_subscription_id.filter(|id| !id.is_empty())
+                .ok_or("window readiness subscription is missing")?)
         } else {
-            Ok(())
+            None
         };
+        return state.window_registry
+            .set_account_management_ready(window.label(), publication_id.as_deref(), document, sequence, subscription)
+            .then_some(None)
+            .ok_or_else(|| "window publisher has been replaced or destroyed".into());
     }
-    state.window_registry.publish_fragment(fragment);
+    let fragment = fragment.ok_or("window fragment is missing")?;
+    if fragment.window_label != window.label() {
+        return Err("window fragment does not match its caller".into());
+    }
+    if !state.window_registry.publish_live_fragment(fragment, publication_id.as_deref())
+        && require_published == Some(true)
+    {
+        return Err("window is closing or has been replaced before its fragment could be published".into());
+    }
     // Deliberately no `window-registry-changed` emit: fragments are republished
     // on every debounce tick and nothing reacts to them synchronously (main
     // reads them at save time).
-    Ok(())
+    Ok(None)
 }
 
 #[tauri::command(async)]
@@ -237,11 +294,44 @@ pub async fn get_window_fragments(state: State<'_, AppState>) -> Result<Vec<Wind
     Ok(state.window_registry.fragments())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WindowTabIndexSnapshot {
+    windows: Vec<crate::window_registry::WindowTabIndex>,
+    #[serde(default)]
+    quitting: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum WindowTabIndexResult {
+    Rows(Vec<crate::window_registry::WindowTabIndex>),
+    Snapshot(WindowTabIndexSnapshot),
+}
+
+pub(super) fn window_tab_index_result(
+    mut windows: Vec<crate::window_registry::WindowTabIndex>,
+    quitting: bool,
+    include_quit_state: bool,
+) -> WindowTabIndexResult {
+    if quitting {
+        for entry in &mut windows {
+            entry.account_management_ready = false;
+            entry.account_management_subscription = None;
+        }
+    }
+    if quitting || include_quit_state {
+        WindowTabIndexResult::Snapshot(WindowTabIndexSnapshot { windows, quitting })
+    } else {
+        WindowTabIndexResult::Rows(windows)
+    }
+}
+
 #[tauri::command]
 pub async fn get_window_tab_index(
     window: tauri::Window,
     state: State<'_, AppState>,
-) -> Result<Vec<crate::window_registry::WindowTabIndex>, String> {
+    include_quit_state: Option<bool>,
+) -> Result<WindowTabIndexResult, String> {
     let mut index = state.window_registry.tab_index(window.label());
     // `tab_index` has released every registry entry guard before this PTY read.
     let processes = crate::commands::terminal::metadata_snapshot_for(
@@ -260,7 +350,8 @@ pub async fn get_window_tab_index(
             }
         }
     }
-    Ok(index)
+    let quitting = crate::commands::quit::is_quitting(window.app_handle());
+    Ok(window_tab_index_result(index, quitting, include_quit_state == Some(true)))
 }
 
 /// Settings-only hydration for windows that must not load workspaces. The
@@ -293,14 +384,17 @@ pub async fn set_window_close_intent(
     window: tauri::Window,
     state: State<'_, AppState>,
     closing: bool,
+    publication_id: Option<String>,
 ) -> Result<(), String> {
-    state.window_registry.set_close_intent(window.label(), closing);
-    Ok(())
+    state.window_registry.set_publisher_close_intent(window.label(), publication_id.as_deref(), closing)
+        .then_some(())
+        .ok_or_else(|| "window publisher has been replaced or destroyed".into())
 }
 
 pub fn handle_window_destroyed(app: &AppHandle, label: &str) {
-    crate::commands::window::release_window_role(app, label);
     let Some(state) = app.try_state::<AppState>() else { return; };
+    state.window_registry.unregister_fragment_publisher(label);
+    crate::commands::window::release_window_role(app, label);
     if state.window_registry.take_close_intent(label) {
         state.window_registry.forget_closed_window(label);
         emit_registry_changed(app, state.window_registry.revision());

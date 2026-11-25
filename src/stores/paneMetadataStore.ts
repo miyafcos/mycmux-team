@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { clearPresendAttempts, forgetPresendTab } from "../lib/presendReading";
+import { clearPresendAttempts, forgetPresendTab, rememberPresendShell } from "../lib/presendReading";
+import { codexRestoreNoticeEpoch } from "../lib/codexRestoreLifecycle";
 import type { AgentSessionKind } from "../types";
 import { isolateSubscribers } from "../lib/isolatedStoreListeners";
 import { observationClockRolledBack } from "../lib/observationClock";
@@ -225,6 +226,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     const at = evidence?.observedAt ?? now;
     const rolledBack = observationClockRolledBack(previous?.liveAgentObservedAt, now);
     if (!rolledBack && previous?.liveAgentObservedAt !== undefined && previous.liveAgentObservedAt > at) return state;
+    rememberPresendShell(sessionId, codexRestoreNoticeEpoch(sessionId), liveAgentKind === null);
     const agentSessionId = liveAgentKind ? evidence?.agentSessionId : undefined;
     const startedAt = liveAgentKind ? evidence?.startedAt : undefined;
     const processChanged = rolledBack || previous?.liveAgentKind !== liveAgentKind

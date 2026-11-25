@@ -106,14 +106,27 @@ fn running_session_ids_for(manager: &crate::pty::manager::SessionManager) -> Vec
 }
 
 #[tauri::command(async)]
-pub async fn get_agent_conversation_owner(state: State<'_, AppState>, kind: String, agent_session_id: String) -> Result<Option<String>, String> {
+pub async fn get_agent_conversation_owner(
+    state: State<'_, AppState>, kind: String, agent_session_id: String,
+) -> Result<Option<String>, String> {
     let manager = state.session_manager.clone();
     let metadata = state.metadata_store.clone();
     let request = Conversation::new(&kind, &agent_session_id).ok_or("Invalid conversation")?;
     crate::util::task::run_blocking("get_agent_conversation_owner", move || {
-        Ok(conversation_owners_for(&manager, &metadata).into_iter()
-            .find(|owner| owner.conversation == request).map(|owner| owner.session_id))
+        Ok(select_conversation_owner(conversation_owners_for(&manager, &metadata), &request, false))
     }).await
+}
+
+fn select_conversation_owner(owners: Vec<Owner>, request: &Conversation, unique_only: bool) -> Option<String> {
+    let mut matching = owners.into_iter()
+        .filter(|owner| {
+            let candidate = &owner.conversation;
+            candidate == request || (unique_only && candidate.agent_session_id == request.agent_session_id
+                && matches!((candidate.kind.as_str(), request.kind.as_str()),
+                    ("claude", "claude-codex") | ("claude-codex", "claude")))
+        })
+        .map(|owner| owner.session_id);
+    matching.next().filter(|first| !unique_only || !matching.any(|other| &other != first))
 }
 
 fn running_conversation_owners(state: &AppState) -> Vec<Owner> {
@@ -134,24 +147,48 @@ fn owner_commandline_pids(children: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>, r
 }
 
 fn conversation_owners_for(manager: &crate::pty::manager::SessionManager, _metadata: &crate::pty::monitor::MetadataStore) -> Vec<Owner> {
-    use crate::pty::monitor::{agent_kind_from_process, build_child_index, find_agent_descendant, session_id_from_agent_args};
-    use sysinfo::{Pid, System, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
     let ptys = manager.iter_pids();
+    let roots: Vec<_> = ptys.iter().filter_map(|(_, root)| *root).collect();
+    conversation_owners_from_tree(manager, ptys, &process_tree_for_roots(&roots))
+}
+
+pub(crate) fn process_tree_for_roots(roots: &[u32]) -> sysinfo::System {
+    use crate::pty::monitor::build_child_index;
+    use sysinfo::{Pid, System, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
     let mut sys = System::new();
     // Parent links and creation times are cheap. Reading every Windows command
     // line can exceed the terminal attach deadline on a busy computer.
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    let roots: Vec<_> = ptys.iter().filter_map(|(_, root)| root.map(Pid::from_u32)).collect();
+    let roots: Vec<_> = roots.iter().copied().map(Pid::from_u32).collect();
     let selected = owner_commandline_pids(&build_child_index(&sys), &roots);
     if !selected.is_empty() {
         sys.refresh_processes_specifics(ProcessesToUpdate::Some(&selected), true,
             ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet));
     }
-    let children = build_child_index(&sys);
+    sys
+}
+
+pub(crate) fn presend_owns_reply(
+    manager: &crate::pty::manager::SessionManager, session_id: &str,
+    ptys: Vec<(String, Option<u32>)>, system: &sysinfo::System, kind: &str, agent_session_id: &str,
+) -> bool {
+    Conversation::new(kind, agent_session_id).is_some_and(|request| {
+        select_conversation_owner(conversation_owners_from_tree(manager, ptys, system), &request, true)
+            .as_deref() == Some(session_id)
+    })
+}
+
+fn conversation_owners_from_tree(
+    manager: &crate::pty::manager::SessionManager,
+    ptys: Vec<(String, Option<u32>)>, sys: &sysinfo::System,
+) -> Vec<Owner> {
+    use crate::pty::monitor::{agent_kind_from_process, build_child_index, find_agent_descendant, session_id_from_agent_args};
+    use sysinfo::Pid;
+    let children = build_child_index(sys);
     let mut owners = Vec::new();
     for (session_id, root) in ptys {
         if !manager.is_running(&session_id) { continue; }
-        let agent = root.and_then(|root| find_agent_descendant(&sys, &children, Pid::from_u32(root)));
+        let agent = root.and_then(|root| find_agent_descendant(sys, &children, Pid::from_u32(root)));
         let Some((kind, pid)) = agent else {
             if let Some((kind, id)) = manager.pending_requested_conversation(&session_id) {
                 if let Some(conversation) = Conversation::new(&kind, &id) {
@@ -171,13 +208,13 @@ fn conversation_owners_for(manager: &crate::pty::manager::SessionManager, _metad
         let verified_hook = manager.trusted_agent_identity(&session_id)
             .filter(|identity| identity.from_hook && identity.agent_pid == pid.as_u32()
                 && identity.agent_started_at == process.start_time()
-                && agent_kind_from_process(&sys, pid).is_some_and(|kind| kind.display_kind() == identity.kind
+                && agent_kind_from_process(sys, pid).is_some_and(|kind| kind.display_kind() == identity.kind
                     || (kind.display_kind() == "claude" && identity.kind == "claude-codex")))
             .and_then(|identity| Conversation::new(&identity.kind, &identity.session_id));
         let effective_kind = requested.as_ref().map(|v| v.kind.as_str()).filter(|value|
             *value == kind.display_kind() || (*value == "claude-codex" && kind.display_kind() == "claude"))
             .unwrap_or(kind.display_kind());
-        let argv = session_id_from_agent_args(&sys, pid, kind.display_kind() == "codex")
+        let argv = session_id_from_agent_args(sys, pid, kind.display_kind() == "codex")
             .and_then(|id| Conversation::new(effective_kind, &id));
         if let Some(conversation) = owner_conversation(true, requested, argv, verified_hook, None, None) {
             owners.push(Owner { session_id, conversation, is_running: true });
@@ -287,7 +324,10 @@ fn create_session_blocking(
             let base = crate::test_profile::app_data_dir_from(default_dir);
             evidence_base = Some(base.clone());
             resolve_registered_launch_context(&base, provider, id, &session_id,
-                |session| state.session_manager.is_alive(session), crate::cli_accounts::account_homes::global_home)
+                |session| state.session_manager.is_alive(session), crate::cli_accounts::account_homes::global_home,
+                || {
+                    let _ = app_handle.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": id }));
+                })
         })?
     } else { None };
     // Production supplies its IPC-issued context. The e2e adapter issues one
@@ -1272,13 +1312,14 @@ fn resolve_launch_account<T>(env: &mut HashMap<String, String>, command: &str, a
 fn resolve_registered_launch_context(
     base: &Path, provider: crate::cli_accounts::CliProvider, id: &str, session_id: &str,
     alive: impl Fn(&str) -> bool, source: impl FnOnce(crate::cli_accounts::CliProvider) -> Result<PathBuf, String>,
+    list_changed: impl FnOnce(),
 ) -> Result<Option<crate::cli_accounts::account_homes::AccountLaunchContext>, String> {
     let registered = crate::cli_accounts::registered_profile_provider(base, id)
         .map_err(|_| crate::cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND.to_string())?;
     if registered != provider { return Err(crate::cli_accounts::ERR_LAUNCH_ACCOUNT_NOT_FOUND.into()); }
     if provider == crate::cli_accounts::CliProvider::Claude { return Ok(None); }
     let source = source(provider)?;
-    crate::cli_accounts::account_homes::prepare_launch(base, provider, id, session_id, alive, &source).map(Some)
+    crate::cli_accounts::account_homes::prepare_launch_notifying(base, provider, id, session_id, alive, &source, list_changed).map(Some)
 }
 
 fn add_account_home_args(provider: crate::cli_accounts::CliProvider, command: &str, args: &mut Vec<String>) -> Result<(), String> {
@@ -1673,14 +1714,10 @@ pub async fn remove_workspace_scrollback(
     workspace_id: String,
     session_ids: Vec<String>,
 ) -> Result<(), String> {
-    let dir = state.scrollback_dir.get().cloned();
-    crate::util::task::run_blocking("remove_workspace_scrollback", move || {
-        let Some(dir) = dir.as_ref() else {
-            return Ok(());
-        };
-        crate::pty::scrollback_store::remove_many(dir, &session_ids)
-            .map_err(|error| format!("Failed to remove scrollback for workspace {workspace_id}: {error}"))
-    }).await
+    // Older renderers still send this request after closing a workspace.
+    // Startup retention can check both the saved layout and its recovery copies.
+    let _ = (state, workspace_id, session_ids);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -1688,21 +1725,15 @@ pub async fn discard_session_scrollback(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let dir = state.scrollback_dir.get().cloned();
-    crate::util::task::run_blocking("discard_session_scrollback", move || {
-        let Some(dir) = dir.as_ref() else {
-            return Ok(());
-        };
-        crate::pty::scrollback_store::remove(dir, &session_id)
-            .map_err(|error| format!("Failed to discard scrollback for {session_id}: {error}"))
-    }).await
+    // A resume conflict can leave the tab and its scrollback in the layout.
+    let _ = (state, session_id);
+    Ok(())
 }
 
 #[tauri::command(async)]
 pub async fn kill_session(app_handle: AppHandle, state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let hooks = state.hook_service.clone();
     let manager = state.session_manager.clone();
-    let dir = state.scrollback_dir.get().cloned();
     let session_state = state.session_state_store.clone();
     hooks.queue_session_drain(&session_id);
     crate::util::task::run_blocking("kill_session", move || {
@@ -1715,13 +1746,7 @@ pub async fn kill_session(app_handle: AppHandle, state: State<'_, AppState>, ses
             .session_observation(&session_id)
             .map(|(session_epoch, _)| session_epoch);
         let retired = manager.retire(&session_id);
-        // Cleanup keyed only by P must finish before any successor can use P.
-        let remove_result = if let Some(dir) = dir.as_ref() {
-            crate::pty::scrollback_store::remove(dir, &session_id)
-                .map_err(|error| format!("Failed to remove scrollback for {session_id}: {error}"))
-        } else {
-            Ok(())
-        };
+        // A retired PTY can share its on-disk history key with a surviving tab.
         let published_epoch = manager.session_observation(&session_id).map(|value| value.0);
         #[cfg(feature = "e2e")]
         codex_restore_harness::publication_checkpoint(&session_id, "kill-publish");
@@ -1734,7 +1759,6 @@ pub async fn kill_session(app_handle: AppHandle, state: State<'_, AppState>, ses
         let kill_result = retired.as_ref().map_or(Ok(()), |session| session.kill());
         drop(retired);
         kill_result?;
-        remove_result?;
         if let Some(session_epoch) = session_epoch {
             session_state.ingest(
                 session_id,
@@ -1780,6 +1804,17 @@ pub async fn get_launch_cwd() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn l3_88_89_90_retiring_a_terminal_cannot_unlink_a_shared_history_key() {
+        let source = include_str!("terminal.rs");
+        for name in ["kill_session", "remove_workspace_scrollback", "discard_session_scrollback"] {
+            let command = format!("pub async fn {name}(");
+            let body = source.split_once(&command).unwrap().1.split("\n#[tauri::command").next().unwrap();
+            assert!(!body.contains("scrollback_store::remove"),
+                "{name} can unlink history while a different layout or session still needs it");
+        }
+    }
 
     #[test]
     fn si_t1_owner_commandline_refresh_excludes_foreign_processes_and_handles_cycles() {
@@ -2789,7 +2824,7 @@ mod account_homes_terminal_tests {
             let base = tempfile::tempdir().unwrap(); registry_fixture(base.path(), registered, id);
             let spawns = Cell::new(0); let sources = Cell::new(0);
             let result = resolve_launch_account(&mut env(launch, id), launch, &[], |provider, id|
-                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| { sources.set(sources.get()+1); Ok(base.path().join("fixture-source")) }))
+                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| { sources.set(sources.get()+1); Ok(base.path().join("fixture-source")) }, || panic!("no saved change")))
                 .map(|_| spawns.set(spawns.get()+1));
             assert_eq!(result.unwrap_err(), ERR_LAUNCH_ACCOUNT_NOT_FOUND);
             assert_eq!(spawns.get(), 0); assert_eq!(sources.get(), 0);
@@ -2802,7 +2837,7 @@ mod account_homes_terminal_tests {
             registry_fixture(base.path(), "codex", "codex-fixture");
             let spawns = Cell::new(0);
             let result = resolve_launch_account(&mut env("codex", id), "codex", &[], |provider, id|
-                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| Ok(base.path().join("source"))))
+                resolve_registered_launch_context(base.path(), provider, id, "fixture-pty", |_| false, |_| Ok(base.path().join("source")), || panic!("no saved change")))
                 .map(|_| spawns.set(1));
             assert_eq!(result.unwrap_err(), expected); assert_eq!(spawns.get(), 0);
         }

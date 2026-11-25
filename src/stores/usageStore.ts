@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { getAccountUsage, type ApiUsageCommand, type ProfileUsage } from "../lib/ipc";
+import { getAccountUsage, getGeminiUsage, type AccountUsageReport, type ApiUsageCommand, type ProfileUsage } from "../lib/ipc";
 
 // Re-exported so consumers keep working against the store's public surface
 // without reaching into lib/ipc directly.
@@ -25,6 +25,43 @@ function errorMessage(error: unknown): string {
 // sampled, since a later account mutation may only read an older cache entry.
 let accountsSeq = 0;
 let geminiRevision = 0;
+let geminiRequest: Promise<AccountUsageReport> | null = null;
+let refreshGeminiAgain = false;
+
+function newerGeminiRow(report: AccountUsageReport, allowUnversioned: boolean): ProfileUsage | undefined {
+  const row = report.accounts.find(account => account.provider === "gemini");
+  if (!row) return;
+  const revision = report.gemini_revision;
+  if (revision === undefined) return allowUnversioned && geminiRevision === 0 ? row : undefined;
+  if (revision <= geminiRevision) return;
+  geminiRevision = revision;
+  return row;
+}
+
+function pollGemini(explicit: boolean) {
+  if (geminiRequest) {
+    refreshGeminiAgain ||= explicit;
+    return;
+  }
+  const request = Promise.resolve().then(() => getGeminiUsage(explicit));
+  geminiRequest = request;
+  void request.then(report => {
+    if (geminiRequest !== request) return;
+    const row = newerGeminiRow(report, true);
+    if (row) useUsageStore.setState(state => ({
+      accounts: [...state.accounts.filter(account => account.provider !== "gemini"), row],
+    }));
+  }).catch(() => {
+    // Keep the latest row if transport fails.
+  }).finally(() => {
+    if (geminiRequest !== request) return;
+    geminiRequest = null;
+    if (refreshGeminiAgain) {
+      refreshGeminiAgain = false;
+      pollGemini(true);
+    }
+  });
+}
 
 export const useUsageStore = create<UsageState>((set) => ({
   accounts: [],
@@ -37,24 +74,17 @@ export const useUsageStore = create<UsageState>((set) => ({
     const mySeq = ++accountsSeq;
     const cacheOnly = options?.afterSwitch || apiCommand === "account.switch";
     set({ loading: true });
+    // Agy can take up to a minute. Keep the inventory controls responsive.
+    if (!cacheOnly && !apiCommand) pollGemini(refreshMetadata);
     try {
-      const request = options?.afterSwitch
-        ? getAccountUsage(refreshMetadata, apiCommand, true)
-        : apiCommand ? getAccountUsage(refreshMetadata, apiCommand)
-        : refreshMetadata ? getAccountUsage(true) : getAccountUsage();
-      const report = await request;
+      const report = await getAccountUsage(refreshMetadata, apiCommand, Boolean(options?.afterSwitch || !apiCommand));
       const currentInventory = mySeq === accountsSeq;
-      const gemini = report.accounts.find((row) => row.provider === "gemini");
-      const revision = report.gemini_revision;
-      const updateGemini = gemini !== undefined && (revision === undefined
-        ? currentInventory && geminiRevision === 0
-        : revision > geminiRevision);
-      if (!currentInventory && !updateGemini) return;
-      if (updateGemini && revision !== undefined) geminiRevision = revision;
+      const gemini = newerGeminiRow(report, currentInventory);
+      if (!currentInventory && !gemini) return;
 
       set((state) => {
         const inventory = currentInventory && !report.inventory_error ? report.accounts : state.accounts;
-        const geminiRow = updateGemini ? gemini : state.accounts.find((row) => row.provider === "gemini");
+        const geminiRow = gemini ?? state.accounts.find((row) => row.provider === "gemini");
         return {
           accounts: [...inventory.filter((row) => row.provider !== "gemini"), ...(geminiRow ? [geminiRow] : [])],
           ...(currentInventory && {
@@ -81,6 +111,8 @@ export const useUsageStore = create<UsageState>((set) => ({
 export function __resetUsageStoreForTests(): void {
   accountsSeq = 0;
   geminiRevision = 0;
+  geminiRequest = null;
+  refreshGeminiAgain = false;
   useUsageStore.setState({
     accounts: [],
     generatedAt: null,

@@ -1,5 +1,5 @@
 //! Ordinary messages use the intervention input lock, never answer a prompt,
-//! and require a new target-bound user event or human enqueue receipt for confirmation.
+//! and require a new target-bound user event for confirmation.
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -115,7 +115,7 @@ fn matching_input(snapshot: &SessionSnapshot, fence: &MessageSourceFence, text: 
             SemanticEventKind::UserMessage { text: accepted, .. } if accepted.trim() == expected_text.trim() => Some(event.event_id.clone()),
             _ => None,
         }
-    }).or_else(|| snapshot.adapter.matching_queued_input(fence.binding.source_revision, fence.read_offset, &expected_text))
+    })
 }
 
 /// Decode only the input shapes emitted by the existing composer. Do not
@@ -305,7 +305,17 @@ mod tests {
     }
 
     #[test]
-    fn human_enqueue_after_the_fence_confirms_without_becoming_a_user_event() {
+    fn l6_enqueue_alone_does_not_confirm_delivery() {
+        let (mut snapshot, fence) = claude_picture();
+        queue_record(&mut snapshot, "queued", 2, 100, enqueue("operator text"));
+        assert_eq!(matching_input(&snapshot, &fence, "operator text"), None);
+        snapshot.events.push_back(user("delivered", 3, 110, "operator text"));
+        assert_eq!(matching_input(&snapshot, &fence, "operator text").as_deref(), Some("delivered"));
+    }
+
+
+    #[test]
+    fn human_enqueue_requires_a_later_user_event_to_confirm() {
         for provider in ["claude", "claude-codex"] {
             let (mut snapshot, mut fence) = claude_picture();
             snapshot.brief.binding.agent_kind = provider.into();
@@ -313,32 +323,33 @@ mod tests {
             snapshot.adapter = AgentAdapter::new(provider).unwrap();
             queue_record(&mut snapshot, "new", 2, 100, enqueue("日本語の依頼\n二行目"));
             assert!(snapshot.events.is_empty());
-            assert_eq!(matching_input(&snapshot, &fence, "\u{1b}[200~日本語の依頼\n二行目\u{1b}[201~"), Some("new:queue".into()));
-            assert_eq!(matching_input(&snapshot, &fence, "日本語の依頼\u{1b}[13;2u二行目"), Some("new:queue".into()));
+            assert_eq!(matching_input(&snapshot, &fence, "日本語の依頼\n二行目"), None);
+            snapshot.events.push_back(user("delivered", 3, 110, "日本語の依頼\n二行目"));
+            assert_eq!(matching_input(&snapshot, &fence, "\u{1b}[200~日本語の依頼\n二行目\u{1b}[201~"), Some("delivered".into()));
+            assert_eq!(matching_input(&snapshot, &fence, "日本語の依頼\u{1b}[13;2u二行目"), Some("delivered".into()));
         }
     }
 
     #[test]
-    fn repeated_enqueue_needs_both_a_new_revision_and_a_record_after_the_fence() {
+    fn repeated_delivery_needs_both_a_new_revision_and_a_record_after_the_fence() {
         let (mut snapshot, fence) = claude_picture();
-        queue_record(&mut snapshot, "old", 1, 10, enqueue("repeat"));
-        queue_record(&mut snapshot, "old-revision", 1, 100, enqueue("repeat"));
-        queue_record(&mut snapshot, "partial-before-send", 2, 90, enqueue("repeat"));
+        snapshot.events.push_back(user("old", 1, 10, "repeat"));
+        snapshot.events.push_back(user("old-revision", 1, 100, "repeat"));
+        snapshot.events.push_back(user("partial-before-send", 2, 90, "repeat"));
         assert_eq!(matching_input(&snapshot, &fence, "repeat"), None);
-        queue_record(&mut snapshot, "new", 3, 110, enqueue("repeat"));
-        assert_eq!(matching_input(&snapshot, &fence, "repeat"), Some("new:queue".into()));
+        snapshot.events.push_back(user("new", 3, 110, "repeat"));
+        assert_eq!(matching_input(&snapshot, &fence, "repeat"), Some("new".into()));
     }
 
     #[test]
-    fn native_enqueues_without_ids_are_distinct_occurrences_across_send_fences() {
+    fn native_enqueues_without_ids_are_not_delivery_across_send_fences() {
         let (mut snapshot, mut fence) = claude_picture();
         let raw = enqueue("repeat").to_string();
         assert!(snapshot.adapter.decode_record(&raw, ByteRange { start: 100, end: 150 }, 2).unwrap().is_empty());
-        assert!(matching_input(&snapshot, &fence, "repeat").is_some());
-        fence.binding.source_revision = 2; fence.read_offset = 150;
         assert_eq!(matching_input(&snapshot, &fence, "repeat"), None);
+        fence.binding.source_revision = 2; fence.read_offset = 150;
         assert!(snapshot.adapter.decode_record(&raw, ByteRange { start: 150, end: 200 }, 3).unwrap().is_empty());
-        assert!(matching_input(&snapshot, &fence, "repeat").is_some());
+        assert_eq!(matching_input(&snapshot, &fence, "repeat"), None);
     }
 
     #[test]
@@ -377,9 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn queued_receipts_keep_source_identity_and_non_claude_formats_unchanged() {
+    fn delivery_keeps_source_identity_and_other_provider_enqueues_do_not_confirm() {
         let (mut snapshot, fence) = claude_picture();
-        queue_record(&mut snapshot, "new", 2, 100, enqueue("repeat"));
+        snapshot.events.push_back(user("delivered", 2, 100, "repeat"));
         for change in 0..9 {
             let mut other = snapshot.clone();
             match change {
@@ -397,6 +408,7 @@ mod tests {
         }
         for provider in ["codex", "grok"] {
             let mut other = snapshot.clone();
+            other.events.clear();
             other.adapter = AgentAdapter::new(provider).unwrap();
             queue_record(&mut other, "other-provider", 2, 100, enqueue("repeat"));
             assert_eq!(matching_input(&other, &fence, "repeat"), None);

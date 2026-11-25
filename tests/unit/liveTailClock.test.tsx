@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { applicationIntervals } from "./fixtures/applicationIntervals";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
@@ -41,8 +42,9 @@ it.each([
     const text = () => popup()?.querySelector(".live-tail-fact")?.textContent;
     const rowBefore = row.innerHTML;
     expect(text()).toBe(before);
-    expect(intervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), 1_000);
-    const popupInterval = intervalSpy.mock.results[0].value;
+    const applicationTimers = applicationIntervals(intervalSpy);
+    expect(applicationTimers.map(item => item.args)).toEqual([[expect.any(Function), 1_000]]);
+    const popupInterval = applicationTimers[0].handle;
     await act(async () => vi.advanceTimersByTimeAsync(999));
     expect(text()).toBe(before);
     process.env.TZ = "America/New_York";

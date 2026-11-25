@@ -6,6 +6,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex as SnapshotMutex;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -13,6 +14,9 @@ use tokio::sync::Mutex;
 const LOAD_PROJECT: &str = "loadCodeAssist";
 const FETCH_MODELS: &str = "fetchAvailableModels";
 const CACHE_TTL: Duration = Duration::from_millis(USAGE_CACHE_TTL_MS as u64);
+const AGY_REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const AGY_REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
+const EXPIRED_CODE: &str = "usage.error.gemini_expired";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UsageError {
@@ -28,7 +32,7 @@ pub(crate) enum UsageError {
 impl UsageError {
     fn row(self, email: Option<String>, now: DateTime<Utc>) -> ProfileUsage {
         let (state, code) = match self {
-            Self::Expired => (UsageRowState::WaitForCli, "usage.error.gemini_expired"),
+            Self::Expired => (UsageRowState::WaitForCli, EXPIRED_CODE),
             Self::NotSignedIn => (
                 UsageRowState::NeedsRelogin,
                 "usage.error.gemini_not_signed_in",
@@ -50,6 +54,12 @@ impl UsageError {
 pub(crate) struct Credentials {
     token: AccessToken,
     id_token_email: Option<String>,
+}
+
+impl Credentials {
+    fn email(&self) -> Option<String> {
+        self.id_token_email.as_ref().filter(|email| !email.trim().is_empty()).cloned()
+    }
 }
 
 #[derive(Deserialize)]
@@ -117,10 +127,50 @@ fn read_credentials() -> Result<Credentials, UsageError> {
     Err(UsageError::Unsupported)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefreshOutcome {
+    Success,
+    Failed,
+    #[cfg(any(windows, test))]
+    TimedOut,
+}
+
+#[cfg(windows)]
+async fn run_agy_models(program: &Path, timeout: Duration) -> RefreshOutcome {
+    use crate::util::process::CREATE_NO_WINDOW;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    let mut command = std::process::Command::new(program);
+    command.arg("models")
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    let Ok(mut child) = command.spawn() else { return RefreshOutcome::Failed };
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) if status.success() => RefreshOutcome::Success,
+        Ok(_) => RefreshOutcome::Failed,
+        Err(_) => {
+            let _ = child.kill().await;
+            RefreshOutcome::TimedOut
+        }
+    }
+}
+
 pub(crate) trait Source {
     fn now(&self) -> DateTime<Utc> { Utc::now() }
 
     fn credentials(&self) -> Result<Credentials, UsageError>;
+
+    fn refresh_program(&self) -> Option<PathBuf> { None }
+
+    fn refresh(&self, _program: &Path, _timeout: Duration) -> impl Future<Output = RefreshOutcome> + Send {
+        std::future::ready(RefreshOutcome::Failed)
+    }
 
     fn post(
         &self,
@@ -135,6 +185,30 @@ pub(crate) struct Antigravity;
 impl Source for Antigravity {
     fn credentials(&self) -> Result<Credentials, UsageError> {
         read_credentials()
+    }
+
+    #[cfg(windows)]
+    fn refresh_program(&self) -> Option<PathBuf> {
+        let installed = std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("agy/bin/agy.exe"));
+        installed.into_iter().chain(
+            std::env::var_os("PATH").iter()
+                .flat_map(std::env::split_paths)
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| dir.join("agy.exe")),
+        ).find(|path| path.is_absolute() && path.is_file())
+    }
+
+    #[cfg(windows)]
+    async fn refresh(&self, program: &Path, timeout: Duration) -> RefreshOutcome {
+        let started = Instant::now();
+        let outcome = run_agy_models(program, timeout).await;
+        let result = match outcome {
+            RefreshOutcome::Success => "success",
+            RefreshOutcome::Failed => "failed",
+            RefreshOutcome::TimedOut => "timeout",
+        };
+        crate::diag::log(&format!("[usage] gemini agy refresh result={result} elapsed_secs={:.3}", started.elapsed().as_secs_f64()));
+        outcome
     }
 
     async fn post(
@@ -330,11 +404,15 @@ pub(crate) struct UsageSnapshot {
 }
 
 impl UsageSnapshot {
+    pub(crate) fn expired_since_fetch(&self, now: DateTime<Utc>) -> bool {
+        self.expiry.is_some_and(|expiry| expiry <= now)
+    }
+
     pub(crate) fn report_at(self, now: DateTime<Utc>) -> (u64, ProfileUsage) {
         // Expiry advances the report revision within the same snapshot. A
         // delayed report of its quota must not overwrite that expired row.
         let revision = self.revision * 2;
-        if self.expiry.is_some_and(|expiry| expiry <= now) {
+        if self.expired_since_fetch(now) {
             (revision + 1, UsageError::Expired.row(self.row.email, now))
         } else {
             (revision, self.row)
@@ -348,11 +426,33 @@ struct FetchSchedule {
     backoff_ms: Option<i64>,
     // Only a current HTTP 429 wait has a resume time in the report.
     retry_at: Option<DateTime<Utc>>,
+    last_refresh_attempt: Option<Instant>,
 }
 
 impl FetchSchedule {
+    async fn refresh_credentials(&mut self, source: &impl Source) -> Option<Credentials> {
+        if self.last_refresh_attempt.is_some_and(|last| last.elapsed() < AGY_REFRESH_INTERVAL) {
+            return None;
+        }
+        let program = source.refresh_program()?;
+        // The schedule lock stays held across the attempt. Set the clock before
+        // starting agy so a failed or cancelled attempt also uses the interval.
+        self.last_refresh_attempt = Some(Instant::now());
+        if source.refresh(&program, AGY_REFRESH_TIMEOUT).await != RefreshOutcome::Success {
+            return None;
+        }
+        source.credentials().ok()
+    }
+
     fn finish(&mut self, result: &Result<Vec<NamedWindow>, UsageError>, now: DateTime<Utc>) -> Instant {
         self.retry_at = None;
+        if matches!(result, Err(UsageError::NoUsage)) {
+            // A successful response without displayable quotas can be tried
+            // again on the next poll or manual refresh.
+            self.backoff_ms = None;
+            self.next_request_at = None;
+            return Instant::now();
+        }
         let delay = match result {
             Err(UsageError::RateLimited) => {
                 let backoff = next_429_backoff_ms(self.backoff_ms);
@@ -404,46 +504,67 @@ impl UsageCache {
         let mut schedule = self.schedule.lock().await;
         let cached = self.snapshot();
         if !explicit {
-            if let Some(entry) = cached.as_ref().filter(|entry| Instant::now() < entry.fresh_until) {
+            let current = now();
+            if let Some(entry) = cached.as_ref().filter(|entry| {
+                Instant::now() < entry.fresh_until && entry.expiry.is_none_or(|expiry| expiry > current)
+            }) {
                 return entry.clone();
             }
         }
 
-        let credentials = match source.credentials() {
+        let mut credentials = match source.credentials() {
             Ok(credentials) => credentials,
             Err(error) => return self.remember(error.row(None, now()), None, Instant::now() + CACHE_TTL),
         };
-        let expiry = credentials.token.expiry;
-        let email = credentials.id_token_email.filter(|email| !email.trim().is_empty());
-        let current = now();
-        if check_expiry(expiry, current).is_err() {
-            return self.remember(UsageError::Expired.row(email, current), Some(expiry), Instant::now() + CACHE_TTL);
-        }
+        let mut may_refresh = true;
+        loop {
+            let current = now();
+            let expiry = credentials.token.expiry;
+            let email = credentials.email();
+            let (result, fresh_until) = if check_expiry(expiry, current).is_err() {
+                (Err(UsageError::Expired), Instant::now() + CACHE_TTL)
+            } else {
+                if let Some(next_request_at) = schedule.next_request_at.filter(|next| Instant::now() < *next) {
+                    if let Some(entry) = cached.as_ref().filter(|entry| entry.expiry == Some(expiry) && entry.row.email == email) {
+                        return entry.clone();
+                    }
+                    // The new login has no quota yet and is waiting for its next request.
+                    return self.remember(waiting_row(email, current, schedule.retry_at), Some(expiry), next_request_at);
+                }
 
-        if let Some(next_request_at) = schedule.next_request_at.filter(|next| Instant::now() < *next) {
-            if let Some(entry) = cached.filter(|entry| entry.expiry == Some(expiry) && entry.row.email == email) {
-                return entry;
+                // Reserve the minimum interval even if the caller drops this future.
+                schedule.next_request_at = Some(Instant::now() + CACHE_TTL);
+                schedule.retry_at = None;
+                let result = fetch_windows(source, &credentials.token, &now).await;
+                let current = now();
+                let fresh_until = schedule.finish(&result, current);
+                (check_expiry(expiry, current).and(result), fresh_until)
+            };
+            if may_refresh && matches!(result, Err(UsageError::Expired)) {
+                may_refresh = false;
+                let refreshed = schedule.refresh_credentials(source).await;
+                if let Some(updated) = refreshed.filter(|updated| check_expiry(updated.token.expiry, now()).is_ok()) {
+                    credentials = updated;
+                    // Honor any active server backoff, including one that began
+                    // in the request during which the credential expired.
+                    if schedule.retry_at.is_none() {
+                        schedule.next_request_at = None;
+                    }
+                    continue;
+                }
             }
-            // The new login has no quota yet and is waiting for its next request.
-            return self.remember(waiting_row(email, current, schedule.retry_at), Some(expiry), next_request_at);
+            let current = now();
+            let row = match result {
+                Ok(windows) => {
+                    let mut row = usage_row(email, current);
+                    row.model_windows = windows;
+                    row
+                }
+                Err(UsageError::RateLimited) => waiting_row(email, current, schedule.retry_at),
+                Err(error) => error.row(email, current),
+            };
+            return self.remember(row, Some(expiry), fresh_until);
         }
-
-        // Reserve the minimum interval even if the caller drops this future.
-        schedule.next_request_at = Some(Instant::now() + CACHE_TTL);
-        schedule.retry_at = None;
-        let result = fetch_windows(source, &credentials.token, &now).await;
-        let current = now();
-        let fresh_until = schedule.finish(&result, current);
-        let row = match check_expiry(expiry, current).and(result) {
-            Ok(windows) => {
-                let mut row = usage_row(email, current);
-                row.model_windows = windows;
-                row
-            }
-            Err(UsageError::RateLimited) => waiting_row(email, current, schedule.retry_at),
-            Err(error) => error.row(email, current),
-        };
-        self.remember(row, Some(expiry), fresh_until)
     }
 }
 

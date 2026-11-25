@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/lib/ipc", () => ({
   getAccountUsage: vi.fn(),
+  getGeminiUsage: vi.fn(),
 }));
 
-import { getAccountUsage } from "../../src/lib/ipc";
+import { getAccountUsage, getGeminiUsage } from "../../src/lib/ipc";
+import { geminiNeedsLogin, usageErrorMessage } from "../../src/lib/accountRows";
 import type { AccountUsageReport, ProfileUsage } from "../../src/lib/ipc";
 import { __resetUsageStoreForTests, useUsageStore } from "../../src/stores/usageStore";
+import { geminiSignedOut } from "./fixtures/geminiSignedOut";
 
 const mockedGetAccountUsage = vi.mocked(getAccountUsage);
 
@@ -45,6 +48,32 @@ function makeRow(profileId: string, pct: number): ProfileUsage {
 function makeReport(rows: ProfileUsage[], generatedAt = "2026-01-01T00:00:00Z"): AccountUsageReport {
   return { accounts: rows, generated_at: generatedAt };
 }
+
+it.each([true, false])("L12b rereads Gemini for a newer explicit refresh (first explicit %s)", async firstExplicit => {
+  __resetUsageStoreForTests();
+  const first = deferred<AccountUsageReport>();
+  const signedIn = { ...makeRow("live:gemini", 50), provider: "gemini" as const };
+  const signedOut = geminiSignedOut;
+  mockedGetAccountUsage.mockResolvedValue(makeReport([makeRow("other", 25)]));
+  const gemini = vi.mocked(getGeminiUsage);
+  gemini.mockReset()
+    .mockReturnValueOnce(first.promise)
+    .mockResolvedValueOnce({ ...makeReport([signedOut]), gemini_revision: 2 });
+  try {
+    await useUsageStore.getState().fetch(firstExplicit);
+    expect(useUsageStore.getState().accounts.map(row => row.profile_id)).toEqual(["other"]);
+    await useUsageStore.getState().fetch(true);
+    await useUsageStore.getState().fetch(true);
+    first.resolve({ ...makeReport([signedIn]), gemini_revision: 1 });
+    await vi.waitFor(() => expect(useUsageStore.getState().accounts).toEqual([makeRow("other", 25), signedOut]));
+    expect(gemini.mock.calls).toEqual([[firstExplicit], [true]]);
+    expect(usageErrorMessage(signedOut.error_code)).toContain("ログインしていません");
+    expect(geminiNeedsLogin(useUsageStore.getState().accounts[1])).toBe(true);
+  } finally {
+    gemini.mockReset();
+    __resetUsageStoreForTests();
+  }
+});
 
 describe("useUsageStore", () => {
   beforeEach(() => {
@@ -217,9 +246,9 @@ describe("useUsageStore", () => {
   it("requests current metadata only for an explicit user refresh", async () => {
     mockedGetAccountUsage.mockResolvedValue(makeReport([]));
     await useUsageStore.getState().fetch();
-    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith();
+    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith(false, undefined, true);
     await useUsageStore.getState().fetch(true);
-    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith(true);
+    expect(mockedGetAccountUsage).toHaveBeenLastCalledWith(true, undefined, true);
   });
 
   it("replaces the row list outright rather than merging", async () => {
@@ -232,4 +261,27 @@ describe("useUsageStore", () => {
 
     expect(useUsageStore.getState().accounts.map((row) => row.profile_id)).toEqual(["a"]);
   });
+});
+
+it("keeps the signed-out Gemini row when a queued manual refresh fails", async () => {
+  __resetUsageStoreForTests();
+  const initial = deferred<AccountUsageReport>();
+  const manual = deferred<AccountUsageReport>();
+  const other = makeRow("other", 30);
+  const gemini = vi.mocked(getGeminiUsage);
+  gemini.mockReset().mockReturnValueOnce(initial.promise).mockReturnValueOnce(manual.promise);
+  mockedGetAccountUsage.mockResolvedValue(makeReport([other]));
+  try {
+    await useUsageStore.getState().fetch();
+    await useUsageStore.getState().fetch(true);
+    initial.resolve({ ...makeReport([geminiSignedOut]), gemini_revision: 1 });
+    await vi.waitFor(() => expect(gemini.mock.calls).toEqual([[false], [true]]));
+    manual.reject(new Error("temporary transport failure"));
+    await manual.promise.catch(() => {});
+    expect(useUsageStore.getState().accounts).toEqual([other, geminiSignedOut]);
+    expect(geminiNeedsLogin(useUsageStore.getState().accounts[1])).toBe(true);
+  } finally {
+    gemini.mockReset();
+    __resetUsageStoreForTests();
+  }
 });

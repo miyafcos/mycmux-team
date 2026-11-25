@@ -21,6 +21,14 @@ vi.mock("../../src/stores/cliLoginStore", async () => {
   return { useCliLoginStore: create(() => ({ byProvider: { claude: null, codex: null, grok: null }, startAccountHome: mocks.start })) };
 });
 
+const listListeners = new Set<() => void>();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, notify: () => void) => {
+    if (name === "tab-account-evidence-updated") listListeners.add(notify);
+    return () => { listListeners.delete(notify); };
+  }),
+}));
+
 import { TabAccountSettings, TabAccountSettingsProvider } from "../../src/components/settings/TabAccountSettings";
 import { useCliLoginStore } from "../../src/stores/cliLoginStore";
 import { useCliAccountStore } from "../../src/stores/cliAccountStore";
@@ -72,6 +80,8 @@ async function editor(secret: string) {
   return input;
 }
 
+const tokenWriteId = expect.stringMatching(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+
 describe("S-1 write-only Claude token paste", () => {
   it("explains external setup-token, shows the restrictions, and uses a password input", async () => {
     await render();
@@ -99,7 +109,7 @@ describe("S-1 write-only Claude token paste", () => {
     }
     await click("保存");
     expect(mocks.save).toHaveBeenCalledTimes(1);
-    expect(mocks.save).toHaveBeenCalledWith("claude-fixture", secret);
+    expect(mocks.save).toHaveBeenCalledWith("claude-fixture", secret, tokenWriteId);
     expect(input.value).toBe("");
     expect(host.querySelector('input[type="password"]')).toBeNull();
     expect(host.innerHTML).not.toContain(secret);
@@ -133,10 +143,10 @@ describe("S-1 write-only Claude token paste", () => {
       throw mismatch;
     });
     await click("保存");
-    expect(mocks.save).toHaveBeenCalledExactlyOnceWith("claude-fixture", secret);
+    expect(mocks.save).toHaveBeenCalledExactlyOnceWith("claude-fixture", secret, tokenWriteId);
     expect(mocks.tokens).toHaveBeenCalledTimes(2);
     expect(mocks.tokens.mock.invocationCallOrder[1]).toBeGreaterThan(mocks.save.mock.invocationCallOrder[0]);
-    expect(host.textContent).toContain("登録済み・期限 2027-01-01・持ち主: 不一致 (このトークンでは起動しません)");
+    expect(host.textContent).toContain("不一致・期限 2027-01-01・持ち主: 不一致 (このトークンでは起動しません)");
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(cliAccountMessage(mismatch));
     expect(input.value).toBe("");
     expect(host.querySelector('input[type="password"]')).toBeNull();
@@ -218,12 +228,12 @@ describe("S-2 token removal", () => {
 describe("S-3 Codex/Grok tab logins", () => {
   it.each(["codex", "grok"] as const)("%s renders all home states, owner checks, and the matching login action", async provider => {
     for (const [state, label, action] of [
-      [null, "未作成", "タブでも使う"], ["created", "ログイン待ち", "タブでも使う"],
-      ["awaiting_login", "ログイン待ち", "タブでも使う"], ["ready", "使える", "再ログイン"],
-      ["needs_login", "再ログインが必要", "再ログイン"],
+      [null, "未登録", "タブ用に登録"], ["created", "未登録", "タブ用に登録"],
+      ["awaiting_login", "未登録", "タブ用に登録"], ["ready", "登録済み", "登録し直す"],
+      ["needs_login", "再ログインが必要", "登録し直す"],
     ] as const) {
       await act(async () => root.render(null));
-      mocks.homes.mockResolvedValue(state ? [{ provider, profile_id: provider + "-fixture", state, owner: "matched", generation: 1 }] : []);
+      mocks.homes.mockResolvedValue(state ? [{ provider, profile_id: provider + "-fixture", state, owner: "matched", generation: state === "created" || state === "awaiting_login" ? 0 : 1 }] : []);
       await render(provider);
       expect(host.textContent).toContain(label);
       if (state) expect(host.textContent).toContain("持ち主: 確認済み");
@@ -236,29 +246,32 @@ describe("S-3 Codex/Grok tab logins", () => {
     expect(host.textContent).not.toContain(provider + "-fixture");
     expect(host.textContent).not.toContain(launcherStrings.accountClaudeLimitations);
   });
-  it("shows unverified ownership and refreshes after the existing login flow ends", async () => {
+  it("shows the saved home status after a list notification", async () => {
     mocks.homes.mockResolvedValue([{ provider: "codex", profile_id: "codex-fixture", state: "awaiting_login", owner: "unverified", generation: 0 }]);
     await render("codex");
-    expect(host.textContent).toContain("ログイン待ち・持ち主: 未確認");
+    expect(host.textContent).toContain("未登録・持ち主: 未確認");
     mocks.homes.mockResolvedValue([{ provider: "codex", profile_id: "codex-fixture", state: "ready", owner: "matched", generation: 1 }]);
-    await act(async () => useCliLoginStore.setState({ byProvider: { claude: null, codex: null, grok: null } }));
-    expect(host.textContent).toContain("使える・持ち主: 確認済み");
+    await act(async () => { for (const notify of listListeners) notify(); });
+    expect(host.textContent).toContain("登録済み・持ち主: 確認済み");
+    mocks.homes.mockResolvedValue([{ provider: "codex", profile_id: "codex-fixture", state: "needs_login", owner: "unverified", generation: 1 }]);
+    await act(async () => { for (const notify of listListeners) notify(); });
+    expect(host.textContent).toContain("再ログインが必要・持ち主: 未確認");
   });
   it.each(["codex", "grok"] as const)("%s unregisters only after confirmation and explains home_in_use", async provider => {
     mocks.homes.mockResolvedValue([{ provider, profile_id: provider + "-fixture", state: "ready", owner: "matched", generation: 1 }]);
     await render(provider);
     mocks.confirm.mockResolvedValueOnce(false);
-    await click("タブ用の登録を外す");
+    await click("外す");
     expect(mocks.unregister).not.toHaveBeenCalled();
     expect(mocks.confirm.mock.calls[0][0]).toContain("会話と設定は残ります");
     mocks.unregister.mockRejectedValueOnce("cli_account.error.home_in_use");
-    await click("タブ用の登録を外す");
+    await click("外す");
     expect(mocks.unregister).toHaveBeenCalledExactlyOnceWith(provider, provider + "-fixture");
     expect(host.textContent).toContain(cliAccountMessage("cli_account.error.home_in_use"));
     expect(host.textContent).not.toContain("cli_account.error.");
     mocks.unregister.mockImplementation(async () => { mocks.homes.mockResolvedValue([]); });
-    await click("タブ用の登録を外す");
-    expect(host.textContent).toContain("未作成");
+    await click("外す");
+    expect(host.textContent).toContain("未登録");
   });
 });
 
@@ -272,7 +285,7 @@ describe("V1 confirmation labels and recheck", () => {
   ])("shows the exact %s registration wording", async (owner_check, label) => {
     mocks.tokens.mockResolvedValue([{ ...registered, owner_check }]);
     await render();
-    expect(host.textContent).toContain("登録済み・期限 2027-01-01・持ち主: " + label);
+    expect(host.textContent).toContain((owner_check === "mismatch" ? "不一致" : "登録済み") + "・期限 2027-01-01・持ち主: " + label);
     expect(button("確かめ直す").disabled).toBe(false);
   });
   it("rechecks only the profile, disables duplicate requests, and refreshes the result", async () => {
@@ -283,7 +296,7 @@ describe("V1 confirmation labels and recheck", () => {
     await click("確かめ直す");
     expect(button("確かめ直す").disabled).toBe(true);
     await click("確かめ直す");
-    expect(mocks.recheck).toHaveBeenCalledExactlyOnceWith("claude-fixture");
+    expect(mocks.recheck).toHaveBeenCalledExactlyOnceWith("claude-fixture", tokenWriteId);
     mocks.tokens.mockResolvedValue([{ ...registered, owner_check: "org_matched" }]);
     await act(async () => finish(registered));
     expect(button("確かめ直す").disabled).toBe(false);
@@ -350,7 +363,7 @@ describe("V-FIX1 settings recheck outcomes", () => {
     await render();
     mocks.tokens.mockResolvedValue([{ ...registered, owner_check: "mismatch" }]);
     await click("確かめ直す");
-    expect(host.textContent).toContain("登録済み・期限 2027-01-01・持ち主: 不一致 (このトークンでは起動しません)");
+    expect(host.textContent).toContain("不一致・期限 2027-01-01・持ち主: 不一致 (このトークンでは起動しません)");
     expect(host.querySelector('[role="alert"], [role="status"]')).toBeNull();
   });
 });

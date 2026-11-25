@@ -248,6 +248,12 @@ export function formatResetShort(iso: string, now: Date = new Date()): string {
     : resetDayFormatter.format(parsed);
 }
 
+export const GEMINI_ACCOUNT_LIMIT = "Gemini は 1 つのアカウントだけ使えます。切り替えは agy でログインし直します";
+
+export function geminiNeedsLogin(row: ProfileUsage): boolean {
+  return row.error_code === "usage.error.gemini_not_signed_in" || row.error_code === "usage.error.gemini_expired";
+}
+
 const USAGE_ERROR_MESSAGE: Record<string, string> = {
   "usage.error.foreign_token":
     "保存されたログイン情報が別のアカウント{owner}のものだったため、表示を止めました。このアカウントで再ログインしてください。",
@@ -262,7 +268,7 @@ const USAGE_ERROR_MESSAGE: Record<string, string> = {
   "usage.error.codex_unsupported": "切り替えると表示されます。",
   "usage.error.grok_unsupported": grokAccountStrings.usageUnsupported,
   "usage.error.gemini_expired":
-    "Gemini のログインの期限が切れています。agy を一度起動すると更新されます",
+    "Gemini のログインを更新できませんでした。「ログイン」から agy を開いてください",
   "usage.error.gemini_not_signed_in": "agy にログインしていません",
   "usage.error.gemini_credentials": "Gemini の認証情報を読み取れませんでした",
   "usage.error.gemini_unsupported": "この環境では Gemini の使用量を取得できません",

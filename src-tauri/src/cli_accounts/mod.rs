@@ -24,7 +24,7 @@ use std::{
     path::Path,
     sync::{Mutex, MutexGuard, OnceLock},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 pub const ERR_LAUNCH_TOKEN_INVALID: &str = "cli_account.error.launch_token_invalid";
@@ -1029,7 +1029,11 @@ pub async fn resolve_cli_account_orphan(
         .app_data_dir()
         .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
     let base = crate::test_profile::app_data_dir_from(default_dir);
-    resolve_orphan_inner(&base, &orphan_id, action, label)
+    let profile = resolve_orphan_inner(&base, &orphan_id, action, label)?;
+    if let Some(profile) = &profile {
+        let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile.id }));
+    }
+    Ok(profile)
 }
 
 #[cfg(test)]

@@ -152,6 +152,8 @@ pub struct LiveSessionEvents {
     pub brief_revision: u64,
     pub telemetry_health: String,
     pub events: Vec<SemanticEventEnvelope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presend_reply_source: Option<crate::ai::presend::PresendReplySource>,
 }
 
 /// One prompt the operator typed, as recorded in the transcript.
@@ -205,6 +207,214 @@ struct ServiceState {
     brief_revision: u64,
     refresh_in_progress: bool,
     last_refresh_finished_at: Option<std::time::Instant>,
+    presend_shared_through: HashMap<String, i64>,
+}
+
+impl ServiceState {
+    fn observe_presend_overlap(&mut self, now: i64) {
+        let mut seen = HashSet::new();
+        for snapshot in self.sessions.values() {
+            let binding = &snapshot.brief.binding;
+            if binding.pty_generation == 0 || binding.agent_session_id.is_empty()
+                || snapshot.brief.operational_state == "ended"
+            {
+                continue;
+            }
+            if !seen.insert(&binding.agent_session_id) {
+                let cutoff = self.presend_shared_through.entry(binding.agent_session_id.clone()).or_insert(now);
+                *cutoff = (*cutoff).max(now);
+            }
+        }
+    }
+
+    fn finish_presend_scan(&mut self, session_ids: &[String], now: i64) {
+        // Keep the overlap through the sweep that first removes a departed writer.
+        self.observe_presend_overlap(now);
+        let active: HashSet<_> = session_ids.iter().filter_map(|id| self.sessions.get(id))
+            .map(|snapshot| &snapshot.brief.binding.agent_session_id).collect();
+        self.presend_shared_through.retain(|id, _| active.contains(id));
+    }
+}
+
+fn presend_snapshot_recent(state: &ServiceState) -> bool {
+    state.last_refresh_finished_at.is_some_and(|at| at.elapsed() <= SWEEP_IDLE_GRACE)
+}
+
+fn presend_reply_source(state: &ServiceState, session_id: &str) -> Option<crate::ai::presend::PresendReplySource> {
+    let snapshot = state.sessions.get(session_id)?;
+    let brief = &snapshot.brief;
+    let binding = &brief.binding;
+    if brief.telemetry_health != "live" || brief.operational_state == "ended"
+        || binding.pty_generation == 0 || binding.agent_kind.is_empty() || binding.agent_session_id.is_empty()
+    {
+        return None;
+    }
+    // History views can prefer the newest binding for a shared transcript.
+    // A pre-send request cannot attribute its reply to either writer.
+    if state.sessions.iter().any(|(id, other)| {
+        let other_binding = &other.brief.binding;
+        id != session_id && other.brief.operational_state != "ended"
+            && other_binding.agent_session_id == binding.agent_session_id
+            && other_binding.pty_generation > 0
+    }) {
+        return None;
+    }
+    let (last, text) = snapshot.events.iter().rev().find_map(|event| match &event.kind {
+        SemanticEventKind::AgentMessage { text } => Some((event, text)),
+        _ => None,
+    })?;
+    let occurred_at = snapshot.adapter.presend_reply_time(last)?;
+    if state.presend_shared_through.get(&binding.agent_session_id)
+        .is_some_and(|cutoff| occurred_at <= (*cutoff).max(0) as u64)
+    {
+        return None;
+    }
+    Some(crate::ai::presend::PresendReplySource {
+        pty_generation: binding.pty_generation,
+        agent_kind: binding.agent_kind.clone(),
+        agent_session_id: binding.agent_session_id.clone(),
+        occurred_at,
+        event_id: last.event_id.clone(),
+        source_revision: last.source_revision,
+        source_byte_start: last.source_byte_start,
+        source_byte_end: last.source_byte_end,
+        file_generation: snapshot.cursor.stream_generation,
+        // A bootstrap after rotation can reuse the generation and byte window.
+        content_digest: sha256_hex(text.as_bytes()),
+    })
+}
+
+#[cfg(test)]
+mod presend_reply_tests {
+    use super::*;
+
+    fn with_reply(pty: &str, record: &str) -> SessionSnapshot {
+        with_reply_at(pty, record, 0, 7, 1)
+    }
+
+    fn with_reply_at(pty: &str, record: &str, start: u64, generation: u64, revision: u64) -> SessionSnapshot {
+        let binding = LiveBinding {
+            pty_session_id: pty.into(), agent_kind: "claude".into(), agent_session_id: "toy-conversation".into(),
+            pty_instance_id: pty.into(), pty_generation: generation, source_revision: revision, pty_input_revision: 0,
+        };
+        let mut snapshot = unavailable_snapshot(binding, "unavailable", "toy-service");
+        snapshot.adapter = AgentAdapter::new("claude").unwrap();
+        snapshot.brief.telemetry_health = "live".into();
+        snapshot.brief.operational_state = "working".into();
+        snapshot.events.extend(snapshot.adapter.decode_record(
+            record, ByteRange { start, end: start + record.len() as u64 }, revision,
+        ).unwrap());
+        assert!(snapshot.events.iter().any(|item| matches!(item.kind, SemanticEventKind::AgentMessage { .. })));
+        snapshot
+    }
+
+    impl LiveBriefService {
+        pub(crate) fn cache_presend_fixture_record(&self, pty: &str, record: &str, start: u64, revision: u64, file_generation: u64) {
+            let generation = self.manager.session_observation(pty).unwrap().0;
+            let mut snapshot = with_reply_at(pty, record, start, generation, revision);
+            snapshot.cursor.stream_generation = file_generation;
+            let mut state = self.state.lock().unwrap();
+            state.sessions.insert(pty.into(), snapshot);
+            state.last_refresh_finished_at = Some(std::time::Instant::now());
+        }
+    }
+
+    #[test]
+    fn l5_fix2_departed_writer_does_not_leave_its_reply_with_the_survivor() {
+        let from_shared_period = r#"{"type":"assistant","uuid":"from-b","timestamp":"2026-11-24T01:00:00Z","message":{"content":[{"type":"text","text":"synthetic reply from second tab"}]}}"#;
+        let from_sole_period = r#"{"type":"assistant","uuid":"from-a","timestamp":"2026-11-24T01:00:02Z","message":{"content":[{"type":"text","text":"synthetic reply from remaining tab"}]}}"#;
+        let mut state = ServiceState::default();
+        state.sessions.insert("first".into(), with_reply("first", from_shared_period));
+        state.sessions.insert("second".into(), with_reply("second", from_shared_period));
+        assert!(presend_reply_source(&state, "first").is_none());
+
+        let observed = chrono::DateTime::parse_from_rfc3339("2026-11-24T01:00:01Z").unwrap().timestamp_millis();
+        state.finish_presend_scan(&["first".into()], observed);
+        state.sessions.remove("second");
+        assert!(presend_reply_source(&state, "first").is_none(), "closing the second tab proved no writer");
+        state.sessions.insert("first".into(), with_reply("first", from_sole_period));
+        state.finish_presend_scan(&["first".into()], observed + 2_000);
+        assert!(presend_reply_source(&state, "first").is_some(), "a newer reply followed the sole-owner observation");
+    }
+
+    #[test]
+    fn l5_fix2_distinguishes_replies_with_the_same_recorded_timestamp() {
+        let old = r#"{"type":"assistant","uuid":"toy-old","timestamp":"2026-11-24T01:00:00Z","message":{"content":[{"type":"text","text":"first synthetic reply"}]}}"#;
+        let new = r#"{"type":"assistant","uuid":"toy-new","timestamp":"2026-11-24T01:00:00Z","message":{"content":[{"type":"text","text":"other synthetic reply"}]}}"#;
+        let mut state = ServiceState::default();
+        state.sessions.insert("first".into(), with_reply("first", old));
+        let before = presend_reply_source(&state, "first").unwrap();
+        state.sessions.insert("first".into(), with_reply("first", new));
+        let after = presend_reply_source(&state, "first").unwrap();
+        assert_eq!(before.occurred_at, after.occurred_at);
+        assert_ne!(before, after, "equal times must not make different replies interchangeable");
+    }
+
+
+    #[test]
+    fn l5_fix3_reply_requires_the_writer_of_the_record_between_sweeps() {
+        let record = r#"{"type":"assistant","uuid":"from-b","timestamp":"2026-11-24T01:00:00Z","message":{"content":[{"type":"text","text":"synthetic reply from second tab"}]}}"#;
+        for second_writes in [true, false] {
+            let manager = Arc::new(SessionManager::new());
+            let metadata = crate::pty::monitor::new_metadata_store();
+            let service = LiveBriefService::new(manager.clone(), metadata.clone());
+            let install = |id: &str, pid, event: &str| {
+                manager.install_fixture_owner(id, pid, Duration::ZERO, metadata.clone());
+                let epoch = manager.session_observation(id).unwrap().0;
+                let identity = crate::pty::manager::TrustedAgentIdentity {
+                    session_epoch: epoch, kind: "claude".into(), session_id: "toy-conversation".into(),
+                    agent_pid: pid, agent_started_at: 9, from_hook: true,
+                };
+                manager.remember_hook_identity(id, identity, Some(event));
+                epoch
+            };
+            let epoch = install("first", 41, if second_writes { "from-a" } else { "from-b" });
+            {
+                let mut state = service.state.lock().unwrap();
+                state.finish_presend_scan(&["first".into()], 1);
+                state.last_refresh_finished_at = Some(std::time::Instant::now());
+            }
+            if second_writes {
+                install("second", 42, "from-b");
+                assert_eq!(manager.iter_pids().len(), 2);
+                assert_eq!(manager.trusted_agent_identity("second").unwrap().session_id, "toy-conversation");
+                manager.kill("second").unwrap();
+            }
+            let mut snapshot = with_reply("first", record);
+            snapshot.brief.binding.pty_generation = epoch;
+            {
+                let mut state = service.state.lock().unwrap();
+                state.sessions.insert("first".into(), snapshot);
+                state.finish_presend_scan(&["first".into()], 2);
+                state.last_refresh_finished_at = Some(std::time::Instant::now());
+            }
+            let batch = service.events_with_presend_source(&["first".into()], 10, true).pop().unwrap();
+            assert_eq!(manager.iter_pids().len(), 1);
+            assert_eq!(batch.presend_reply_source.is_some(), !second_writes, "second_writes={second_writes}");
+            assert_eq!(service.presend_reply_source("first"), batch.presend_reply_source);
+        }
+    }
+
+    #[test]
+    fn l5_fix2_transcript_warning_omits_the_path() {
+        let synthetic_path = Path::new("sample/person@example.test/conversation.jsonl");
+        assert_eq!(skipped_line_warning(synthetic_path, 0), None);
+        assert_eq!(skipped_line_warning(synthetic_path, 3).as_deref(), Some("skipped 3 malformed transcript line(s)"));
+    }
+
+    #[test]
+    fn presend_excerpt_requires_a_recorded_time_and_an_unshared_conversation() {
+        let untimed = r#"{"type":"assistant","uuid":"toy-old","message":{"content":[{"type":"text","text":"old synthetic reply"}]}}"#;
+        let timed = r#"{"type":"assistant","uuid":"toy-new","timestamp":"2026-11-24T01:00:00Z","message":{"content":[{"type":"text","text":"fresh synthetic reply"}]}}"#;
+        let mut state = ServiceState::default();
+        state.sessions.insert("first".into(), with_reply("first", untimed));
+        assert!(presend_reply_source(&state, "first").is_none());
+        state.sessions.insert("first".into(), with_reply("first", timed));
+        assert!(presend_reply_source(&state, "first").is_some());
+        state.sessions.insert("second".into(), with_reply("second", timed));
+        assert!(presend_reply_source(&state, "first").is_none());
+        assert!(presend_reply_source(&state, "second").is_none());
+    }
 }
 
 /// The refresh flag is a lease: it must be released even if parsing or a
@@ -336,6 +546,7 @@ impl LiveBriefService {
         }
         let now = unix_ms();
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.observe_presend_overlap(now);
         for session_id in reused {
             let Some(owner) = self.manager.get(&session_id) else { continue; };
             if let Some(snapshot) = state.sessions.get_mut(&session_id).filter(|s| owner.session_epoch() == s.brief.binding.pty_generation) {
@@ -365,6 +576,7 @@ impl LiveBriefService {
             }
             state.sessions.insert(session_id, snapshot);
         }
+        state.finish_presend_scan(&session_ids, now);
         state.sessions.retain(|session_id, _| session_ids.contains(session_id));
         state.last_refresh_finished_at = Some(std::time::Instant::now());
         crate::perf_timeline::mark("livebrief.refresh.done", None);
@@ -477,7 +689,13 @@ impl LiveBriefService {
     /// one refresh run here, so a reader that polls without subscribing still
     /// sees the transcript tail instead of a ring nobody has read for minutes.
     pub fn events(&self, ids: &[String], limit: usize) -> Vec<LiveSessionEvents> {
-        if self.sweep_is_idle() {
+        self.events_with_presend_source(ids, limit, false)
+    }
+
+    fn events_with_presend_source(&self, ids: &[String], limit: usize, include_source: bool) -> Vec<LiveSessionEvents> {
+        // The reader can proceed with its draft when there is no recent transcript.
+        // It does not wake a full transcript sweep on the pre-send latency path.
+        if !include_source && self.sweep_is_idle() {
             self.refresh_all();
         }
         let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -490,6 +708,8 @@ impl LiveBriefService {
                     brief_revision: snapshot.brief.brief_revision,
                     telemetry_health: snapshot.brief.telemetry_health.clone(),
                     events: snapshot.events.iter().skip(skip).cloned().collect(),
+                    presend_reply_source: (include_source && presend_snapshot_recent(&state))
+                        .then(|| self.verified_presend_reply_source(&state, pty_session_id)).flatten(),
                 })
             })
             .collect()
@@ -499,6 +719,21 @@ impl LiveBriefService {
         let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         !state.refresh_in_progress
             && state.last_refresh_finished_at.is_none_or(|at| at.elapsed() > SWEEP_IDLE_GRACE)
+    }
+
+    pub(crate) fn presend_reply_source(&self, session_id: &str) -> Option<crate::ai::presend::PresendReplySource> {
+        let state = self.state.lock().ok()?;
+        if !presend_snapshot_recent(&state) { return None; }
+        self.verified_presend_reply_source(&state, session_id)
+    }
+
+    fn verified_presend_reply_source(&self, state: &ServiceState, session_id: &str) -> Option<crate::ai::presend::PresendReplySource> {
+        let source = presend_reply_source(state, session_id)?;
+        let (writer, recorded_id) = self.manager.presend_reply_event(session_id)?;
+        let (native_id, _) = source.event_id.rsplit_once(':')?;
+        // Byte ranges identify positions in a shared file, never its writer.
+        (source.matches(Some(source.pty_generation), &writer) && native_id == recorded_id
+            && native_id != format!("{}:{}", source.source_byte_start, source.source_byte_end)).then_some(source)
     }
 
     /// Builds an excerpt from already-cached data without refreshing transcripts.
@@ -1196,7 +1431,7 @@ pub(crate) fn read_dormancy_record_events(path: &Path, kind: &str, session_id: &
         return Err("Conversation has no saved reply or is awaiting input".into());
     }
     Ok(LiveSessionEvents { pty_session_id: pty.into(), brief_revision: snapshot.brief.brief_revision,
-        telemetry_health: "ended".into(), events: snapshot.events.into_iter().collect() })
+        telemetry_health: "ended".into(), events: snapshot.events.into_iter().collect(), presend_reply_source: None })
 }
 
 fn bootstrap_transcript_with_history(
@@ -1425,15 +1660,14 @@ fn apply_decoded_records(
     (source_revision, skipped)
 }
 
+fn skipped_line_warning(_path: &Path, skipped: usize) -> Option<String> {
+    (skipped > 0).then(|| format!("skipped {skipped} malformed transcript line(s)"))
+}
+
 fn warn_skipped_lines(path: &Path, skipped: usize) {
-    if skipped == 0 {
-        return;
+    if let Some(message) = skipped_line_warning(path, skipped) {
+        crate::diag_warn!("livebrief", "{message}");
     }
-    crate::diag_warn!(
-        "livebrief",
-        "skipped {skipped} malformed transcript line(s) in {}",
-        path.display()
-    );
 }
 
 fn advance_transcript_with_history(
@@ -1639,15 +1873,21 @@ pub async fn get_live_events(
     state: State<'_, AppState>,
     pty_session_ids: Vec<String>,
     limit: Option<usize>,
+    include_presend_source: Option<bool>,
 ) -> Result<Vec<LiveSessionEvents>, String> {
-    events_on_blocking_pool(state.livebrief_service.clone(), pty_session_ids, limit).await
+    events_on_blocking_pool(state.livebrief_service.clone(), pty_session_ids, limit, include_presend_source == Some(true)).await
 }
 
 async fn events_on_blocking_pool(
-    service: LiveBriefService, pty_session_ids: Vec<String>, limit: Option<usize>,
+    service: LiveBriefService, pty_session_ids: Vec<String>, limit: Option<usize>, include_source: bool,
 ) -> Result<Vec<LiveSessionEvents>, String> {
     crate::util::task::run_blocking("get_live_events", move || {
-        Ok(service.events(&pty_session_ids, clamp_event_limit(limit)))
+        let limit = clamp_event_limit(limit);
+        Ok(if include_source {
+            service.events_with_presend_source(&pty_session_ids, limit, true)
+        } else {
+            service.events(&pty_session_ids, limit)
+        })
     }).await
 }
 
@@ -1923,7 +2163,7 @@ mod tests {
             runtime.block_on(async {
                 let job = tokio::spawn(async move {
                     if snapshots { snapshots_on_blocking_pool(service).await.map(|_| ()) }
-                    else { events_on_blocking_pool(service, vec![], Some(200)).await.map(|_| ()) }
+                    else { events_on_blocking_pool(service, vec![], Some(200), false).await.map(|_| ()) }
                 });
                 tokio::task::yield_now().await;
                 assert!(release_tx.send(()).is_ok(), "IPC blocked the only async worker");

@@ -211,6 +211,29 @@ describe("production renderer heartbeat", () => {
     } finally { stop(); }
   });
 
+  it("L3 104 keeps an incomplete long frame sample finite", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => true });
+    vi.stubGlobal("performance", { now: () => 0 });
+    class FrameObserver extends FakePerformanceObserver {
+      static supportedEntryTypes = ["long-animation-frame"];
+    }
+    vi.stubGlobal("PerformanceObserver", FrameObserver);
+    const { initializeRendererHeartbeat } = await import("../../src/lib/perfDiagnostics");
+    const cleanup = initializeRendererHeartbeat();
+    try {
+      FrameObserver.instances[0].emitEntries([{
+        entryType: "long-animation-frame", startTime: 0, duration: 100,
+        renderStart: 25, styleAndLayoutStart: 50,
+        scripts: [{ duration: NaN, invokerType: "user-callback", forcedStyleAndLayoutDuration: 1 }],
+      } as unknown as PerformanceEntry]);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeatInvoke.mock.calls[0][1].heartbeat.progress).toMatchObject({ longestFrameMs: 100, workMs: 51 });
+    } finally {
+      cleanup();
+    }
+  });
+
   it("silently ignores backend rejections and synchronous IPC errors", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("document", { visibilityState: "visible", hasFocus: () => false });

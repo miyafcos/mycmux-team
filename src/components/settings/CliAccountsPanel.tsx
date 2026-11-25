@@ -1,10 +1,13 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { confirm } from "../../lib/appConfirmation";
 import { CliLoginProgress } from "../common/CliLoginProgress";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { useUsageStore } from "../../stores/usageStore";
 import { AccountSubscriptionDetails } from "../common/AccountSubscriptionDetails";
-import { useCliLoginStore } from "../../stores/cliLoginStore";
+import { openGeminiLogin, useCliLoginStore } from "../../stores/cliLoginStore";
+import { useAccountListRefresh, type AccountManagementSection } from "../../lib/tabAccounts";
+import { accountManagementSectionRendered } from "../../lib/mainDashboardRequests";
+import { GEMINI_ACCOUNT_LIMIT, geminiNeedsLogin, rowMessage } from "../../lib/accountRows";
 import { useToastStore } from "../../stores/toastStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
@@ -83,7 +86,10 @@ const listFrameStyle: CSSProperties = {
   overflow: "hidden",
 };
 
-export function CliAccountsPanel() {
+export function CliAccountsPanel({ accountSection, onLoginOpened }: {
+  accountSection?: AccountManagementSection;
+  onLoginOpened?: () => void;
+} = {}) {
   const fetchError = useCliAccountStore((state) => state.fetchError);
   const operationError = useCliAccountStore((state) => state.operationError);
   const lastSwitchResult = useCliAccountStore((state) => state.lastSwitchResult);
@@ -93,9 +99,22 @@ export function CliAccountsPanel() {
   const dismissOperationError = useCliAccountStore((state) => state.dismissOperationError);
   const dismissSwitchWarnings = useCliAccountStore((state) => state.dismissSwitchWarnings);
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  const requestedProfileAvailable = useCliAccountStore(state => Boolean(accountSection?.profileId
+    && state.profiles.some(profile => profile.provider === accountSection.provider && profile.id === accountSection.profileId)));
+  useAccountListRefresh(fetchAccounts);
   useEffect(() => {
-    void fetchAccounts();
-  }, [fetchAccounts]);
+    if (!accountSection) return;
+    const section = panelRef.current?.querySelector<HTMLElement>(`[data-account-provider="${accountSection.provider}"]`);
+    const row = requestedProfileAvailable && section
+      ? [...section.querySelectorAll<HTMLElement>("[data-cli-account-row]")]
+        .find(element => element.dataset.cliAccountRow === accountSection.profileId)
+      : undefined;
+    const target = row ?? section;
+    target?.scrollIntoView?.({ block: "start" });
+    target?.focus({ preventScroll: true });
+    if (section) accountManagementSectionRendered(accountSection.provider);
+  }, [accountSection, requestedProfileAvailable]);
 
   const openBackup = async (path?: string) => {
     const target = path ?? lastSwitchResult?.backup_dir ?? backupRoot;
@@ -111,8 +130,8 @@ export function CliAccountsPanel() {
   };
 
   return (
-    <TabAccountSettingsProvider>
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--cmux-space-7)", fontSize: 12 }}>
+    <TabAccountSettingsProvider accountSection={accountSection}>
+    <div ref={panelRef} style={{ display: "flex", flexDirection: "column", gap: "var(--cmux-space-7)", fontSize: 12 }}>
       <div style={{ display: "grid", gap: "var(--cmux-space-3)" }}>
         <p style={noteStyle}>
           CLI (claude / codex / grok コマンド) が今どのアカウントでログインしているかを表示し、登録済みアカウントへ切り替えます。切り替えは PC 全体に効きます (新しく起動するセッションから反映)。切り替え前には認証ファイルを自動バックアップします。
@@ -122,9 +141,10 @@ export function CliAccountsPanel() {
 
       <div style={{ display: "grid" }}>
         {SWITCHABLE_PROVIDERS.map((provider, index) => (
-          <ProviderPanel key={provider} provider={provider} divided={index > 0} />
+          <ProviderPanel key={provider} provider={provider} divided={index > 0} onLoginOpened={onLoginOpened} />
         ))}
       </div>
+      <GeminiManagement onLoginOpened={onLoginOpened} />
 
       {orphans.length > 0 && <OrphanSnapshots orphans={orphans} />}
 
@@ -184,7 +204,11 @@ export function CliAccountsPanel() {
  * the CLI login in a pane whose config directory points at a staging copy, so
  * the account that is currently logged in is never disturbed.
  */
-function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider; divided: boolean }) {
+function ProviderPanel({ provider, divided, onLoginOpened }: {
+  provider: SwitchableCliProvider;
+  divided: boolean;
+  onLoginOpened?: () => void;
+}) {
   // Stable-reference selectors; derive per-provider views outside (see
   // CliAccountMenu.tsx for the rationale).
   const allLive = useCliAccountStore((state) => state.live);
@@ -215,6 +239,8 @@ function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider;
   return (
     <section
       aria-label={PROVIDER_TITLE[provider]}
+      data-account-provider={provider}
+      tabIndex={-1}
       style={{
         display: "grid",
         gap: "var(--cmux-space-5)",
@@ -246,6 +272,11 @@ function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider;
               : "未ログイン"}
         </span>
       </div>
+      {provider === "grok" && live?.present && !live.error && !live.matched_profile_id && (
+        <p role="status" style={noteStyle}>
+          {live.identity_key ? "現在のログインの登録を確認しています…" : "Grok でログインし直してください。"}
+        </p>
+      )}
 
       <AutoSwitchToggle provider={provider} profiles={profiles} live={live} />
 
@@ -283,6 +314,7 @@ function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider;
               <ProfileRow
                 key={profile.id}
                 profile={profile}
+                onLoginOpened={onLoginOpened}
                 active={activity.active}
                 possiblyActive={activity.possiblyActive}
                 candidatePosition={lookAlikes.has(lookAlikeKey(profile)) ? index + 1 : undefined}
@@ -295,7 +327,7 @@ function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider;
       <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--cmux-space-3)" }}>
         <button
           type="button"
-          onClick={() => void startLogin(provider, "new")}
+          onClick={async () => { if (await startLogin(provider, "new")) onLoginOpened?.(); }}
           disabled={providerBusy}
           aria-label={addAccountLabel(provider)}
           style={{ ...inlineButtonStyle, ...(providerBusy ? disabledButtonStyle : {}) }}
@@ -316,13 +348,33 @@ function ProviderPanel({ provider, divided }: { provider: SwitchableCliProvider;
   );
 }
 
+function GeminiManagement({ onLoginOpened }: { onLoginOpened?: () => void }) {
+  const row = useUsageStore(state => state.accounts.find(account => account.provider === "gemini"));
+  const [showLimit, setShowLimit] = useState(false);
+  const needsLogin = row && geminiNeedsLogin(row);
+  return <section aria-label="Gemini" style={{
+    display: "grid", gap: "var(--cmux-space-3)", borderTop: "1px solid var(--cmux-border-hairline)",
+    paddingTop: "var(--cmux-space-7)",
+  }}>
+    <h4 style={{ margin: 0, fontSize: "inherit" }}>Gemini</h4>
+    {needsLogin && <p style={noteStyle}>{rowMessage(row)}</p>}
+    <div style={{ display: "flex", gap: "var(--cmux-space-3)", flexWrap: "wrap" }}>
+      {needsLogin && <button type="button" style={inlineButtonStyle}
+        onClick={async () => { if (await openGeminiLogin()) onLoginOpened?.(); }}>ログイン</button>}
+      <button type="button" style={inlineButtonStyle} onClick={() => setShowLimit(true)}>+ アカウントを追加</button>
+    </div>
+    {showLimit && <p role="status" style={noteStyle}>{GEMINI_ACCOUNT_LIMIT}</p>}
+  </section>;
+}
+
 function ProfileRow({
-  profile,
+  profile, onLoginOpened,
   active,
   possiblyActive,
   candidatePosition,
 }: {
   profile: CliAccountProfile;
+  onLoginOpened?: () => void;
   active: boolean;
   possiblyActive: boolean;
   candidatePosition?: number;
@@ -400,6 +452,7 @@ function ProfileRow({
   return (
     <div
       data-cli-account-row={profile.id}
+      tabIndex={-1}
       style={{
         ...accountGridStyle,
         padding: "var(--cmux-space-4) var(--cmux-space-5) var(--cmux-space-4) 0",
@@ -467,7 +520,7 @@ function ProfileRow({
         {profile.needs_relogin && (
           <RowButton
             label="再ログイン"
-            onClick={() => void startLogin(profile.provider, "reauth", profile.id)}
+            onClick={async () => { if (await startLogin(profile.provider, "reauth", profile.id)) onLoginOpened?.(); }}
             disabled={providerBusy}
           />
         )}
@@ -481,7 +534,7 @@ function ProfileRow({
         {!editing && <RowButton label="名前" onClick={() => { setLabelDraft(profile.label); setEditing(true); }} disabled={providerBusy} />}
         <RowButton label="削除" onClick={() => void handleDelete()} disabled={providerBusy} danger />
       </span>
-      <TabAccountSettings profile={profile} />
+      <TabAccountSettings profile={profile} onLoginOpened={onLoginOpened} />
     </div>
   );
 }

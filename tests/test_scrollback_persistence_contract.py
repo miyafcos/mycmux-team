@@ -17,12 +17,13 @@ def test_scrollback_store_stays_tauri_and_launcher_independent() -> None:
     )
 
 
-def test_discard_session_scrollback_is_async_and_calls_remove() -> None:
+def test_discard_session_scrollback_remains_async_and_preserves_shared_history() -> None:
     source = (
         REPO_ROOT / "src-tauri/src/commands/terminal.rs"
     ).read_text(encoding="utf-8")
     assert "pub async fn discard_session_scrollback(" in source
-    assert "scrollback_store::remove(dir, &session_id)" in source
+    body = source.split("pub async fn discard_session_scrollback(", 1)[1].split("#[tauri::command", 1)[0]
+    assert "scrollback_store::remove" not in body
 
     lib = (REPO_ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8")
     assert "commands::terminal::discard_session_scrollback" in lib

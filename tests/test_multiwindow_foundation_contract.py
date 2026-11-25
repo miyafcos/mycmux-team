@@ -309,8 +309,8 @@ def test_window_registry_commands_are_exposed() -> None:
 
     for snippet in [
         'invoke<string>("open_workspace_window", {',
-        'invoke<void>("publish_window_fragment", { fragment, requirePublished })',
-        'invoke<void>("quit_prepared", { fragmentPublished })',
+        'invoke<void>("publish_window_fragment", { fragment, requirePublished, publicationId })',
+        'invoke<void>("quit_prepared", { fragmentPublished, ...(sealed ? { sealed } : {}) })',
         'invoke<WorkspaceConfig[]>("take_pending_adoption", { label })',
         'invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel })',
         'invoke<WindowFragment[]>("get_window_fragments")',
@@ -331,10 +331,14 @@ def test_all_windows_publish_fragments_and_only_role_owner_writes_data_json() ->
     """
     text = read_repo_text(SOCKET_LISTENER)
     # Four mandatory Compiler API checks live in persistenceRoleGuardAst.test.ts.
-    publish = text.index("await publishWindowFragment(buildWindowFragment());")
-    end = text.index("return listenForDetachedDock();", publish)
-    assert "persistLoaded.then" in text[publish:end]
-    assert "useWorkspaceLayoutStore.subscribe(markDirty)" in text[publish:end]
+    start = text.index("const publishNow = ")
+    end = text.index("  }, []);", start)
+    publishing_effect = text[start:end]
+    build = publishing_effect.index("const fragment = buildWindowFragment();")
+    assert publishing_effect.index("await persistLoaded;") < build
+    assert "await publishWindowFragment(fragment);" in publishing_effect[build:]
+    assert "persistLoaded.then(() => {\n      if (!disposed) void publishNow();" in publishing_effect
+    assert "useWorkspaceLayoutStore.subscribe(markDirty)" in publishing_effect
 
 
 def test_leader_snapshot_merges_the_other_windows_workspaces() -> None:

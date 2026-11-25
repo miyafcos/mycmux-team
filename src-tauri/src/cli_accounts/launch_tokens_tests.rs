@@ -116,7 +116,7 @@ fn reregistration_replaces_secret_and_status_and_remove_is_idempotent() {
     let (dir, secrets) = fixture();
     save(dir.path(), &secrets, ID, &token(), |_| owner("owner-1")).unwrap();
     let replacement = format!("sk-ant-oat02-{}", "b".repeat(40));
-    let updated = save(dir.path(), &secrets, ID, &replacement, |_| OwnerCheck::Rejected { status: 403 }).unwrap();
+    let updated = save(dir.path(), &secrets, ID, &replacement, |_| owner("owner-1")).unwrap();
     assert_eq!(load_token(&secrets, ID).unwrap(), Some(replacement));
     assert_eq!(status_all(dir.path()).unwrap(), vec![updated]);
     remove(dir.path(), &secrets, ID).unwrap();
@@ -637,7 +637,7 @@ fn p1002_status_save_failure_restores_previous_secret_and_record() {
     let secrets = ObservedSecrets { memory, ..Default::default() };
     let saw_new_secret = std::cell::Cell::new(false);
     let error = super::save_with_status_writer(dir.path(), &secrets, ID, &p1002_replacement(),
-        |_| OwnerCheck::Unavailable.into(), |_, _| {
+        |_| owner("owner-1").into(), |_, _| {
             saw_new_secret.set(secrets.memory.read(ID).unwrap().as_deref() == Some(p1002_replacement().as_str()));
             Err(ERR_REGISTRY_SAVE_FAILED.into())
         }).unwrap_err();
@@ -682,7 +682,7 @@ fn p1002_failed_rollback_preserves_original_error_and_blocks_launch() {
     let before = save(dir.path(), &memory, ID, &token(), |_| owner("owner-1")).unwrap();
     let secrets = RollbackFailingSecrets { memory, writes: std::cell::Cell::new(0) };
     let error = super::save_with_status_writer(dir.path(), &secrets, ID, &p1002_replacement(),
-        |_| OwnerCheck::Unavailable.into(), p1002_status_failure).unwrap_err();
+        |_| owner("owner-1").into(), p1002_status_failure).unwrap_err();
     assert_p1002_fixed_error(&error, ERR_REGISTRY_SAVE_FAILED);
     assert_eq!(status_all(dir.path()).unwrap(), vec![before]);
     let launch_error = load_for_launch_with_store(dir.path(), &secrets, ID).err();
@@ -799,7 +799,7 @@ fn p1001_answer1_failed_rollback() -> (tempfile::TempDir, MemorySecrets, LaunchT
     save_status(dir.path(), &[before.clone()]).unwrap();
     let secrets = RollbackFailingSecrets { memory, writes: std::cell::Cell::new(0) };
     let error = super::save_with_status_writer(dir.path(), &secrets, ID, &p1002_replacement(),
-        |_| OwnerCheck::Unavailable.into(), p1002_status_failure).unwrap_err();
+        |_| owner("owner-1").into(), p1002_status_failure).unwrap_err();
     assert_p1002_fixed_error(&error, ERR_REGISTRY_SAVE_FAILED);
     assert_eq!(secrets.writes.get(), 2);
     assert_eq!(status_all(dir.path()).unwrap(), vec![before.clone()]);
@@ -998,4 +998,266 @@ fn rc01_legacy_save_returns_owner_error_after_recording_same_token_mismatch() {
     assert_eq!(after.expires_at, before.expires_at);
     assert_eq!(after.fingerprint, before.fingerprint);
     assert_eq!(secrets.writes.get(), 0);
+}
+
+#[test]
+fn launch_tokens_0915_weak_owner_checks_cannot_replace_verified_registration() {
+    let mut replaced = Vec::new();
+    for (label, result) in [
+        ("403", OwnerCheck::Rejected { status: 403 }.into()),
+        ("unavailable", OwnerCheck::Unavailable.into()),
+        ("matched organization", org_check("org-1")),
+        ("shared organization", org_check("org-1")),
+    ] {
+        let (dir, memory) = fixture();
+        organization(dir.path(), ID, Some("org-1"));
+        if label == "shared organization" {
+            let mut file = registry::load(dir.path()).unwrap();
+            let mut other = file.profiles[0].clone();
+            other.id = "claude-shared".into();
+            other.identity_key = "owner-2".into();
+            file.profiles.push(other);
+            registry::save(dir.path(), &file).unwrap();
+            organization(dir.path(), "claude-shared", Some("org-1"));
+        }
+        let before = save(dir.path(), &memory, ID, &token(), |_| owner("owner-1")).unwrap();
+        let status_bytes = fs::read(dir.path().join(FILE)).unwrap();
+        let secrets = ObservedSecrets { memory, ..Default::default() };
+        let persisted = std::cell::Cell::new(false);
+        let outcome = super::save_with_status_writer(dir.path(), &secrets, ID, &p1002_replacement(),
+            |_| result, |base, records| {
+                persisted.set(true);
+                save_status(base, records)
+            });
+        if outcome.err().as_deref() != Some("cli_account.error.launch_token_replacement_unverified")
+            || secrets.writes.get() != 0 || persisted.get()
+            || fs::read(dir.path().join(FILE)).unwrap() != status_bytes
+        {
+            replaced.push(label);
+        } else {
+            let launch = load_for_launch_with_store(dir.path(), &secrets, ID).unwrap().unwrap();
+            assert!(launch.token == token());
+            assert_eq!(launch.status, before);
+        }
+    }
+    assert!(replaced.is_empty(), "{replaced:?}");
+}
+
+#[test]
+fn launch_tokens_0915_weak_first_registration_and_verified_replacement_are_allowed() {
+    let (dir, memory) = fixture();
+    organization(dir.path(), ID, Some("org-1"));
+    let status = save(dir.path(), &memory, ID, &token(), |_| OwnerCheck::Unavailable).unwrap();
+    assert_eq!(status.owner_check, OwnerCheckStatus::Unverified);
+    let status = super::save(dir.path(), &memory, ID, &p1002_replacement(), |_| org_check("org-1")).unwrap();
+    assert_eq!(status.owner_check, OwnerCheckStatus::OrgMatched);
+    let status = save(dir.path(), &memory, ID, &token(), |_| owner("owner-1")).unwrap();
+    assert_eq!(status.owner_check, OwnerCheckStatus::Verified);
+    let status = save(dir.path(), &memory, ID, &p1002_replacement(), |_| owner("owner-1")).unwrap();
+    assert_eq!(status.owner_check, OwnerCheckStatus::Verified);
+    assert!(load_token(&memory, ID).unwrap().as_deref() == Some(p1002_replacement().as_str()));
+}
+
+#[test]
+fn launch_tokens_0915_r2_keeps_verification_after_a_weak_recheck() {
+    for recheck_existing in [false, true] {
+        for expected in [OwnerCheckStatus::Unverified, OwnerCheckStatus::OrgMatched, OwnerCheckStatus::OrgShared] {
+            let (dir, memory) = fixture();
+            organization(dir.path(), ID, Some("org-1"));
+            if expected == OwnerCheckStatus::OrgShared {
+                let mut file = registry::load(dir.path()).unwrap();
+                let mut other = file.profiles[0].clone();
+                other.id = "claude-shared".into();
+                other.identity_key = "owner-2".into();
+                file.profiles.push(other);
+                registry::save(dir.path(), &file).unwrap();
+                organization(dir.path(), "claude-shared", Some("org-1"));
+            }
+            let verified = save(dir.path(), &memory, ID, &token(), |_| owner("owner-1")).unwrap();
+            // Seed the exact pre-R2 status schema as well as exercising normal reads/writes.
+            let legacy = serde_json::json!([{
+                "profile_id": verified.profile_id, "registered_at": verified.registered_at,
+                "expires_at": verified.expires_at, "owner_check": "verified",
+                "owner_method": "profile", "fingerprint": verified.fingerprint,
+            }]);
+            if recheck_existing {
+                fs::write(dir.path().join(FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+            }
+            let weak = || match expected {
+                OwnerCheckStatus::Unverified => OwnerCheck::Unavailable.into(),
+                _ => org_check("org-1"),
+            };
+            let latest = if recheck_existing {
+                recheck(dir.path(), &memory, ID, |_| weak()).unwrap()
+            } else {
+                super::save(dir.path(), &memory, ID, &token(), |_| weak()).unwrap()
+            };
+            assert_eq!(latest.owner_check, expected);
+            let before = fs::read(dir.path().join(FILE)).unwrap();
+            let outcome = super::save(dir.path(), &memory, ID, &p1002_replacement(), |_| weak());
+            assert_eq!(outcome.err().as_deref(), Some(ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED),
+                "a weaker check lost the verified fingerprint (recheck={recheck_existing}, {expected:?})");
+            assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), before);
+            assert!(load_token(&memory, ID).unwrap().as_deref() == Some(token().as_str()));
+
+            let result = recheck(dir.path(), &memory, ID, |_| owner("other-owner").into()).unwrap();
+            assert_eq!(result.owner_check, OwnerCheckStatus::Mismatch);
+            assert!(matches!(load_for_launch_with_store(dir.path(), &memory, ID),
+                Err(ref error) if error == ERR_LAUNCH_TOKEN_OWNER_MISMATCH));
+            let updated = save(dir.path(), &memory, ID, &p1002_replacement(), |_| owner("owner-1")).unwrap();
+            assert_eq!(updated.owner_check, OwnerCheckStatus::Verified);
+            assert_eq!(load_for_launch_with_store(dir.path(), &memory, ID).unwrap().unwrap().status, updated);
+        }
+    }
+}
+
+#[test]
+fn launch_tokens_0915_r3_verification_belongs_to_the_full_digest() {
+    let value = token();
+    let alternate = p1002_replacement();
+    let digest = hex::encode(Sha256::digest(value.as_bytes()));
+    for legacy in [false, true] {
+        let (dir, secrets) = fixture();
+        let verified = save(dir.path(), &secrets, ID, &value, |_| owner("owner-1")).unwrap();
+        let path = dir.path().join(FILE);
+        let mut registrations: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // Model a matching displayed fingerprint without generating colliding secrets.
+        registrations[0]["fingerprint"] = token_fingerprint(&alternate).into();
+        let row = registrations[0].as_object_mut().unwrap();
+        if legacy {
+            row.remove("token_digest");
+        } else {
+            row.insert("token_digest".into(), digest.clone().into());
+        }
+        let before = serde_json::to_vec(&registrations).unwrap();
+        fs::write(&path, &before).unwrap();
+        let mismatch = save_with_outcome(dir.path(), &secrets, ID, &alternate, |_| owner("other").into());
+        assert!(matches!(mismatch, Err(ref error) if error == ERR_LAUNCH_TOKEN_OWNER_MISMATCH));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(matches!(
+            save(dir.path(), &secrets, ID, &alternate, |_| OwnerCheck::Unavailable),
+            Err(ref error) if error == ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(secrets.read(ID).unwrap().as_deref() == Some(value.as_str()));
+
+        registrations[0]["fingerprint"] = verified.fingerprint.clone().into();
+        fs::write(&path, serde_json::to_vec(&registrations).unwrap()).unwrap();
+        let checked = recheck(dir.path(), &secrets, ID, |_| OwnerCheck::Unavailable.into()).unwrap();
+        assert_eq!(checked.owner_check, OwnerCheckStatus::Unverified);
+        let persisted: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(persisted[0]["token_digest"].as_str(), (!legacy).then_some(digest.as_str()));
+        assert!(serde_json::to_value(&checked).unwrap().get("token_digest").is_none());
+        assert!(matches!(
+            save(dir.path(), &secrets, ID, &alternate, |_| OwnerCheck::Unavailable),
+            Err(ref error) if error == ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED
+        ));
+    }
+}
+
+#[test]
+fn launch_tokens_0915_first_registration_allows_unconfirmed_personal_ownership() {
+    for (check_status, expected) in [
+        (OwnerCheck::Unavailable.into(), OwnerCheckStatus::Unverified),
+        (OwnerCheck::Rejected { status: 403 }.into(), OwnerCheckStatus::Unverified),
+        (org_check("org-1"), OwnerCheckStatus::OrgMatched),
+        (org_check("org-1"), OwnerCheckStatus::OrgShared),
+    ] {
+        let (base, secrets) = fixture();
+        organization(base.path(), ID, Some("org-1"));
+        if expected == OwnerCheckStatus::OrgShared {
+            let mut registry = registry::load(base.path()).unwrap();
+            let mut other = registry.profiles[0].clone();
+            other.id = "claude-shared".into();
+            other.identity_key = "owner-2".into();
+            registry.profiles.push(other);
+            registry::save(base.path(), &registry).unwrap();
+            organization(base.path(), "claude-shared", Some("org-1"));
+        }
+        assert!(status_all(base.path()).unwrap().is_empty());
+        let registered = super::save(base.path(), &secrets, ID, &token(), |_| check_status).unwrap();
+        assert_eq!(registered.owner_check, expected);
+        assert!(load_token(&secrets, ID).unwrap().as_deref() == Some(token().as_str()));
+    }
+}
+
+#[test]
+fn launch_tokens_0915_r2_restores_only_a_missing_secret_with_the_verified_full_digest() {
+    let value = token();
+    for (legacy, missing, same) in [
+        (false, true, true), (true, true, true), (false, false, true), (false, true, false),
+    ] {
+        let (dir, memory) = fixture();
+        let before = save(dir.path(), &memory, ID, &value, |_| owner("owner-1")).unwrap();
+        let path = dir.path().join(FILE);
+        let different = p1002_replacement();
+        let presented = if same { &value } else { &different };
+        if legacy {
+            let mut records = load_registrations(dir.path()).unwrap();
+            records[0].token_digest = None;
+            save_status(dir.path(), &records).unwrap();
+        }
+        if missing { memory.delete(ID).unwrap(); } else { memory.write(ID, &different).unwrap(); }
+        let status_before = fs::read(&path).unwrap();
+        let secrets = ObservedSecrets { memory, ..Default::default() };
+        let outcome = super::save(dir.path(), &secrets, ID, presented,
+            |_| OwnerCheck::Rejected { status: 403 }.into());
+        if !legacy && missing && same {
+            let result = outcome.unwrap();
+            assert_eq!(result.registered_at, before.registered_at);
+            assert_eq!(result.expires_at, before.expires_at);
+            assert_eq!(result.owner_check_status, Some(403));
+            assert_eq!(secrets.writes.get(), 1);
+            let launch = load_for_launch_with_store(dir.path(), &secrets, ID).unwrap().unwrap();
+            assert!(launch.token == value);
+            assert!(load_registrations(dir.path()).unwrap()[0].personally_verified());
+        } else {
+            assert_eq!(outcome.unwrap_err(), ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED);
+            assert_eq!(secrets.writes.get(), 0);
+            assert_eq!(secrets.read(ID).unwrap().as_deref(), (!missing).then_some(different.as_str()));
+            assert_eq!(fs::read(&path).unwrap(), status_before);
+        }
+    }
+}
+
+#[test]
+fn launch_tokens_0915_r2_legacy_fingerprint_waits_for_a_fresh_personal_match() {
+    let original = token();
+    let observed_os_value = p1002_replacement();
+    for recheck_existing in [true, false] {
+        let (dir, memory) = fixture();
+        let before = save(dir.path(), &memory, ID, &original, |_| owner("owner-1")).unwrap();
+        let mut legacy = load_registrations(dir.path()).unwrap();
+        legacy[0].personally_verified = None;
+        legacy[0].token_digest = None;
+        // Model a short display fingerprint match for a different OS value.
+        legacy[0].status.fingerprint = token_fingerprint(&observed_os_value);
+        save_status(dir.path(), &legacy).unwrap();
+        memory.write(ID, &observed_os_value).unwrap();
+        let secrets = ObservedSecrets { memory, ..Default::default() };
+        let update = |check| {
+            if recheck_existing {
+                recheck(dir.path(), &secrets, ID, |_| check)
+            } else {
+                super::save(dir.path(), &secrets, ID, &observed_os_value, |_| check)
+            }
+        };
+        let weak = update(OwnerCheck::Unavailable.into()).unwrap();
+        assert_eq!(weak.owner_check, OwnerCheckStatus::Unverified);
+        let weak_record = load_registrations(dir.path()).unwrap().remove(0);
+        assert!(weak_record.token_digest.is_none());
+        assert!(weak_record.personally_verified());
+        assert!(matches!(
+            save(dir.path(), &secrets, ID, &original, |_| OwnerCheck::Unavailable),
+            Err(ref error) if error == ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED
+        ));
+        let matched = update(owner("owner-1").into()).unwrap();
+        assert_eq!(matched.owner_check, OwnerCheckStatus::Verified);
+        assert_eq!(matched.registered_at, before.registered_at);
+        assert_eq!(matched.expires_at, before.expires_at);
+        let matched_record = load_registrations(dir.path()).unwrap().remove(0);
+        assert_eq!(matched_record.token_digest, Some(token_digest(&observed_os_value)));
+        assert!(matched_record.personally_verified());
+        assert_eq!(secrets.writes.get(), 0);
+    }
 }

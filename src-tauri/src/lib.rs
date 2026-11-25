@@ -96,7 +96,9 @@ mod single_instance {
     }
 
     pub fn acquire(profile: Option<&str>) -> Result<Option<InstanceGuard>, String> {
-        let suffix = profile.map(|name| format!("-profile-{name}")).unwrap_or_default();
+        let suffix = profile
+            .map(|name| format!("-profile-{}", crate::db::storage::normalize_windows_profile_name(name)))
+            .unwrap_or_default();
         let name = format!("Local\\miyazaki-{}-single-instance{suffix}", env!("CARGO_PKG_NAME"));
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide_name.as_ptr())) }
@@ -568,6 +570,7 @@ app_commands![
             commands::window_registry::get_app_settings,
             commands::window_registry::set_window_close_intent,
             test_profile::get_test_profile,
+            commands::update::update_restart_pending,
             commands::usage::get_account_usage,
             commands::usage::use_reset_ticket,
             commands::ailog::ailog_index_start,
@@ -664,6 +667,7 @@ pub fn run() {
         }
     };
 
+    let scrollback_startup_cutoff = std::time::SystemTime::now();
     let initial_open_paths = open_with::paths_from_args(
         std::env::args(),
         &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -778,7 +782,7 @@ pub fn run() {
         .manage(std::sync::Arc::new(cli_accounts::setup_token::SetupTokenRegistry::default()))
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(app_handler())
-        .setup(|#[allow(unused)] app| {
+        .setup(move |#[allow(unused)] app| {
             use tauri::Manager;
 
             let app_handle = app.handle().clone();
@@ -856,14 +860,10 @@ pub fn run() {
                 usage::legacy::retire_legacy_usage_oauth(&app_handle, &app_data);
             }
             }
-            let app_data_parent = app_handle
-                .path()
-                .app_data_dir()
-                .map(test_profile::app_data_dir_from)
-                .ok()
-                .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+            let profile_dir = app_handle.path().app_data_dir()
+                .map(test_profile::app_data_dir_from).ok();
             let mycmux_dir = test_profile::runtime_dir().ok();
-            session_retention::run_startup_retention(app_data_parent, mycmux_dir);
+            session_retention::run_startup_retention(profile_dir, mycmux_dir, scrollback_startup_cutoff);
             if !test_profile::is_active() {
                 ailog::mirror::start_scheduler(app_handle.clone());
                 launcher_dirs::scheduler::start(app_handle.clone());
@@ -904,7 +904,11 @@ pub fn run() {
                     &accounts_base,
                     std::time::Duration::from_secs(86_400),
                 );
-                cli_accounts::live_sync::start_live_sync(accounts_base);
+                let accounts_app = app_handle.clone();
+                cli_accounts::live_sync::start_live_sync(accounts_base, move |profile_id| {
+                    use tauri::Emitter;
+                    let _ = accounts_app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile_id }));
+                });
             }
             }
 

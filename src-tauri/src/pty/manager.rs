@@ -47,7 +47,7 @@ fn session_is_running<S>(
         .is_some_and(|session| !poll_exited(session.value()))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrustedAgentIdentity {
     pub session_epoch: u64,
     pub kind: String,
@@ -60,6 +60,7 @@ pub(crate) struct TrustedAgentIdentity {
 
 #[derive(Clone)]
 struct SavedAgentIdentity {
+    presend_reply_event: Option<(TrustedAgentIdentity, String)>,
     session_epoch: u64,
     revision: u64,
     identity: Option<TrustedAgentIdentity>,
@@ -327,13 +328,28 @@ impl SessionManager {
         if history.len() > 32 { history.remove(0); }
     }
 
+    pub(crate) fn presend_reply_event(&self, pty: &str) -> Option<(TrustedAgentIdentity, String)> {
+        let session = self.sessions.get(pty)?;
+        if session.poll_exited() { return None; }
+        let saved = self.trusted_agent_identities.get(pty)?;
+        let (writer, event) = saved.presend_reply_event.as_ref()?;
+        (saved.trusted && saved.session_epoch == session.session_epoch() && saved.identity.as_ref() == Some(writer))
+            .then(|| (writer.clone(), event.clone()))
+    }
+
+    #[cfg(test)]
     pub(crate) fn remember_agent_identity(&self, pty: &str, identity: TrustedAgentIdentity) {
+        self.remember_hook_identity(pty, identity, None);
+    }
+
+    pub(crate) fn remember_hook_identity(&self, pty: &str, identity: TrustedAgentIdentity, reply_event: Option<&str>) {
         let Some(session) = self.sessions.get(pty) else { return; };
         if session.session_epoch() != identity.session_epoch || session.poll_exited() { return; }
         self.note_identity(pty, &identity);
         let mut saved = self.trusted_agent_identities.entry(pty.to_string()).or_insert_with(|| SavedAgentIdentity {
-            session_epoch:identity.session_epoch, revision:0, identity:None, trusted:false,
+            session_epoch:identity.session_epoch, revision:0, identity:None, trusted:false, presend_reply_event:None,
         });
+        saved.presend_reply_event = reply_event.map(|id| (identity.clone(), id.to_owned()));
         saved.session_epoch = identity.session_epoch;
         saved.revision = saved.revision.wrapping_add(1);
         saved.identity = Some(identity); saved.trusted = true;
@@ -350,7 +366,7 @@ impl SessionManager {
         if session.session_epoch() != snapshot.session_epoch || metadata.session_epoch != snapshot.session_epoch
             || session.poll_exited() { return false; }
         let mut saved = self.trusted_agent_identities.entry(pty.clone()).or_insert_with(|| SavedAgentIdentity {
-            session_epoch:snapshot.session_epoch, revision:0, identity:None, trusted:false,
+            session_epoch:snapshot.session_epoch, revision:0, identity:None, trusted:false, presend_reply_event:None,
         });
         if saved.session_epoch != snapshot.session_epoch || saved.revision != snapshot.revision { return false; }
         let identity = identity.filter(|identity| identity_matches_metadata(identity, &metadata))

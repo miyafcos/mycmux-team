@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../src/types";
-const mocks = vi.hoisted(() => ({ listen: vi.fn(), stop: vi.fn() }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
-import { connectMainDashboardRequests } from "../../src/lib/mainDashboardRequests";
+const mocks = vi.hoisted(() => ({
+  listen: vi.fn(), stop: vi.fn(), emitTo: vi.fn(async () => {}),
+  invoke: vi.fn(async (_name: string, args?: Record<string, unknown>) => args?.readAccountManagementDocument ? 0 : null),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen, emitTo: mocks.emitTo }));
+vi.mock("@tauri-apps/api/core", async original => ({ ...await original<object>(), invoke: mocks.invoke }));
+import {
+  ACCOUNT_MANAGEMENT_RESULT_EVENT, ACCOUNT_MANAGEMENT_TIMEOUT_MS, connectAppShellRequests,
+  accountManagementSectionRendered,
+  connectMainDashboardRequests, registerAccountManagementSettings,
+} from "../../src/lib/mainDashboardRequests";
 import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
+import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 import { usePeerWindowTabsStore } from "../../src/components/dashboard/peerWindowTabsStore";
@@ -20,6 +29,8 @@ let disconnect: () => void;
 function receive(payload: unknown) { mocks.listen.mock.calls[0][1]({ payload }); }
 beforeEach(() => {
   vi.useFakeTimers(); mocks.listen.mockReset().mockResolvedValue(mocks.stop);
+  mocks.emitTo.mockClear();
+  mocks.invoke.mockClear();
   __resetToastStoreForTests();
   usePeerWindowTabsStore.setState({ index: [], completedReads: 0, pollers: 0, reading: false, requestSequence: 0, handledRequestSequence: 0 });
   useDashboardViewStore.setState({ ...originalActions, open: false, pendingDashboardRequest: null, chatColumnTabIds: [], pinnedChatColumnTabIds: [], chatColumnLimit: 3,
@@ -134,16 +145,24 @@ describe("main dashboard request receiver", () => {
     expect(useDashboardViewStore.getState().pendingDashboardRequest).toBeNull();
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
-  it("leaves other AppShell windows without a listener or filter and does not reconcile requests", async () => {
+  it("ignores ordinary dashboard requests at the child AppShell entry point", async () => {
     disconnect(); mocks.listen.mockClear();
-    disconnect = connectMainDashboardRequests("mycmux-w1");
+    connectMainDashboardRequests("mycmux-w1")();
     expect(mocks.listen).not.toHaveBeenCalled();
+    disconnect = connectAppShellRequests("mycmux-w1");
+    expect(mocks.listen).toHaveBeenCalledExactlyOnceWith("mycmux://open-dashboard", expect.any(Function), {
+      target: { kind: "Webview", label: "mycmux-w1" },
+    });
     expect(useDashboardViewStore.getState().chatColumnIdFilter).toBeNull();
     const pending = { tabId: "unknown", receivedAt: Date.now() };
     useDashboardViewStore.getState().setPendingDashboardRequest(pending);
+    receive({ tabId: "local", turn: "latest" });
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      open: false, chatColumnTabIds: [], query: "filter", stateFilter: "running",
+      workspaceFilter: "ws", agentFilter: "claude", chatColumnIdFilter: null, userTurnRequests: {},
+    });
     expect(useDashboardViewStore.getState().pendingDashboardRequest).toBe(pending);
-    expect(useDashboardViewStore.getState().open).toBe(false);
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
   it("catches listener failure, keeps the main filter until disconnect, and disconnects without throwing", async () => {
@@ -159,4 +178,78 @@ describe("main dashboard request receiver", () => {
     expect(() => disconnect()).not.toThrow();
     expect(useDashboardViewStore.getState().chatColumnIdFilter).toBeNull();
   });
+});
+
+it("routes the detached management request through the main Webview navigation", async () => {
+  const stopSettings = registerAccountManagementSettings();
+  try {
+    expect(mocks.listen).toHaveBeenCalledWith("mycmux://open-dashboard", expect.any(Function), {
+      target: { kind: "Webview", label: "main" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const subscriptionId = mocks.invoke.mock.calls.find(([, args]) => args?.accountManagementReady)?.[1]?.accountManagementSubscriptionId;
+    expect(subscriptionId).toEqual(expect.any(String));
+    const request = { sourceWindow: "mycmux-w1", targetWindow: "main", publicationId: "",
+      subscriptionId, expiresAt: Date.now() + ACCOUNT_MANAGEMENT_TIMEOUT_MS };
+
+    receive({ ...request, requestId: "normal", accountProvider: "grok" });
+    expect(useUiStore.getState()).toMatchObject({
+      requestedSettingsTab: "usage", requestedAccountProvider: "grok", requestedAccountManagementId: "normal",
+    });
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    accountManagementSectionRendered("codex");
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    accountManagementSectionRendered("grok");
+    accountManagementSectionRendered("grok");
+    expect(useDashboardViewStore.getState().open).toBe(false);
+    useUiStore.getState().clearRequestedSettingsTab();
+    receive({ ...request, requestId: "invalid-provider", accountProvider: "unknown" });
+    expect(useUiStore.getState().requestedSettingsTab).toBeNull();
+    expect(useDashboardViewStore.getState().open).toBe(false);
+    expect(mocks.emitTo.mock.calls).toEqual([
+      [{ kind: "Webview", label: "mycmux-w1" }, ACCOUNT_MANAGEMENT_RESULT_EVENT,
+        { requestId: "normal", fromWindow: "main", reason: "opened" }],
+      [{ kind: "Webview", label: "mycmux-w1" }, ACCOUNT_MANAGEMENT_RESULT_EVENT,
+        { requestId: "invalid-provider", fromWindow: "main", reason: "refused" }],
+    ]);
+  } finally {
+    stopSettings();
+  }
+});
+
+
+it("refuses a previous subscription mark after re-listening in the same document", async () => {
+  const stopSettings = registerAccountManagementSettings();
+  const readMark = () => [...mocks.invoke.mock.calls].reverse()
+    .find(([, args]) => args?.accountManagementReady)?.[1]?.accountManagementSubscriptionId;
+  try {
+    await Promise.resolve();
+    await Promise.resolve();
+    const first = readMark();
+    disconnect();
+    mocks.listen.mockClear();
+    disconnect = connectMainDashboardRequests("main");
+    await Promise.resolve();
+    await Promise.resolve();
+    const renewed = readMark();
+    expect(first).toEqual(expect.any(String));
+    expect(renewed).toEqual(expect.any(String));
+    expect(renewed).not.toBe(first);
+    const request = { sourceWindow: "mycmux-w1", targetWindow: "main", publicationId: "",
+      accountProvider: "grok", expiresAt: Date.now() + ACCOUNT_MANAGEMENT_TIMEOUT_MS };
+    useUiStore.getState().clearRequestedSettingsTab();
+    receive({ ...request, requestId: "stale", subscriptionId: first });
+    expect(useUiStore.getState().requestedSettingsTab).toBeNull();
+    receive({ ...request, requestId: "current", subscriptionId: renewed });
+    expect(useUiStore.getState().requestedSettingsTab).toBe("usage");
+    accountManagementSectionRendered("grok");
+    expect(mocks.emitTo.mock.calls.map((call: unknown[]) => call[2])).toEqual([
+      { requestId: "stale", fromWindow: "main", reason: "refused" },
+      { requestId: "current", fromWindow: "main", reason: "opened" },
+    ]);
+  } finally {
+    useUiStore.getState().clearRequestedSettingsTab();
+    stopSettings();
+  }
 });

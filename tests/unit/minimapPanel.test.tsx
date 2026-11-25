@@ -882,6 +882,23 @@ describe("LayoutMinimapPanel", () => {
     expect(closeSpy).toHaveBeenCalledWith("pane.close_tabs", { tabIds: ["a", "b"] });
   });
 
+  it("L3 87 reports the tabs that did not close during quit and clears the closed tab", async () => {
+    const workspace: Workspace = { id: "ws", name: "Work", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("closed-tab"), tab("remain-tab")])], splitColumns: [["p"]] };
+    vi.spyOn(socketCommands, "handleSocketCommand").mockResolvedValue({
+      closed: ["closed-tab"], unexecutedTabIds: ["remain-tab"], reason: "window_quitting",
+    });
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId="closed-tab" activePaneSessionId={null} onSelect={vi.fn()} />));
+    const remaining = container.querySelector<HTMLElement>("[data-minimap-tab='remain-tab']")!;
+    await act(async () => remaining.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })));
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-minimap-close-selection='true']")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".cmux-minimap-bundle-confirm-actions button")!.click());
+    const alert = container.querySelector("[role='alert']");
+    expect(alert?.textContent).toContain("remain-tab");
+    expect(alert?.textContent).not.toContain("closed-tab");
+    expect(container.querySelector<HTMLElement>("[data-minimap-tab='closed-tab']")?.classList.contains("is-bundle-selected")).toBe(false);
+  });
+
   it("gives a tab-less pane a full row of budget so all five drop zones stay reachable", async () => {
     const workspace: Workspace = { id: "ws", name: "空き", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("empty", []), pane("full", [tab("a")])], splitColumns: [["empty"], ["full"]] };

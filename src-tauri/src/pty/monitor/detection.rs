@@ -1341,6 +1341,23 @@ mod tests {
         })
     }
 
+    #[test]
+    fn l5_cursor_alone_is_ineligible_in_the_native_agent_probe() {
+        for name in ["cursor-agent", "cursor-agent.exe", "cursor-agent.cmd"] {
+            let tree = [
+                fixture_process(10, 0, "powershell.exe", &[]),
+                fixture_process(20, 10, name, &[]),
+            ];
+            assert_eq!(detect_fixture(&tree), None, "{name}");
+        }
+        let tree = [
+            fixture_process(10, 0, "bash", &[]),
+            fixture_process(20, 10, "cursor-agent", &[]),
+            fixture_process(30, 10, "codex", &[]),
+        ];
+        assert_eq!(detect_fixture(&tree), Some((DetectedAgentKind::Codex, Pid::from_u32(30))));
+    }
+
     fn agent_tree_cases() -> Vec<(Vec<FixtureProcess>, DetectedAgentKind, u32)> {
         vec![
             // T1: a restored Claude root owns its MCP tools.

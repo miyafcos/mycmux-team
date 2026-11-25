@@ -148,14 +148,17 @@ interface LongAnimationFrame extends PerformanceEntry {
 }
 
 function dominantFrameWork(frame: LongAnimationFrame): { workKind: RendererWork; workMs: number } {
+  const duration = (value: number) => Number.isFinite(value)
+    ? Math.max(0, Math.min(value, Number.MAX_SAFE_INTEGER)) : 0;
   const end = frame.startTime + frame.duration;
-  let layoutMs = frame.styleAndLayoutStart ? end - frame.styleAndLayoutStart : 0;
-  let workMs = frame.renderStart ? (frame.styleAndLayoutStart || end) - frame.renderStart : 0;
+  const layoutStart = Number.isFinite(frame.styleAndLayoutStart) ? frame.styleAndLayoutStart : 0;
+  let layoutMs = layoutStart ? duration(end - layoutStart) : 0;
+  let workMs = frame.renderStart ? duration((layoutStart || end) - frame.renderStart) : 0;
   let workKind: RendererWork = workMs > 0 ? "render-callbacks" : "unknown";
   for (const script of frame.scripts ?? []) {
-    const forcedLayout = script.forcedStyleAndLayoutDuration || 0;
-    layoutMs += forcedLayout;
-    const scriptMs = script.duration - forcedLayout;
+    const forcedLayout = duration(script.forcedStyleAndLayoutDuration);
+    layoutMs = duration(layoutMs + forcedLayout);
+    const scriptMs = duration(script.duration - forcedLayout);
     if (scriptMs <= workMs) continue;
     workMs = scriptMs;
     switch (script.invokerType) {

@@ -1,10 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { GridTemplateId } from "../../types";
 import { getGridTemplate } from "../../lib/gridTemplates";
 import { normalizeCwd, workspaceNameFromCwd } from "../../lib/workspaceBootstrap";
 import type { PaneLaunchSpec } from "../../lib/agentCatalog";
+import { useLaunchAccountCheck } from "../../lib/tabAccounts";
 import GridPicker from "./GridPicker";
 import AgentSlotList from "./AgentSlotList";
 import { setupStrings } from "./setupStrings";
@@ -21,11 +22,11 @@ export interface WorkspaceSetupResult {
 interface WorkspaceSetupProps {
   /** Seeded from the workspace in front of the user when the dialog opened. */
   defaultCwd?: string;
+  visible?: boolean;
+  covered?: boolean;
   onLaunch: (result: WorkspaceSetupResult) => void;
   onCancel: () => void;
 }
-
-let nextWorkspaceInstanceId = 0;
 
 const mono = "var(--cmux-font-mono)";
 
@@ -61,27 +62,37 @@ const buttonStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: WorkspaceSetupProps) {
-  const [workspaceInstanceId] = useState(() => ++nextWorkspaceInstanceId);
+export default function WorkspaceSetup({ defaultCwd, visible = true, covered = false, onLaunch, onCancel }: WorkspaceSetupProps) {
   const [name, setName] = useState("");
   const [gridId, setGridId] = useState<GridTemplateId>("1x1");
   const [cwd, setCwd] = useState(defaultCwd ?? "");
   const [paneSpecs, setPaneSpecs] = useState<Record<number, PaneLaunchSpec>>({});
+  const setupRef = useRef<HTMLDivElement>(null);
 
   const template = getGridTemplate(gridId);
   // The folder names the workspace unless the user types over it, so choosing a
   // folder is usually the only thing this dialog needs.
   const derivedName = workspaceNameFromCwd(cwd);
 
-  const handleLaunch = useCallback(() => {
-    onLaunch({
-      name: name.trim() || derivedName,
-      nameSource: name.trim() ? undefined : "auto",
-      gridTemplateId: gridId,
-      cwd: normalizeCwd(cwd),
-      paneSpecs,
-    });
-  }, [cwd, derivedName, gridId, name, onLaunch, paneSpecs]);
+  const draft = useMemo<WorkspaceSetupResult>(() => ({
+    name: name.trim() || derivedName,
+    nameSource: name.trim() ? undefined : "auto",
+    gridTemplateId: gridId,
+    cwd: normalizeCwd(cwd),
+    paneSpecs,
+  }), [cwd, derivedName, gridId, name, paneSpecs]);
+  // Hidden slots retain their draft. Check the accounts in the active grid.
+  const selected = useMemo(() => Object.entries(paneSpecs)
+    .filter(([slot, spec]) => Number(slot) < template.paneCount && Boolean(spec.account))
+    .map(([slot, spec]) => ({ slot: Number(slot), target: spec.target, account: spec.account! })), [paneSpecs, template.paneCount]);
+  const accountCheck = useLaunchAccountCheck(selected, visible && !covered ? draft : null);
+
+  const handleLaunch = () => {
+    void accountCheck.run(
+      () => setupRef.current !== null && !setupRef.current.closest("[inert]"),
+      () => onLaunch(draft),
+    );
+  };
 
   const handleBrowse = useCallback(async () => {
     try {
@@ -100,6 +111,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
 
   return (
     <div
+      ref={setupRef}
       style={{
         width: "100%",
         height: "100%",
@@ -141,7 +153,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={derivedName}
-            onKeyDown={(e) => e.key === "Enter" && handleLaunch()}
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleLaunch(); }}
             style={inputStyle}
           />
         </div>
@@ -154,7 +166,7 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
               onChange={(e) => setCwd(e.target.value)}
               placeholder={setupStrings.folderPlaceholder}
               spellCheck={false}
-              onKeyDown={(e) => e.key === "Enter" && handleLaunch()}
+              onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleLaunch(); }}
               style={{ ...inputStyle, flex: 1, minWidth: 0 }}
             />
             <button type="button" onClick={handleBrowse} style={buttonStyle}>
@@ -163,20 +175,30 @@ export default function WorkspaceSetup({ defaultCwd, onLaunch, onCancel }: Works
           </div>
         </div>
 
-        <GridPicker selected={gridId} onSelect={setGridId} />
+        <GridPicker selected={gridId} onSelect={id => {
+          setGridId(id);
+          accountCheck.clearError();
+        }} />
         <AgentSlotList
-          workspaceInstanceId={workspaceInstanceId}
+          visible={visible && !covered}
           paneCount={template.paneCount}
           specs={paneSpecs}
-          onChange={setPaneSpecs}
+          onAccountRead={accountCheck.onListRead}
+          onOpenAccountManagement={accountCheck.cancel}
+          onChange={(slot, spec) => {
+            setPaneSpecs(previous => ({ ...previous, [slot]: spec }));
+            accountCheck.clearError();
+          }}
         />
 
+        {accountCheck.error && <div role="alert" style={{ color: "var(--cmux-red)", fontSize: "var(--cmux-font-size-xs)" }}>{accountCheck.error}</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button onClick={onCancel} style={buttonStyle}>
             {setupStrings.cancel}
           </button>
           <button
             onClick={handleLaunch}
+            disabled={accountCheck.checking}
             style={{
               ...buttonStyle,
               background: "var(--cmux-accent)",

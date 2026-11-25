@@ -41,6 +41,10 @@ type Exchange = (&'static str, Value, Result<Value, UsageError>);
 
 struct Fixture {
     credentials: Result<&'static [u8], UsageError>,
+    refreshed_credentials: Option<&'static [u8]>,
+    refresh_result: Option<RefreshOutcome>,
+    refresh_release: Option<tokio::sync::Notify>,
+    refreshes: AtomicUsize,
     reads: AtomicUsize,
     posts: AtomicUsize,
     exchanges: StdMutex<VecDeque<Exchange>>,
@@ -50,6 +54,10 @@ impl Fixture {
     fn new(exchanges: Vec<Exchange>) -> Self {
         Self {
             credentials: Ok(CREDENTIAL),
+            refreshed_credentials: None,
+            refresh_result: None,
+            refresh_release: None,
+            refreshes: AtomicUsize::new(0),
             reads: AtomicUsize::new(0),
             posts: AtomicUsize::new(0),
             exchanges: StdMutex::new(exchanges.into()),
@@ -64,7 +72,22 @@ impl Fixture {
 impl Source for Fixture {
     fn credentials(&self) -> Result<Credentials, UsageError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
-        parse_credentials(self.credentials?)
+        let blob = if self.refreshes.load(Ordering::Relaxed) == 0 { None } else { self.refreshed_credentials };
+        parse_credentials(blob.map_or(self.credentials, Ok)?)
+    }
+
+    fn refresh_program(&self) -> Option<PathBuf> {
+        self.refresh_result.map(|_| PathBuf::from("agy-fixture"))
+    }
+
+    async fn refresh(&self, program: &Path, timeout: Duration) -> RefreshOutcome {
+        assert_eq!(program, Path::new("agy-fixture"));
+        assert_eq!(timeout, Duration::from_secs(60));
+        self.refreshes.fetch_add(1, Ordering::Relaxed);
+        if let Some(release) = &self.refresh_release {
+            release.notified().await;
+        }
+        self.refresh_result.expect("unexpected refresh")
     }
 
     async fn post(
@@ -117,6 +140,136 @@ fn summary(row: &ProfileUsage) -> Vec<(&str, f64, &str)> {
         .collect()
 }
 
+const REFRESHED_CREDENTIAL: &[u8] = br#"{
+    "token": {"access_token": "fixture-access", "expiry": "2026-11-18T16:01:50Z"},
+    "id_token_email": "agy@example.test"
+}"#;
+
+#[tokio::test]
+async fn gemini_rereads_credentials_after_local_expiry() {
+    let source = Fixture {
+        refreshed_credentials: Some(REFRESHED_CREDENTIAL),
+        refresh_result: Some(RefreshOutcome::Success),
+        ..Fixture::new(vec![load(Ok(json!({}))), (FETCH_MODELS, json!({}), Ok(default_models()))])
+    };
+    let cache = UsageCache::default();
+    let row = cache.fetch_with(&source, at_expiry, false).await;
+    assert_eq!(row.state, UsageRowState::Ok);
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+    assert!(!row.model_windows.is_empty());
+    source.assert_finished();
+}
+
+#[tokio::test]
+async fn gemini_reports_expiry_when_refresh_fails_or_times_out() {
+    for result in [RefreshOutcome::Failed, RefreshOutcome::TimedOut] {
+        let source = Fixture { refresh_result: Some(result), ..Fixture::new(vec![]) };
+        let cache = UsageCache::default();
+        let row = cache.fetch_with(&source, at_expiry, false).await;
+        assert_eq!(row.error_code.as_deref(), Some(EXPIRED_CODE), "{result:?}");
+        assert!(row.model_windows.is_empty());
+        assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+        assert_eq!(source.reads.load(Ordering::Relaxed), 1);
+        source.assert_finished();
+    }
+}
+
+#[tokio::test]
+async fn gemini_reports_expiry_when_agy_does_not_replace_the_credential() {
+    let source = Fixture { refresh_result: Some(RefreshOutcome::Success), ..Fixture::new(vec![]) };
+    let (row, _) = fetch_row(&source, at_expiry()).await;
+    assert_eq!(row.error_code.as_deref(), Some(EXPIRED_CODE));
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+    source.assert_finished();
+}
+
+#[tokio::test]
+async fn gemini_does_not_rerun_agy_until_ten_minutes_pass() {
+    let source = Fixture { refresh_result: Some(RefreshOutcome::Failed), ..Fixture::new(vec![]) };
+    let cache = UsageCache::default();
+    cache.fetch_with(&source, at_expiry, false).await;
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+
+    for (seconds, expected_attempts) in [(599, 1), (600, 2)] {
+        cache.schedule.lock().await.last_refresh_attempt = Some(Instant::now() - Duration::from_secs(seconds));
+        cache.fetch_with(&source, at_expiry, true).await;
+        assert_eq!(source.refreshes.load(Ordering::Relaxed), expected_attempts);
+    }
+}
+
+#[tokio::test]
+async fn gemini_runs_only_one_agy_refresh_during_concurrent_polls() {
+    let source = Fixture {
+        refresh_result: Some(RefreshOutcome::Success),
+        refresh_release: Some(tokio::sync::Notify::new()),
+        refreshed_credentials: Some(REFRESHED_CREDENTIAL),
+        ..Fixture::new(vec![load(Ok(json!({}))), (FETCH_MODELS, json!({}), Ok(default_models()))])
+    };
+    let cache = UsageCache::default();
+    let release = async {
+        while source.refreshes.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+        assert_eq!(source.reads.load(Ordering::Relaxed), 1);
+        source.refresh_release.as_ref().unwrap().notify_one();
+    };
+    let (first, second, _) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(
+            cache.fetch_with(&source, at_expiry, false),
+            cache.fetch_with(&source, at_expiry, true),
+            release,
+        )
+    }).await.expect("the second poll did not reuse the first result");
+    assert_eq!(first.state, UsageRowState::Ok);
+    assert_eq!(summary(&first), summary(&second));
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+    source.assert_finished();
+}
+
+#[tokio::test]
+async fn gemini_refreshes_when_the_credential_expires_during_a_request() {
+    let source = Fixture {
+        refresh_result: Some(RefreshOutcome::Success),
+        refreshed_credentials: Some(REFRESHED_CREDENTIAL),
+        ..Fixture::new(vec![
+            load(Ok(json!({}))),
+            load(Ok(json!({}))),
+            (FETCH_MODELS, json!({}), Ok(default_models())),
+        ])
+    };
+    let cache = UsageCache::default();
+    let row = cache.fetch_with(&source, || {
+        if source.posts.load(Ordering::Relaxed) == 0 { before_expiry() } else { at_expiry() }
+    }, false).await;
+    assert_eq!(row.state, UsageRowState::Ok);
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+    source.assert_finished();
+}
+
+#[tokio::test]
+async fn gemini_retries_empty_windows_without_the_normal_cache() {
+    for explicit in [false, true] {
+        let source = Fixture::new(vec![
+            load(Ok(json!({}))),
+            (FETCH_MODELS, json!({}), Ok(json!({"models": {}}))),
+            load(Ok(json!({}))),
+            (FETCH_MODELS, json!({}), Ok(default_models())),
+        ]);
+        let cache = UsageCache::default();
+        let empty = cache.fetch_with(&source, before_expiry, false).await;
+        assert_eq!(empty.error_code.as_deref(), Some("usage.error.gemini_no_usage"));
+        let recovered = cache.fetch_with(&source, before_expiry, explicit).await;
+        assert_eq!(recovered.state, UsageRowState::Ok);
+        assert!(!recovered.model_windows.is_empty());
+        source.assert_finished();
+    }
+}
+
 #[tokio::test]
 async fn gemini_reports_missing_quota_windows_separately_from_zero_usage() {
     for models in [
@@ -126,10 +279,11 @@ async fn gemini_reports_missing_quota_windows_separately_from_zero_usage() {
             "gemini-3-flash": {"quotaInfo": {}},
         }),
     ] {
-        let source = Fixture::new(vec![
+        let exchanges = [
             load(Ok(json!({}))),
             (FETCH_MODELS, json!({}), Ok(json!({"models": models}))),
-        ]);
+        ];
+        let source = Fixture::new(exchanges.iter().chain(&exchanges).cloned().collect());
         let cache = UsageCache::default();
         for _ in 0..2 {
             let row = cache.fetch_with(&source, before_expiry, false).await;
@@ -137,7 +291,7 @@ async fn gemini_reports_missing_quota_windows_separately_from_zero_usage() {
             assert_eq!(row.error_code.as_deref(), Some("usage.error.gemini_no_usage"));
             assert!(row.model_windows.is_empty());
         }
-        assert_eq!(source.posts.load(Ordering::Relaxed), 2);
+        assert_eq!(source.posts.load(Ordering::Relaxed), 4);
         source.assert_finished();
     }
 
@@ -242,6 +396,7 @@ async fn seven_digit_expiry_is_checked_before_any_request() {
     );
     assert_eq!(row.email.as_deref(), Some("agy@example.test"));
     assert!(row.model_windows.is_empty());
+    assert_eq!(source.refreshes.load(Ordering::Relaxed), 0);
     source.assert_finished();
 }
 
@@ -322,13 +477,13 @@ async fn concurrent_polls_share_the_cache_and_do_not_hide_expiry() {
         Some("usage.error.gemini_expired")
     );
     assert!(expired.model_windows.is_empty());
-    assert_eq!(source.reads.load(Ordering::Relaxed), 1);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
     advance_cache(&cache, CACHE_TTL).await;
     assert_eq!(
         cache.fetch_with(&source, before_expiry, false).await.state,
         UsageRowState::Ok
     );
-    assert_eq!(source.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(source.reads.load(Ordering::Relaxed), 3);
     source.assert_finished();
 }
 
@@ -483,5 +638,46 @@ async fn gemini_manual_refresh_rereads_a_logout_and_keeps_the_http_interval() {
     assert!(row.email.is_none());
     cache.fetch_with(&source, before_expiry, true).await;
     assert_eq!(source.posts.load(Ordering::Relaxed), 2);
+    source.assert_finished();
+}
+
+#[tokio::test]
+async fn gemini_refreshes_after_google_rejects_an_unexpired_login() {
+    for status in [reqwest::StatusCode::UNAUTHORIZED, reqwest::StatusCode::FORBIDDEN] {
+        let rejected = Err(http_error(status));
+        let mut exchanges = if status == reqwest::StatusCode::UNAUTHORIZED {
+            vec![load(rejected)]
+        } else {
+            vec![load(Ok(json!({}))), (FETCH_MODELS, json!({}), rejected)]
+        };
+        exchanges.extend([load(Ok(json!({}))), (FETCH_MODELS, json!({}), Ok(default_models()))]);
+        let source = Fixture {
+            refresh_result: Some(RefreshOutcome::Success),
+            refreshed_credentials: Some(REFRESHED_CREDENTIAL),
+            ..Fixture::new(exchanges)
+        };
+        let row = UsageCache::default().fetch_with(&source, before_expiry, false).await;
+        assert_eq!(source.refreshes.load(Ordering::Relaxed), 1, "{status}");
+        assert_eq!(source.reads.load(Ordering::Relaxed), 2, "{status}");
+        assert_eq!(row.state, UsageRowState::Ok, "{status}");
+        assert!(!row.model_windows.is_empty(), "{status}");
+        source.assert_finished();
+    }
+}
+
+#[tokio::test]
+async fn gemini_rejects_a_second_unauthorized_response_without_running_agy_again() {
+    let rejected = http_error(reqwest::StatusCode::UNAUTHORIZED);
+    let source = Fixture {
+        refresh_result: Some(RefreshOutcome::Success),
+        refreshed_credentials: Some(REFRESHED_CREDENTIAL),
+        ..Fixture::new(vec![load(Err(rejected)), load(Err(rejected))])
+    };
+    let cache = UsageCache::default();
+    for explicit in [false, true] {
+        let row = cache.fetch_with(&source, before_expiry, explicit).await;
+        assert_eq!(row.error_code.as_deref(), Some(EXPIRED_CODE));
+        assert_eq!(source.refreshes.load(Ordering::Relaxed), 1);
+    }
     source.assert_finished();
 }

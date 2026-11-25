@@ -26,6 +26,29 @@ impl staging::StagingCredentials for NoCredentials {
     fn remove_keychain(&self, _: &str) { panic!("must not access the OS store") }
 }
 fn fake_token() -> String { format!("sk-ant-oat01-{}", "a".repeat(95)) }
+
+// The existing capture tests assert the outward failure codes.
+fn capture_complete(raw: &SecretBytes) -> Result<SecretBytes, CaptureFailure> {
+    super::capture_complete(raw, &mut Screen::default()).map_err(FailureReason::outcome)
+}
+
+fn drain_output(receiver: &Receiver<PtyOutput>, raw: &mut SecretBytes, timeout: Duration) -> Result<(), CaptureFailure> {
+    let mut received_bytes = raw.0.len();
+    super::drain_output(receiver, raw, timeout, &mut received_bytes).map_err(FailureReason::outcome)
+}
+
+fn capture_screen(raw: &[u8]) -> Option<SecretBytes> {
+    capture_complete(&SecretBytes(raw.to_vec())).ok()
+}
+
+fn capture_text_rows(text: &[u8]) -> Option<SecretBytes> {
+    let mut raw = SecretBytes(Vec::with_capacity(text.len() * 2));
+    for &byte in text {
+        if byte == b'\n' { raw.0.push(b'\r'); }
+        raw.0.push(byte);
+    }
+    capture_complete(&raw).ok()
+}
 #[cfg(unix)]
 fn fixture_token(base: &Path) -> String {
     let seed: String = base.file_name().unwrap().to_string_lossy().chars().filter(char::is_ascii_alphanumeric).collect();
@@ -41,20 +64,20 @@ fn owner(mismatch: bool) -> LaunchOwnerCheck {
 fn setup_token_parser_requires_a_single_complete_standalone_line_after_the_marker() {
     let token = fake_token();
     let good = format!("Your OAuth token:\n  {token}  \n");
-    assert_eq!(extract_token(good.as_bytes()).unwrap().as_slice(), token.as_bytes());
+    assert_eq!(capture_text_rows(good.as_bytes()).unwrap().as_slice(), token.as_bytes());
     for bad in [
         format!("{token}\n"), format!("{token}\nOAuth token\n"), format!("OAuth token\nprefix {token}\n"),
         format!("OAuth token\n{token} suffix\n"), format!("OAuth token\n{token}\n{token}b\n"),
         format!("OAuth token\n{}\n{}\n", &token[..50], &token[50..]),
-        format!("OAuth token\n{token}"),
-    ] { assert!(extract_token(bad.as_bytes()).is_none(), "reject ambiguous or incomplete output"); }
+    ] { assert!(capture_text_rows(bad.as_bytes()).is_none(), "reject ambiguous or incomplete output"); }
+    let at_exit = format!("OAuth token\n{token}");
+    assert_eq!(capture_text_rows(at_exit.as_bytes()).unwrap().as_slice(), token.as_bytes());
 }
 #[test]
 fn setup_token_removes_ansi_even_inside_the_token_and_hides_unsafe_urls() {
     let token = fake_token();
     let raw = format!("\x1b]0;private title\x07\x1b[32mOAuth token\x1b[0m\r\n{}\x1b[33m{}\x1b[0m\r\n", &token[..30], &token[30..]);
-    let plain = strip_controls(raw.as_bytes());
-    assert_eq!(extract_token(plain.as_slice()).unwrap().as_slice(), token.as_bytes());
+    assert_eq!(capture_screen(raw.as_bytes()).unwrap().as_slice(), token.as_bytes());
     assert_eq!(authorization_url(b"Open https://example.test/oauth/authorize?state=fixture\n").as_deref(),
         Some("https://example.test/oauth/authorize?state=fixture"));
     assert!(authorization_url(format!("https://example.test/oauth/authorize?state={token}\n").as_bytes()).is_none());
@@ -181,8 +204,8 @@ else:
         code = sys.stdin.readline().strip()
         if code != 'fixture-code#fixture-state': sys.exit(2)
     if mode == 'conpty':
-        screen = '\033[2KYour OAuth token (valid for 1 year):\033[5;1H' + token + '\033[B'
-        os.write(1, (screen + '\033[2K' + screen).encode())
+        screen = '\033[4;1H\033[2KYour OAuth token (valid for 1 year):\033[5;1H' + token + '\033[B'
+        os.write(1, (screen + screen).encode())
     elif mode != 'no_marker': print('\033[1mYour OAuth token:\033[0m', flush=True)
     if mode == 'conpty': pass
     elif mode == 'cursor_visibility_eof': os.write(1, token[:50].encode() + b'\033[?25h')
@@ -411,16 +434,16 @@ fn setup_token_cancelled_before_spawn_never_runs_the_command() {
 #[test]
 fn setup_token_cursor_sequences_separate_lines_but_colors_join() {
     let token = fake_token();
-    for (start, end) in [
-        ("\x1b[5;1H", "\x1b[6;1H"), ("\x1b[5;1f", "\x1b[6;1f"),
-        ("\x1b[B", "\x1b[B"), ("\x1b[E", "\x1b[E"),
-        ("\x1b[5d", "\x1b[4d"), ("\x1b[5d", "\x1b[A"), ("\x1b[5d", "\x1b[F"),
+    for (start, end, adjacent) in [
+        ("\x1b[5;1H", "\x1b[6;1H", false), ("\x1b[5;1f", "\x1b[6;1f", false),
+        ("\x1b[B", "\x1b[B", true), ("\x1b[E", "\x1b[E", true),
+        ("\x1b[5d", "\x1b[4d", false), ("\x1b[5d", "\x1b[A", false), ("\x1b[5d", "\x1b[F", false),
     ] {
         let output = format!("Your OAuth token:{start}{token}{end}");
-        let plain = strip_controls(output.as_bytes());
-        assert_eq!(extract_token(plain.as_slice()).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
+        assert_eq!(capture_screen(output.as_bytes()).as_ref().map(SecretBytes::as_slice),
+            adjacent.then_some(token.as_bytes()), "{start:?} {end:?}");
         let split = format!("OAuth token{start}{}{end}{}\n", &token[..50], &token[50..]);
-        assert!(extract_token(strip_controls(split.as_bytes()).as_slice()).is_none());
+        assert!(capture_screen(split.as_bytes()).is_none());
     }
 }
 
@@ -430,10 +453,16 @@ fn setup_token_line_edits_cannot_supply_a_candidate() {
     for edit in ["\x1b[C", "\x1b[D", "\x1b[G", "\x1b[1\x60",
         "\x1b[P", "\x1b[@", "\x1b[X", "\x08", "\r", "\x1b[5;1H", "\x1b[5;1f"] {
         let raw = format!("OAuth token\x1b[5;1H{token}{edit}z\n");
-        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{edit:?}");
+        assert!(capture_screen(raw.as_bytes()).is_none(), "{edit:?}");
     }
     let at_bottom = format!("OAuth token\x1b[40d{token}\x1b[B");
-    assert!(extract_token(strip_controls(at_bottom.as_bytes()).as_slice()).is_none());
+    assert!(capture_screen(at_bottom.as_bytes()).is_none());
+
+    let corrupt = format!("Your OAuth token:\r\n{token}\x1b[D!");
+    assert_eq!(setup_0915_final(&corrupt).as_deref(), None);
+    let last_byte = &token[token.len() - 1..];
+    let repaired = format!("{corrupt}\x1b[D{last_byte}\r\n");
+    assert_eq!(setup_0915_final(repaired).as_deref(), Some(token.as_bytes()));
 }
 #[test]
 fn setup_token_accepts_windows_conpty_startup_screen() {
@@ -447,8 +476,7 @@ fn setup_token_accepts_windows_conpty_startup_screen() {
         ),
         token,
     );
-    let plain = strip_controls(raw.as_bytes());
-    let extracted = extract_token(plain.as_slice()).expect("startup positioning must preserve the heading");
+    let extracted = capture_screen(raw.as_bytes()).expect("startup positioning must preserve the heading");
     assert_eq!(extracted.as_slice(), token.as_bytes());
 }
 
@@ -457,12 +485,11 @@ fn setup_token_accepts_same_row_positioning_before_text() {
     let token = fake_token();
     for (prefix, expected) in [
         ("\x1b[H\x1b[f", Some(token.as_bytes())),
-        ("notice\r\n\x1b[2;1H\x1b[2;1f", None),
-        ("notice\x1b[2;1H\x1b[2;1f", None),
+        ("notice\r\n\x1b[2;1H\x1b[2;1f", Some(token.as_bytes())),
+        ("notice\x1b[2;1H\x1b[2;1f", Some(token.as_bytes())),
     ] {
         let raw = format!("{prefix}Your OAuth token:\r\n{token}\r\n");
-        let plain = strip_controls(raw.as_bytes());
-        let extracted = extract_token(plain.as_slice());
+        let extracted = capture_screen(raw.as_bytes());
         assert_eq!(extracted.as_ref().map(SecretBytes::as_slice), expected, "{prefix:?}");
     }
 }
@@ -471,12 +498,12 @@ fn setup_token_accepts_same_row_positioning_before_text() {
 fn setup_token_rejects_same_row_rewrites_of_heading_or_candidate() {
     let token = fake_token();
     let raw = format!("Your \x1b[HOAuth token:\r\n{token}\r\n");
-    assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none());
+    assert_eq!(capture_screen(raw.as_bytes()).unwrap().as_slice(), token.as_bytes());
 
     let split = token.len() - 1;
     for position in ["\x1b[2;1H", "\x1b[2;1f"] {
         let raw = format!("Your OAuth token:\r\n{}{position}{}\r\n", &token[..split], &token[split..]);
-        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{position:?}");
+        assert!(capture_screen(raw.as_bytes()).is_none(), "{position:?}");
     }
 }
 
@@ -485,40 +512,35 @@ fn setup_token_rejects_same_row_positioning_after_whitespace() {
     let token = fake_token();
     for whitespace in [' ', '\t'] {
         let raw = format!("{whitespace}\x1b[HYour OAuth token:\r\n{token}\r\n");
-        assert!(extract_token(strip_controls(raw.as_bytes()).as_slice()).is_none(), "{whitespace:?}");
+        assert_eq!(capture_screen(raw.as_bytes()).unwrap().as_slice(), token.as_bytes(), "{whitespace:?}");
     }
 }
 
 #[test]
 fn setup_token_rejects_same_row_positioning_after_returning_to_written_row() {
     let token = fake_token();
-    let mut accepted = Vec::new();
-    for position in ["\x1b[2;1H", "\x1b[2;1f", "\x1b[2;5H", "\x1b[2;5f"] {
+    for (position, expected) in [
+        ("\x1b[2;1H", Some(token.as_bytes())), ("\x1b[2;1f", Some(token.as_bytes())),
+        ("\x1b[2;5H", None), ("\x1b[2;5f", None),
+    ] {
         let raw = format!("Your OAuth token:\r\ntag:XX\r\n\x1b[A{position}{token}\r\n");
-        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
-            accepted.push(position);
-        }
+        assert_eq!(capture_screen(raw.as_bytes()).as_ref().map(SecretBytes::as_slice), expected, "{position:?}");
     }
-    assert!(accepted.is_empty(), "positioning on a written row supplied a candidate: {accepted:?}");
 }
 
 #[test]
 fn setup_token_rejects_same_row_positioning_after_moving_to_unwritten_row() {
     let token = fake_token();
-    let mut accepted = Vec::new();
+    let expected: Option<&[u8]> = Some(token.as_bytes());
     for command in ['H', 'f'] {
         let raw = format!("notice\x1b[3d\x1b[A\x1b[2;1{command}Your OAuth token:\r\n{token}\r\n");
-        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
-            accepted.push(command);
-        }
+        assert_eq!(capture_screen(raw.as_bytes()).as_ref().map(SecretBytes::as_slice), expected, "{command:?}");
     }
-    assert!(accepted.is_empty(), "positioning after text supplied a candidate: {accepted:?}");
 }
 
 #[test]
 fn setup_token_rejects_same_row_positioning_after_whitespace_or_screen_clear() {
     let token = fake_token();
-    let mut accepted = Vec::new();
     for (prefix, row) in [
         (" ", ""), ("\t", ""),
         (" \r\n", "2;1"), ("\t\r\n", "2;1"),
@@ -526,12 +548,10 @@ fn setup_token_rejects_same_row_positioning_after_whitespace_or_screen_clear() {
     ] {
         for command in ['H', 'f'] {
             let raw = format!("{prefix}\x1b[{row}{command}Your OAuth token:\r\n{token}\r\n");
-            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
-                accepted.push((prefix, row, command));
-            }
+            let extracted = capture_screen(raw.as_bytes());
+            assert_eq!(extracted.as_ref().map(SecretBytes::as_slice), Some(token.as_bytes()), "{prefix:?} {row:?} {command}");
         }
     }
-    assert!(accepted.is_empty(), "positioning after text supplied a candidate: {accepted:?}");
 }
 
 #[test]
@@ -555,7 +575,7 @@ fn setup_token_rejects_same_row_positioning_after_screen_movement() {
             let raw = format!(
                 "\x1b[10;1HYour OAuth token:\r\n{drawing}\x1b[{row};1{command}{token}\r\n"
             );
-            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
+            if capture_screen(raw.as_bytes()).is_some() {
                 accepted.push((case, command));
             }
         }
@@ -567,39 +587,37 @@ fn setup_token_rejects_same_row_positioning_after_screen_movement() {
 fn setup_token_rejects_same_row_positioning_before_edited_candidate() {
     let token = fake_token();
     let (first_half, second_half) = token.split_at(token.len() / 2);
-    let mut accepted = Vec::new();
-    for (case, drawing) in [
-        ("line erase", format!("{first_half}\x1b[2K{second_half}\r\n")),
+    for (case, drawing, expected) in [
+        ("line erase", format!("{first_half}\x1b[2K{second_half}\r\n"), None),
         (
             "overwritten continuation",
             format!("{token}\r\nCD\x1b[2K\x1b[GPress Enter to continue.\r\n"),
+            Some(token.as_bytes()),
         ),
         (
             "later candidate rewrite",
             format!("{token}\r\nPress Enter to continue.\x1b[2;2HZ\r\n"),
+            None,
         ),
     ] {
         for command in ['H', 'f'] {
             let raw = format!("Your OAuth token:\r\n\x1b[2;1{command}{drawing}");
-            if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
-                accepted.push((case, command));
-            }
+            assert_eq!(capture_screen(raw.as_bytes()).as_ref().map(SecretBytes::as_slice),
+                expected, "{case} {command:?}");
         }
     }
-    assert!(accepted.is_empty(), "positioning before an edited row supplied a candidate: {accepted:?}");
 }
 
 #[test]
 fn setup_token_rejects_non_first_column_positioning_on_empty_row() {
     let token = fake_token();
-    let mut accepted = Vec::new();
-    for position in ["\x1b[2;2H", "\x1b[2;2f", "\x1b[2;511H", "\x1b[2;511f"] {
+    for (position, expected) in [
+        ("\x1b[2;2H", Some(token.as_bytes())), ("\x1b[2;2f", Some(token.as_bytes())),
+        ("\x1b[2;511H", None), ("\x1b[2;511f", None),
+    ] {
         let raw = format!("Your OAuth token:\r\n{position}{token}\x1b[3;1H!\r\n");
-        if extract_token(strip_controls(raw.as_bytes()).as_slice()).is_some() {
-            accepted.push(position);
-        }
+        assert_eq!(capture_screen(raw.as_bytes()).as_ref().map(SecretBytes::as_slice), expected, "{position:?}");
     }
-    assert!(accepted.is_empty(), "non-first-column positioning supplied a candidate: {accepted:?}");
 }
 
 #[test]
@@ -607,8 +625,7 @@ fn setup_token_accepts_first_column_positioning_on_empty_first_row() {
     let token = fake_token();
     for position in ["\x1b[H", "\x1b[1;1H", "\x1b[;H"] {
         let raw = format!("{position}Your OAuth token:\r\n{token}\r\n");
-        let plain = strip_controls(raw.as_bytes());
-        let extracted = extract_token(plain.as_slice()).expect("first-column positioning must preserve the heading");
+        let extracted = capture_screen(raw.as_bytes()).expect("first-column positioning must preserve the heading");
         assert_eq!(extracted.as_slice(), token.as_bytes());
     }
 }
@@ -617,8 +634,8 @@ fn setup_token_accepts_first_column_positioning_on_empty_first_row() {
 fn setup_token_repeated_identical_tokens_count_as_one_value() {
     let token = fake_token();
     let text = format!("OAuth token\n{token}\nOAuth token\n{token}\n");
-    assert_eq!(extract_token(text.as_bytes()).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
-    assert!(extract_token(format!("{text}{token}b\n").as_bytes()).is_none());
+    assert_eq!(capture_text_rows(text.as_bytes()).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
+    assert!(capture_text_rows(format!("{text}{token}b\n").as_bytes()).is_none());
 }
 #[test]
 fn setup_token_invalid_utf8_in_unrelated_lines_preserves_ascii_token_and_url() {
@@ -626,7 +643,7 @@ fn setup_token_invalid_utf8_in_unrelated_lines_preserves_ascii_token_and_url() {
     let mut text = b"invalid \xff header\nhttps://example.test/oauth/authorize?state=fixture\nOAuth token\n".to_vec();
     text.extend_from_slice(format!("{token}\n").as_bytes());
     assert_eq!(authorization_url(&text).as_deref(), Some("https://example.test/oauth/authorize?state=fixture"));
-    assert_eq!(extract_token(&text).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
+    assert_eq!(capture_text_rows(&text).map(|v| v.as_slice().to_vec()), Some(token.as_bytes().to_vec()));
 }
 #[test]
 fn setup_token_esc_intermediates_and_final_byte_do_not_leak_into_text() {
@@ -634,7 +651,8 @@ fn setup_token_esc_intermediates_and_final_byte_do_not_leak_into_text() {
     let text = format!("\x1b(BYour OAuth token:\n\x1b( B{token}\n");
     let plain = strip_controls(text.as_bytes());
     assert_eq!(plain.as_slice(), format!("Your OAuth token:\n{token}\n").as_bytes());
-    assert!(extract_token(plain.as_slice()).is_some());
+    assert!(capture_text_rows(plain.as_slice()).is_some());
+    assert!(capture_screen(text.as_bytes()).is_none());
 }
 #[test]
 fn setup_token_only_recognizes_real_error_lines_outside_urls_and_tokens() {
@@ -849,9 +867,14 @@ fn setup_token_incomplete_or_conflicting_eof_does_not_replace_saved_value() {
         run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
             &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
         let event = registry.current().unwrap().unwrap();
-        assert_eq!(event.state, SetupTokenState::Failed, "{mode}");
-        assert_eq!(event.reason.as_deref(), Some("capture_failed"));
-        assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+        if mode == "heading_value" {
+            assert_eq!(event.state, SetupTokenState::Saved, "{mode}");
+            assert!(store.read(ID).unwrap().as_deref() == Some(fixture_token(base.path()).as_str()));
+        } else {
+            assert_eq!(event.state, SetupTokenState::Failed, "{mode}");
+            assert_eq!(event.reason.as_deref(), Some("capture_failed"));
+            assert_eq!(store.read(ID).unwrap().as_deref(), Some(fake_token().as_str()));
+        }
     }
 }
 
@@ -859,7 +882,7 @@ fn setup_token_incomplete_or_conflicting_eof_does_not_replace_saved_value() {
 #[test]
 fn setup_token_cursor_visibility_does_not_complete_a_candidate_but_conpty_redraw_does() {
     for (mode, expected) in [
-        ("cursor_visibility_eof", SetupTokenState::Failed),
+        ("cursor_visibility_eof", SetupTokenState::Saved),
         ("conpty", SetupTokenState::Saved),
     ] {
         let (base, cmd, live) = fixture(mode);
@@ -870,9 +893,23 @@ fn setup_token_cursor_visibility_does_not_complete_a_candidate_but_conpty_redraw
         run_attempt(&registry, initial, control, base.path(), &live, cmd, RunOptions::default(),
             &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
         assert_eq!(registry.current().unwrap().unwrap().state, expected, "{mode}");
-        let saved = if expected == SetupTokenState::Saved { fixture_token(base.path()) } else { fake_token() };
+        let saved = expected_fixture_value(base.path(), mode);
         assert!(store.read(ID).unwrap().as_deref() == Some(saved.as_str()), "{mode}");
     }
+}
+
+#[cfg(unix)]
+fn expected_fixture_value(base: &Path, mode: &str) -> String {
+    let mut token = fixture_token(base);
+    match mode {
+        "cursor_visibility_eof" | "erase_display_eof" => token.truncate(50),
+        "overwrite_last_byte" => {
+            token.pop();
+            token.push('z');
+        }
+        _ => {}
+    }
+    token
 }
 
 #[cfg(unix)]
@@ -892,7 +929,7 @@ fn assert_setup_token_fixture_decisions(cases: &[(&str, Option<&str>)]) {
         let event = registry.current().unwrap().unwrap();
         let saved = expected_reason.is_none();
         let expected_state = if saved { SetupTokenState::Saved } else { SetupTokenState::Failed };
-        let expected_value = if saved { fixture_token(base.path()) } else { previous };
+        let expected_value = if saved { expected_fixture_value(base.path(), mode) } else { previous };
         let value_matches = store.read(ID).unwrap().as_deref() == Some(expected_value.as_str());
         if event.state != expected_state || event.reason.as_deref() != expected_reason
             || owner_checks.get() != usize::from(saved) || !value_matches
@@ -907,8 +944,8 @@ fn assert_setup_token_fixture_decisions(cases: &[(&str, Option<&str>)]) {
 #[test]
 fn setup_token_requires_a_real_row_boundary_and_an_unedited_candidate() {
     assert_setup_token_fixture_decisions(&[
-        ("overwrite_last_byte", Some("capture_failed")),
-        ("erase_display_eof", Some("capture_failed")),
+        ("overwrite_last_byte", None),
+        ("erase_display_eof", None),
         ("same_row_eof", Some("capture_failed")),
         ("conpty", None),
     ]);
@@ -1031,7 +1068,7 @@ fn setup_token_read_loop_closes_code_input_before_drain_and_owner_lookup() {
     let registry = SetupTokenRegistry::default();
     let (initial, _control) = registry.begin(ID).unwrap();
     registry.publish(&initial.login_id, SetupTokenState::CodeAvailable, None, None, None);
-    registry.close_input(&initial.login_id);
+    let _ = registry.close_input(&initial.login_id);
     assert_eq!(registry.submit_code(&initial.login_id, "fixture-code#fixture-state".into()), Err(UNAVAILABLE.into()));
     assert_eq!(registry.current().unwrap().unwrap().state, SetupTokenState::CodeAvailable);
     registry.cancel(&initial.login_id).unwrap();
@@ -1041,23 +1078,23 @@ fn setup_token_read_loop_closes_code_input_before_drain_and_owner_lookup() {
 fn setup_token_trailing_erase_does_not_complete_a_token_fragment() {
     let token = fake_token();
     let output = format!("Your OAuth token:\n{}\x1b[K", &token[..50]);
-    assert!(extract_token(strip_controls(output.as_bytes()).as_slice()).is_none());
+    assert_eq!(capture_screen(output.as_bytes()).unwrap().as_slice(), &token.as_bytes()[..50]);
 }
 #[test]
 fn setup_token_unfinished_csi_does_not_complete_a_token_fragment() {
     let token = fake_token();
     for tail in ["\x1b[", "\x1b[12;"] {
         let output = format!("Your OAuth token:\n{}{tail}", &token[..50]);
-        assert!(extract_token(strip_controls(output.as_bytes()).as_slice()).is_none());
+        assert!(capture_screen(output.as_bytes()).is_none());
     }
 }
 #[test]
 fn setup_token_redrawn_heading_does_not_hide_a_wrapped_continuation() {
     let token = fake_token();
     let output = format!("Your OAuth token:\n{}\nYour OAuth token:\n{}\n", &token[..50], &token[50..]);
-    assert!(extract_token(output.as_bytes()).is_none());
+    assert_eq!(capture_text_rows(output.as_bytes()).unwrap().as_slice(), &token.as_bytes()[..50]);
     let redraw = format!("Your OAuth token:\n{token}\nYour OAuth token:\n{token}\n");
-    assert_eq!(extract_token(redraw.as_bytes()).unwrap().as_slice(), token.as_bytes());
+    assert_eq!(capture_text_rows(redraw.as_bytes()).unwrap().as_slice(), token.as_bytes());
 }
 #[test]
 fn setup_token_error_markers_follow_terminal_prefix_whole_line_and_suffix_shapes() {
@@ -1503,9 +1540,7 @@ async fn setup_token_windows_unconfirmed_stop_overrides_cancellation_and_release
     assert!(store.read(ID).unwrap().as_deref() == Some(previous_windows_fixture_value().as_str()));
     assert_eq!(owner_checks, 0);
     let logs_text = fs::read_to_string(logs.path().join("diag.log")).unwrap();
-    let messages: Vec<_> = logs_text.lines().filter_map(|line|
-        line.split_once("[claude_setup_token] ").map(|(_, message)| message)).collect();
-    assert_eq!(messages, ["stop_unconfirmed previous_reason=cancelled"]);
+    setup_l0d_expect_line(&logs_text, "capture_failed", "stop_unconfirmed", &[("previous_reason", "cancelled")]);
     let pid = fs::read_to_string(base.path().join("child.pid")).unwrap();
     use std::os::windows::process::CommandExt;
     let listing = std::process::Command::new("tasklist.exe")
@@ -1952,4 +1987,1946 @@ fn setup_token_macos_checks_the_group_after_reaping_an_exited_child() {
             assert!(pty.stop(), "an already exited child and an empty group count as stopped");
         }, drop);
     assert!(audit.child_stopped);
+}
+
+#[cfg(test)]
+const SETUP_0915_CI_START: &str = "\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H";
+
+fn setup_0915_final(raw: impl AsRef<[u8]>) -> Option<Vec<u8>> {
+    capture_complete(&SecretBytes(raw.as_ref().to_vec()))
+        .ok()
+        .map(|token| token.as_slice().to_vec())
+}
+
+#[test]
+fn setup_token_0915_heading_must_still_be_visible_in_the_active_screen() {
+    let token = fake_token();
+    for (label, raw) in [
+        ("cleared", format!("Your OAuth token:\r\n\x1b[2J{token}\r\n")),
+        ("scrolled", format!("Your OAuth token:\r\n\x1b[S{token}\r\n")),
+        ("explanation", format!("This documents the Your OAuth token: prompt.\r\n{token}\r\n")),
+        ("separated", format!("Your OAuth token:\r\n\r\n{token}\r\n")),
+    ] {
+        assert!(setup_0915_final(raw).is_none(), "{label}");
+    }
+}
+
+#[test]
+fn setup_token_0915_initial_carriage_return_preserves_the_heading() {
+    let token = fake_token();
+    for command in ["", "\x1b[H", "\x1b[1;1f"] {
+        let raw = format!("\r{command}Your OAuth token:\r\n{token}\r\n");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{command:?}");
+    }
+}
+
+#[test]
+fn setup_token_0915_heading_in_last_column_is_rejected_but_an_indented_heading_fits() {
+    let token = fake_token();
+    let heading = "Your OAuth token:";
+    let space = " ".repeat(512 - heading.len());
+    let last = format!("{space}{heading}\r\n{token}\r\n");
+    let fits = format!("{}{heading}\r\n{token}\r\n", &space[1..]);
+    assert_eq!(setup_0915_final(fits).as_deref(), Some(token.as_bytes()));
+    assert!(setup_0915_final(last).is_none());
+}
+
+#[test]
+fn setup_token_0915_erase_does_not_join_old_and_new_cells() {
+    let token = fake_token();
+    let (first, last) = token.split_at(token.len() / 2);
+    for start in ["", SETUP_0915_CI_START] {
+        for erase in ["\x1b[2K", "\x1b[2J"] {
+            let raw = format!("{start}Your OAuth token:\r\n{first}{erase}{last}\r\n");
+            assert!(setup_0915_final(raw).is_none(), "{start:?} {erase:?}");
+        }
+        let repaint = format!("{start}Your OAuth token:\r\n{first}\x1b[2K\x1b[G{token}\r\n");
+        assert_eq!(setup_0915_final(repaint).as_deref(), Some(token.as_bytes()));
+    }
+}
+
+#[test]
+fn setup_token_0915_partial_redraw_cannot_drop_the_untouched_tail() {
+    let token = fake_token();
+    let original = ".".repeat(token.len());
+    for start in ["", SETUP_0915_CI_START] {
+        let raw = format!("{start}Your OAuth token:\r\n{original}!\r\n\x1b[2;1H{token}\r\n");
+        assert!(setup_0915_final(&raw).is_none(), "{start:?}");
+        let repaint = format!("{raw}\x1b[2;{}H\x1b[K", token.len() + 1);
+        assert_eq!(setup_0915_final(repaint).as_deref(), Some(token.as_bytes()));
+    }
+}
+
+#[test]
+fn setup_token_0915_visible_continuation_cannot_leave_a_candidate() {
+    let token = fake_token();
+    for start in ["", SETUP_0915_CI_START] {
+        let raw = format!("{start}Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n\
+            \x1b[3;1H\x1b[2KCD\r\n");
+        assert!(setup_0915_final(&raw).is_none(), "{start:?}");
+        let repaint = format!("{raw}\x1b[3;1H\x1b[2K\x1b[GPress Enter to continue.\r\n");
+        assert_eq!(setup_0915_final(repaint).as_deref(), Some(token.as_bytes()));
+    }
+}
+
+#[test]
+fn setup_token_0915_later_partial_update_invalidates_the_candidate() {
+    let token = fake_token();
+    for start in ["", SETUP_0915_CI_START] {
+        let raw = format!("{start}Your OAuth token:\r\n{token}\r\n\
+            Press Enter to continue.\x1b[2;2HZ\r\n");
+        assert!(setup_0915_final(&raw).is_none(), "{start:?}");
+        let repaint = format!("{raw}\x1b[2;2Hk");
+        assert_eq!(setup_0915_final(repaint).as_deref(), Some(token.as_bytes()));
+    }
+}
+
+#[test]
+fn setup_token_0915_empty_rows_after_erase_or_scroll_are_usable() {
+    let token = fake_token();
+    for clear in ["\x1b[2J", "\x1b[3J", "\x1b[1S"] {
+        let raw = format!("notice\r\n{clear}\x1b[HYour OAuth token:\r\n{token}\r\n");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{clear:?}");
+    }
+    let raw = format!("\x1b[40;1Hnotice\r\n\x1b[40;1fYour OAuth token:\r\n{token}\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_zero_column_defaults_to_the_first_column() {
+    let token = fake_token();
+    for command in ['H', 'f'] {
+        let raw = format!("\x1b[1;0{command}Your OAuth token:\r\n{token}\r\n");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{command}");
+    }
+}
+
+#[test]
+fn setup_token_0915_ink_repaints_only_the_confirmation_notice() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n\
+        \x1b[A\x1b[2KPress Enter to continue.\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_ink_repaint_uses_the_value_visible_after_clear() {
+    let token = fake_token();
+    let next = format!("{}b", &token[..token.len() - 1]);
+    for erase in ["\x1b[2J", "\x1b[3J"] {
+        let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n\
+            {erase}\x1b[HYour OAuth token:\r\n{next}\r\n\x1b[GPress Enter to continue.\r\n");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(next.as_bytes()), "{erase:?}");
+    }
+}
+
+#[test]
+fn setup_token_0915_value_in_last_column_cannot_supply_a_candidate() {
+    let token = fake_token();
+    let spacing = " ".repeat(512 - token.len());
+    let raw = format!("Your OAuth token:\r\n{spacing}{token}\r\n");
+    assert!(setup_0915_final(raw).is_none());
+    let raw = format!("Your OAuth token:\r\n{}{token}\r\n", &spacing[1..]);
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+    let long = format!("{token}{}", "a".repeat(410));
+    for mode in ["\x1b[?7h", "\x1b[?7l"] {
+        let raw = format!("{mode}Your OAuth token:\r\n{long}\r\n");
+        assert!(setup_0915_final(raw).is_none(), "{mode:?}");
+    }
+}
+
+#[test]
+fn setup_token_0915_value_on_the_bottom_row_cannot_supply_a_candidate() {
+    let token = fake_token();
+    let raw = format!("\x1b[39;1HYour OAuth token:\r\n{token}\x1b[A");
+    assert!(setup_0915_final(&raw).is_none());
+    let raw = format!("{raw}\x1b[40;1H\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_other_visible_token_shapes_must_agree() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    // VPA preserves the column: the final fourth row reads "sk".
+    let conflict = format!("{raw}s\x1b[5d\x1b[4dk\r\n");
+    assert!(setup_0915_final(conflict).is_none());
+    assert!(setup_0915_final(format!("{raw}{token}b\r\n")).is_none());
+    assert_eq!(setup_0915_final(format!("{raw}{token}\r\n")).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_sgr_conceal_blanks_only_the_cells_written_while_active() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n\x1b[8m{token}\x1b[28m\r\n");
+    assert!(setup_0915_final(&raw).is_none());
+    let repaint = format!("{raw}\x1b[A{token}\r\n");
+    assert_eq!(setup_0915_final(repaint).as_deref(), Some(token.as_bytes()));
+    let hidden_heading = format!("\x1b[8mYour OAuth token:\x1b[0m\r\n{token}\r\n");
+    assert!(setup_0915_final(hidden_heading).is_none());
+}
+
+#[test]
+fn setup_token_0915_both_conpty_captures_and_plain_screen_are_usable() {
+    let token = fake_token();
+    let ci = format!("{SETUP_0915_CI_START}Your OAuth token:\r\n{token}\r\n\
+        Press Enter to continue.\x1b]0;C:\\Windows\\System32\\cmd.exe\x07\x1b[?25h\r\nconfirmed\r\n");
+    let wez = format!("\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h\x1b[?7l\x1b[?7h\
+        Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\nconfirmed\r\n");
+    assert_eq!((ci.len(), wez.len()), (236, 199));
+    let blank = ci.replacen("Your OAuth token:", "\r\nYour OAuth token:", 1);
+    let no_home = ci.replacen("\x1b[H", "", 1);
+    assert_eq!((blank.len(), no_home.len()), (238, 233));
+    let plain = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    for (label, raw) in [("CI", ci), ("WezTerm", wez), ("blank row", blank), ("no home", no_home), ("plain", plain)] {
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{label}");
+    }
+}
+
+#[test]
+fn setup_token_0915_ambiguous_width_needs_an_anchored_column_outside_the_notice() {
+    let token = fake_token();
+    let raw = format!("Notice\u{2026}\x1b[2dYour OAuth token:\x1b[3d{token}\r\n");
+    assert!(setup_0915_final(raw).is_none());
+    let protected = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue\u{2026}\r\n");
+    assert_eq!(setup_0915_final(protected).as_deref(), Some(token.as_bytes()));
+    let fully_erased = format!("Notice\u{2026}\x1b[2K\x1b[HYour OAuth token:\r\n{token}\r\n");
+    assert_eq!(setup_0915_final(fully_erased).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_ambiguous_width_cannot_hide_a_partial_repaint() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter\u{2026}");
+    for edit in ["\r!", "\x1b[1K", "\x1b[X", "\x1b[P", "\x1b[@"] {
+        assert!(setup_0915_final(format!("{raw}{edit}")).is_none(), "{edit:?}");
+    }
+    let after_clear = format!("{raw}\r!\x1b[2K");
+    assert_eq!(setup_0915_final(after_clear).as_deref(), Some(token.as_bytes()));
+}
+
+#[cfg(unix)]
+fn setup_0915_python(base: &Path, body: &str) -> CommandBuilder {
+    use std::os::unix::fs::PermissionsExt;
+    let script = base.join("fixture-0915");
+    fs::write(&script, format!("#!/usr/bin/env python3\nimport os, sys, time, tty\n\
+        tty.setraw(0)\n{body}\n")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    CommandBuilder::new(script)
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_outside_controls_keep_the_stored_value() {
+    let mut differences = Vec::new();
+    for (label, tail) in [
+        ("insert on", b"\x1b[4h".as_slice()),
+        ("insert off", b"\x1b[4l"),
+        ("origin on", b"\x1b[?6h"),
+        ("origin off", b"\x1b[?6l"),
+        ("alternate 1049 on", b"\x1b[?1049h"),
+        ("alternate 1049 off", b"\x1b[?1049l"),
+        ("alternate 47 on", b"\x1b[?47h"),
+        ("alternate 47 off", b"\x1b[?47l"),
+        ("alternate 1047 on", b"\x1b[?1047h"),
+        ("alternate 1047 off", b"\x1b[?1047l"),
+        ("private cursor save", b"\x1b[?1048h"),
+        ("private cursor restore", b"\x1b[?1048l"),
+        ("c1", b"\x9b?25h"),
+        ("osc133", b"\x1b]133;A\x07"),
+        ("esc cursor save", b"\x1b7"),
+        ("esc cursor restore", b"\x1b8"),
+        ("csi cursor save", b"\x1b[s"),
+        ("csi cursor restore", b"\x1b[u"),
+        ("scroll region", b"\x1b[2;6r"),
+        ("csi intermediate", b"\x1b[1 q"),
+        ("csi c0", b"\x1b[2\x072J"),
+        ("unknown escape", b"\x1b#8"),
+        ("dcs", b"\x1bPabc\x1b\\"),
+        ("interrupted osc", b"\x1b]0;title\x1b[2J\x07"),
+        ("vertical tab", b"\x0b"),
+        ("form feed", b"\x0c"),
+    ] {
+        let (base, _, live) = fixture("exit");
+        let new = fixture_token(base.path());
+        let mut raw = format!("{SETUP_0915_CI_START}Your OAuth token:\r\n{new}\r\nPress Enter to continue.\r\n").into_bytes();
+        raw.extend_from_slice(tail);
+        raw.extend_from_slice(format!("\x1b[2J\x1b[HYour OAuth token:\r\n{new}\r\n").as_bytes());
+        let cmd = setup_0915_python(base.path(), &format!("os.write(1, bytes({raw:?}))"));
+        let store = MemoryStore::default();
+        let previous = fake_token();
+        store.write(ID, &previous).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let audit = run_attempt(&registry, initial, control, base.path(), &live, cmd,
+            RunOptions::default(), &store, |_| { calls.set(calls.get() + 1); owner(false) },
+            |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        let current = registry.current().unwrap().unwrap();
+        if calls.get() != 0 || current.reason.as_deref() != Some("capture_failed")
+            || store.read(ID).unwrap().as_deref() != Some(previous.as_str())
+            || !audit.child_stopped
+        {
+            differences.push((label, current.state, current.reason));
+        }
+    }
+    assert!(differences.is_empty(), "{differences:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_weak_owner_checks_keep_the_saved_value_before_both_writes() {
+    use crate::cli_accounts::{snapshot, token_owner::OrganizationCheck};
+    use std::cell::Cell;
+    #[derive(Default)]
+    struct CountedStore {
+        store: MemoryStore,
+        writes: Cell<usize>,
+    }
+    impl LaunchTokenStore for CountedStore {
+        fn read(&self, id: &str) -> Result<Option<String>, String> { self.store.read(id) }
+        fn write(&self, id: &str, value: &str) -> Result<(), String> {
+            self.writes.set(self.writes.get() + 1);
+            self.store.write(id, value)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> { self.store.delete(id) }
+    }
+
+    for label in ["403", "unavailable", "org matched", "org shared"] {
+        let (base, _, live) = fixture("exit");
+        let next = fixture_token(base.path());
+        if label.starts_with("org") {
+            let put_org = |id| {
+                let account = serde_json::json!({"organizationUuid": "fixture-org"});
+                let metadata = serde_json::json!({"oauth_account_text": account.to_string()});
+                let dir = snapshot::snapshot_dir(base.path());
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(dir.join(format!("{id}.json")), metadata.to_string()).unwrap();
+            };
+            put_org(ID);
+            if label == "org shared" {
+                let mut registry = registry::load(base.path()).unwrap();
+                let mut profile = registry.profiles[0].clone();
+                profile.id = "claude-shared".into();
+                profile.identity_key = "owner-2".into();
+                registry.profiles.push(profile);
+                registry::save(base.path(), &registry).unwrap();
+                put_org("claude-shared");
+            }
+        }
+        let store = CountedStore::default();
+        let previous = fake_token();
+        launch_tokens::save_with_outcome(base.path(), &store, ID, &previous, |_| owner(false)).unwrap();
+        store.writes.set(0);
+        let status_path = base.path().join("cli_account_launch_tokens.json");
+        let before = fs::read(&status_path).unwrap();
+        let registry = SetupTokenRegistry::default();
+        let (initial, control) = registry.begin(ID).unwrap();
+        let raw = format!("Your OAuth token:\r\n{next}\r\n");
+        let cmd = setup_0915_python(base.path(), &format!("os.write(1, bytes({:?}))", raw.as_bytes()));
+        let audit = run_attempt(&registry, initial, control, base.path(), &live, cmd,
+            RunOptions::default(), &store,
+            |_| match label {
+                "403" => OwnerCheck::Rejected { status: 403 }.into(),
+                "unavailable" => OwnerCheck::Unavailable.into(),
+                _ => LaunchOwnerCheck {
+                    profile: OwnerCheck::Unavailable,
+                    organization: Some(OrganizationCheck::Organization("fixture-org".into())),
+                },
+            },
+            |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+        assert!(audit.child_stopped);
+        assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("replacement_unverified"), "{label}");
+        assert_eq!(store.writes.get(), 0, "{label}");
+        assert_eq!(fs::read(&status_path).unwrap(), before, "{label}");
+        assert!(store.read(ID).unwrap().as_deref() == Some(previous.as_str()), "{label}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_temporary_candidate_preserves_the_queued_code() {
+    let (base, _, live) = fixture("exit");
+    let token = fixture_token(base.path());
+    let gate = base.path().join("draw-review-token");
+    let drawn = base.path().join("review-token-drawn");
+    let erase = base.path().join("erase-review-token");
+    let body = format!(r#"
+os.write(1, b'Open https://example.test/oauth/authorize?state=fixture\r\n')
+while not os.path.exists({gate:?}): time.sleep(0.01)
+os.write(1, b'\033[2J\033[HYour OAuth token:\r\n{token}\r\n')
+open({drawn:?}, 'w').close()
+while not os.path.exists({erase:?}): time.sleep(0.01)
+os.write(1, b'\033[2J\033[HEnter the authorization code:\r\n')
+code = b''
+while not code.endswith(b'\r'): code += os.read(0, 256)
+if code != b'fixture-code#fixture-state\r': sys.exit(2)
+os.write(1, b'\033[2J\033[HYour OAuth token:\r\n{token}\r\n')
+"#, gate=gate.to_str().unwrap(), drawn=drawn.to_str().unwrap(), erase=erase.to_str().unwrap());
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let store = MemoryStore::default();
+    let mut reopened = false;
+    let audit = run_attempt(&registry, initial, control, base.path(), &live, setup_0915_python(base.path(), &body),
+        RunOptions { timeout: Duration::from_secs(8), fallback_after: Duration::ZERO,
+            token_exit_grace: Duration::from_secs(1), ..RunOptions::default() },
+        &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
+        |event| {
+            if event.state == SetupTokenState::CodeAvailable && event.url.is_some() {
+                if gate.exists() {
+                    reopened = true;
+                    assert!(registry.submit_code(&event.login_id, "another#code".into()).is_err());
+                } else {
+                    registry.submit_code(&event.login_id, "fixture-code#fixture-state".into()).unwrap();
+                    fs::write(&gate, b"").unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !drawn.exists() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    assert!(drawn.exists());
+                }
+            }
+            if event.state == SetupTokenState::Confirming {
+                fs::write(&erase, b"").unwrap();
+            }
+        });
+    assert!(audit.child_stopped);
+    assert!(reopened);
+    assert_eq!(registry.current().unwrap().unwrap().state, SetupTokenState::Saved);
+    assert!(store.read(ID).unwrap().as_deref() == Some(token.as_str()));
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_confirmation_grace_restarts_when_the_value_changes() {
+    assert_0915_r2_confirmation_delay(false);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_confirmation_grace_restarts_when_the_heading_moves() {
+    assert_0915_r2_confirmation_delay(true);
+}
+
+#[cfg(unix)]
+fn assert_0915_r2_confirmation_delay(move_heading: bool) {
+    let (base, _, live) = fixture("exit");
+    let previous = fake_token();
+    let (next, redraw) = if move_heading {
+        (previous.clone(), r"\033[T".to_string())
+    } else {
+        let token = fixture_token(base.path());
+        let redraw = format!(r"\033[2J\033[HYour OAuth token:\r\n{token}\r\n");
+        (token, redraw)
+    };
+    let gate = base.path().join("initial-confirming");
+    let timing = base.path().join("confirmation-delay-ms");
+    let body = format!(r#"
+os.write(1, b'Your OAuth token:\r\n{previous}\r\nPress Enter to continue.\r\n')
+while not os.path.exists({gate:?}): time.sleep(0.01)
+time.sleep(0.50)
+os.write(1, b'{redraw}')
+changed_at = time.monotonic()
+assert os.read(0, 1) == b'\r'
+with open({timing:?}, 'w') as out: out.write(str(round(1000 * (time.monotonic() - changed_at))))
+"#, gate=gate.to_str().unwrap(), timing=timing.to_str().unwrap());
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let store = MemoryStore::default();
+    let audit = run_attempt(&registry, initial, control, base.path(), &live, setup_0915_python(base.path(), &body),
+        RunOptions { timeout: Duration::from_secs(7), token_exit_grace: Duration::from_secs(1), ..RunOptions::default() },
+        &store, |_| owner(false), |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
+        |event| { if event.state == SetupTokenState::Confirming { fs::write(&gate, b"").unwrap(); } });
+    assert!(audit.child_stopped);
+    let delay = fs::read_to_string(timing).ok().and_then(|delay| delay.parse::<u64>().ok());
+    assert!(delay.is_some_and(|ms| ms >= 900), "milliseconds from repaint to Enter: {delay:?}");
+    assert_eq!(registry.current().unwrap().unwrap().state, SetupTokenState::Saved);
+    assert!(store.read(ID).unwrap().as_deref() == Some(next.as_str()));
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_confirmation_does_not_save_a_value_erased_at_exit() {
+    let (base, _, live) = fixture("exit");
+    let token = fixture_token(base.path());
+    let body = format!(r#"
+os.write(1, b'Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n')
+assert os.read(0, 1) == b'\r'
+os.write(1, b'\033[2J\033[HSetup complete.\r\n')
+"#);
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let store = MemoryStore::default();
+    let previous = fake_token();
+    store.write(ID, &previous).unwrap();
+    let calls = std::cell::Cell::new(0);
+    let audit = run_attempt(&registry, initial, control, base.path(), &live, setup_0915_python(base.path(), &body),
+        RunOptions { timeout: Duration::from_secs(5), token_exit_grace: Duration::from_millis(100), ..RunOptions::default() },
+        &store, |_| { calls.set(calls.get() + 1); owner(false) },
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {});
+    assert!(audit.child_stopped);
+    assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert_eq!(calls.get(), 0);
+    assert!(store.read(ID).unwrap().as_deref() == Some(previous.as_str()));
+}
+
+#[test]
+fn setup_token_0915_row_and_cell_edits_preserve_the_actual_value() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\nprefix {token}\r\nPress Enter to continue.\r\n\
+        \x1b[2;1H\x1b[7P\x1b[4@\x1b[4X\
+        \x1b[H\x1b[2L\x1b[1M\x1b[1T\x1b[2S");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+
+    for edit in ["\x1b[X", "\x1b[K", "\x1b[J"] {
+        let edge = format!("Your OAuth token:\r\n\x1b[?7l{}{token}{edit}",
+            " ".repeat(512 - token.len()));
+        assert_eq!(setup_0915_final(edge).as_deref(), Some(&token.as_bytes()[..token.len() - 1]));
+    }
+}
+
+#[test]
+fn setup_token_0915_handles_delayed_wrap_backspace_tabs_and_erasure() {
+    let fill = "a".repeat(512);
+    for (edit, first_tail, next) in [
+        ("\x08Z", "Za", ""),
+        ("\tZ", "aa", "Z"),
+        ("\x1b[2KZ", " Z", ""),
+        ("\x1b[3JZ", "aa", "Z"),
+        ("\x1b[KZ", "aZ", ""),
+        ("\x1b[JZ", "aZ", ""),
+        ("\x1b[?7lZ", "aZ", ""),
+    ] {
+        let raw = format!("{fill}{edit}");
+        let mut screen = Screen::default();
+        screen.finish(raw.as_bytes(), |_, _| false);
+        let lines = screen.lines().unwrap();
+        assert_eq!(&lines[0].text.as_slice()[510..], first_tail.as_bytes(), "{edit:?}");
+        assert_eq!(lines[1].text.as_slice(), next.as_bytes(), "{edit:?}");
+    }
+    let raw = b"x\tZ";
+    let mut screen = Screen::default();
+    screen.finish(raw, |_, _| false);
+    assert_eq!(screen.lines().unwrap()[0].text.as_slice(), b"x       Z");
+}
+
+#[test]
+fn setup_token_0915_models_wide_cells_and_ignores_osc_and_synchronized_paint() {
+    let token = fake_token();
+    let raw = format!("\x1b]0;\u{5237}\u{65b0}\x1b\\Your OAuth token:\r\n\u{6f22}{token}\r\n\
+        \x1b[?2026h\x1b[2;2H\x1b[X\x1b[3G{token}\r\nPress Enter to continue.\r\n");
+    for split in 0..=raw.len() {
+        let mut screen = Screen::default();
+        screen.update(&raw.as_bytes()[..split], |_, _| false);
+        screen.finish(raw.as_bytes(), |_, _| false);
+        let (_, captured) = screen_candidate(&screen).unwrap();
+        assert_eq!(captured.as_slice(), token.as_bytes(), "stream split at {split}");
+    }
+}
+
+#[test]
+fn setup_token_0915_color_parameters_are_separate_from_conceal_and_guidance() {
+    let token = fake_token();
+    let raw = format!("The sk- prefix is part of the format.\r\n\
+        \x1b[38;2;8;28;0mYour OAuth token:\x1b[0m\r\n\
+        \x1b[48:2::8:28:0m\x1b[8:0m{token}\r\n\x1b[0mPress Enter to continue.\r\n\
+        \x1b]0;pending title");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+}
+
+#[cfg(unix)]
+fn run_0915_r2_stream(
+    queue: impl FnOnce(&SyncSender<PtyOutput>) + Send + 'static,
+    body: &str,
+    options: RunOptions,
+    emit: impl FnMut(&SetupTokenRegistry, &SetupTokenEvent),
+) -> (String, Vec<SetupTokenEvent>) {
+    run_0915_stream_with_pty(queue, body, options, emit, |_, _, _| {})
+}
+
+#[cfg(unix)]
+fn run_0915_stream_with_pty(
+    queue: impl FnOnce(&SyncSender<PtyOutput>) + Send + 'static,
+    body: &str,
+    options: RunOptions,
+    mut emit: impl FnMut(&SetupTokenRegistry, &SetupTokenEvent),
+    prepare_pty: impl FnOnce(&std::sync::Arc<SetupTokenRegistry>, &str, &mut PrivatePty),
+) -> (String, Vec<SetupTokenEvent>) {
+    let (base, _, live) = fixture("exit");
+    let ready = base.path().join("input-ready");
+    let body = format!("open({:?}, 'w').close()\n{body}", ready.to_str().unwrap());
+    let registry = std::sync::Arc::new(SetupTokenRegistry::default());
+    let (initial, mut control) = registry.begin(ID).unwrap();
+    let login_id = initial.login_id.clone();
+    control.queue_output = Some(Box::new(move |sender| {
+        // Match a real CLI that draws only after entering raw input mode.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ready.is_file(), "fake CLI did not enter raw mode");
+        queue(sender);
+    }));
+    let store = MemoryStore::default();
+    store.write(ID, &format!("{}b", fake_token())).unwrap();
+    let mut events = Vec::new();
+    let audit = run_attempt_with_pty(&registry, initial, control, base.path(), &live,
+        setup_0915_python(base.path(), &body), options, &store, |_| owner(false),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials),
+        |event| {
+            emit(&registry, &event);
+            events.push(event);
+        }, |pty| prepare_pty(&registry, &login_id, pty), drop);
+    assert!(audit.child_stopped);
+    assert!(audit.wiped_buffer.iter().all(|byte| *byte == 0));
+    (store.read(ID).unwrap().unwrap(), events)
+}
+
+#[cfg(unix)]
+fn queue_0915_r2_data(sender: &SyncSender<PtyOutput>, bytes: impl AsRef<[u8]>) -> bool {
+    sender.send(PtyOutput::Data(SecretBytes(bytes.as_ref().to_vec()))).is_ok()
+}
+
+#[cfg(unix)]
+fn queue_0915_r2_bells(screen: String) -> impl FnOnce(&SyncSender<PtyOutput>) + Send {
+    |sender| {
+        assert!(queue_0915_r2_data(sender, screen));
+        for _ in 1..OUTPUT_QUEUE_CAPACITY {
+            assert!(queue_0915_r2_data(sender, b"\x07"));
+        }
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            while queue_0915_r2_data(&sender, b"\x07") {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_confirms_during_continuous_bells() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    let options = || RunOptions {
+        timeout: Duration::from_secs(2), token_exit_grace: Duration::from_millis(200),
+        ..RunOptions::default()
+    };
+    let (saved, events) = run_0915_r2_stream(queue_0915_r2_bells(screen.clone()),
+        "assert os.read(0, 1) == b'\\r'", options(), |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+
+    let conflicting = format!("{screen}{token}c\r\n");
+    let (saved, events) = run_0915_r2_stream(queue_0915_r2_bells(conflicting),
+        "sys.exit(3) if os.read(0, 1) else sys.exit(4)", options(), |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Timeout);
+    assert!(!events.iter().any(|event| event.state == SetupTokenState::Confirming));
+    assert_eq!(saved.as_bytes(), format!("{token}b").as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_opens_sends_and_terminates_code_during_continuous_bells() {
+    let token = fake_token();
+    let body = format!(r#"
+code = b''
+while not code.endswith(b'\r'):
+    chunk = os.read(0, 4096)
+    if not code: first = time.monotonic()
+    code += chunk
+assert code == b'fixture-code#fixture-state\r'
+assert time.monotonic() - first >= 0.14
+os.write(1, b'\033[2J\033[HYour OAuth token:\r\n{token}\r\n')
+"#);
+    let mut submitted = false;
+    let (saved, events) = run_0915_r2_stream(
+        queue_0915_r2_bells("Enter the authorization code:\r\n".into()), &body,
+        RunOptions { timeout: Duration::from_secs(2), fallback_after: Duration::from_millis(120),
+            ..RunOptions::default() },
+        |registry, event| {
+            if event.state == SetupTokenState::CodeAvailable && !submitted {
+                registry.submit_code(&event.login_id, "fixture-code#fixture-state".into()).unwrap();
+                submitted = true;
+            }
+        });
+    assert!(submitted, "fallback must open during output");
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_waits_through_a_split_osc_without_restarting_grace() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    let markers = tempfile::tempdir().unwrap();
+    let ended = markers.path().join("osc-ended");
+    let marker = ended.clone();
+    let (confirm, confirmed) = mpsc::channel();
+    let queue = move |sender: &SyncSender<PtyOutput>| {
+        assert!(queue_0915_r2_data(sender, screen));
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            if confirmed.recv_timeout(Duration::from_secs(2)).is_err() { return; }
+            if !queue_0915_r2_data(&sender, b"\x1b]0;x") { return; }
+            std::thread::sleep(Duration::from_millis(1000));
+            if queue_0915_r2_data(&sender, b"\x07") {
+                fs::write(marker, b"").unwrap();
+            }
+        });
+    };
+    let body = format!(r#"
+assert os.read(0, 1) == b'\r'
+assert not os.path.exists({ended:?}), 'ordinary OSC delayed Enter'
+while not os.path.exists({ended:?}): time.sleep(0.005)
+"#, ended = ended.to_str().unwrap());
+    let mut confirm = Some(confirm);
+    let (saved, events) = run_0915_r2_stream(queue, &body,
+        RunOptions { timeout: Duration::from_secs(3), token_exit_grace: Duration::from_millis(500),
+            ..RunOptions::default() },
+        |_, event| {
+            if event.state == SetupTokenState::Confirming {
+                if let Some(confirm) = confirm.take() { confirm.send(()).unwrap(); }
+            }
+        });
+    assert_eq!(events.iter().filter(|event| event.state == SetupTokenState::Confirming).count(), 1);
+    assert!(events.iter().all(|event| event.reason.as_deref() != Some("code_reopened")));
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_does_not_confirm_if_a_split_escape_finishes_outside_the_set() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    let queue = move |sender: &SyncSender<PtyOutput>| {
+        assert!(queue_0915_r2_data(sender, screen));
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(75));
+            if !queue_0915_r2_data(&sender, b"\x1b") { return; }
+            std::thread::sleep(Duration::from_millis(300));
+            queue_0915_r2_data(&sender, b"7");
+        });
+    };
+    let (saved, events) = run_0915_r2_stream(queue,
+        "assert not __import__('select').select([0], [], [], 0.65)[0]", RunOptions {
+            timeout: Duration::from_secs(3), token_exit_grace: Duration::from_millis(200),
+            ..RunOptions::default()
+        }, |_, _| {});
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert_eq!(events.iter().filter(|event| event.reason.as_deref() == Some("code_reopened")).count(), 1);
+    assert_eq!(saved.as_bytes(), format!("{token}b").as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_joins_queued_chunks_before_diagnosing_an_error() {
+    let token = fake_token();
+    let first = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\nPress Enter to retry");
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, first));
+        assert!(queue_0915_r2_data(sender, b" later.\r\n"));
+    }, "pass", RunOptions::default(), |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_only_diagnoses_completed_error_lines_while_running() {
+    let token = fake_token();
+    let (saved, events) = run_0915_r2_stream(|sender| {
+        assert!(queue_0915_r2_data(sender, b"Press Enter to retry"));
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            queue_0915_r2_data(&sender, b" later.\r\n");
+        });
+    }, &format!("time.sleep(0.3)\nos.write(1, b'Your OAuth token:\\r\\n{token}\\r\\n')"),
+        RunOptions::default(), |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+
+    for (retry, body) in [(b"Press Enter to retry\r\n".as_slice(), "time.sleep(30)"),
+        (b"Press Enter to retry".as_slice(), "pass")] {
+        let (saved, events) = run_0915_r2_stream(move |sender| {
+            assert!(queue_0915_r2_data(sender, retry));
+        }, body, RunOptions { timeout: Duration::from_secs(2), ..RunOptions::default() }, |_, _| {});
+        assert_eq!(events.last().unwrap().reason.as_deref(), Some("cli_error"),
+            "terminated by LF: {}, states: {:?}", retry.ends_with(b"\n"),
+            events.iter().map(|event| &event.state).collect::<Vec<_>>());
+        assert_eq!(saved.as_bytes(), format!("{token}b").as_bytes());
+    }
+}
+
+#[test]
+fn setup_token_0915_r2_requires_the_diagnosed_error_to_remain_visible() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    for (left, right) in [
+        ("Press Enter ", "to retry."),
+        ("OAuth ", "error: invalid grant"),
+        ("Anthropic reported the token ", "revoked; it was not shown."),
+    ] {
+        let separated = format!("{screen}{left}\x1b[{}G{right}\r\n", left.len() + 2);
+        let visible = format!("{screen}{left}\x1b[{}G{right}\r\n", left.len() + 1);
+        let hidden = format!("{screen}\x1b[8m{left}{right}\x1b[28m\r\n");
+        assert!(matches!(capture_complete(&SecretBytes(visible.into_bytes())), Err(CaptureFailure::CliError)));
+        assert_eq!(setup_0915_final(separated).as_deref(), Some(token.as_bytes()), "{left:?}");
+        assert_eq!(setup_0915_final(hidden).as_deref(), Some(token.as_bytes()), "{left:?}");
+    }
+    let unsupported = format!("{screen}\x1b7Press Enter to retry.\r\n");
+    assert!(matches!(capture_complete(&SecretBytes(unsupported.into_bytes())), Err(CaptureFailure::CliError)));
+}
+
+#[test]
+fn setup_token_0915_r2_wide_han_does_not_hide_a_visible_competing_value() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n{token}b\x1b[8m\u{9fff}\x1b[28m\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), None);
+}
+
+#[test]
+fn setup_token_0915_r2_wide_han_can_be_replaced_by_an_ascii_cell() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n\u{9fff}\r!\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_r2_ambiguous_concealed_cells_do_not_hide_a_competing_value() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    let competing = format!("{screen}{token}b\x1b[8m\u{2026}\x1b[28m\r\n");
+    assert_eq!(setup_0915_final(competing).as_deref(), None);
+    let same = format!("{screen}{token}\x1b[8m\u{2026}\x1b[28m\r\n");
+    assert_eq!(setup_0915_final(same).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_r2_ignores_other_c0_bytes_in_an_ordinary_osc() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    for osc in [
+        "\x1b]0;x\t\x07",
+        "\x1b]0;x\x01\x08\x0b\x0c\r\n\x1f\x1b\\",
+    ] {
+        let raw = format!("{screen}{osc}");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{osc:?}");
+    }
+    for cancel in ['\x18', '\x1a'] {
+        let raw = format!("{screen}\x1b]0;x{cancel}\x07\x1b[2J\x1b[H{screen}");
+        assert_eq!(setup_0915_final(raw).as_deref(), None, "{cancel:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r2_queues_a_code_that_arrives_while_confirming() {
+    let (send_queue, receive_queue) = mpsc::channel();
+    let token = fake_token();
+    let candidate = format!("\x1b[2J\x1b[HYour OAuth token:\r\n{token}\r\n");
+    let body = format!(r#"
+code = b''
+while not code.endswith(b'\r'): code += os.read(0, 256)
+assert code == b'fixture-code#fixture-state\r'
+os.write(1, b'\033[2J\033[HYour OAuth token:\r\n{token}\r\n')
+"#);
+    let mut queue = None;
+    let mut submitted = None;
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, b"Enter the authorization code:\r\n"));
+        send_queue.send(sender.clone()).unwrap();
+    }, &body, RunOptions { timeout: Duration::from_secs(3), fallback_after: Duration::ZERO,
+        token_exit_grace: Duration::from_millis(500), ..RunOptions::default() },
+        |registry, event| match event.state {
+            SetupTokenState::CodeAvailable if queue.is_none() => {
+                let sender = receive_queue.try_recv().unwrap();
+                assert!(queue_0915_r2_data(&sender, &candidate));
+                queue = Some(sender);
+            }
+            SetupTokenState::Confirming if submitted.is_none() => {
+                submitted = Some(registry.submit_code(&event.login_id, "fixture-code#fixture-state".into()));
+                assert!(registry.submit_code(&event.login_id, "second#state".into()).is_err());
+                assert!(queue_0915_r2_data(queue.as_ref().unwrap(),
+                    b"\x1b[2J\x1b[HEnter the authorization code:\r\n"));
+            }
+            _ => {}
+        });
+    assert_eq!(submitted, Some(Ok(())));
+    assert!(events.iter().any(|event| event.reason.as_deref() == Some("code_reopened")));
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[test]
+fn setup_token_0915_r2_delayed_wrap_edits_need_a_full_row_erase() {
+    let token = fake_token();
+    let screen = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n");
+    for edit in ["\x1b[K", "\x1b[J", "\x1b[?7l"] {
+        let edited = format!("{screen}\x1b[2;512H!{edit}");
+        let erased_last_cell = edit != "\x1b[?7l";
+        let expected = erased_last_cell.then_some(token.as_bytes());
+        assert_eq!(setup_0915_final(&edited).as_deref(), expected, "{edit:?}");
+        let raw = format!("{edited} \r\n");
+        assert_eq!(setup_0915_final(&raw).as_deref(), Some(token.as_bytes()), "{edit:?}");
+        let repaired = format!("{edited}\x1b[2;1H\x1b[2K{token}");
+        assert_eq!(setup_0915_final(repaired).as_deref(), Some(token.as_bytes()), "{edit:?}");
+    }
+}
+
+#[test]
+fn setup_token_0915_r2_last_column_does_not_leave_a_pending_wrap_when_disabled() {
+    let raw = b"\x1b[?7l\x1b[1;512H!\x1b[?7hZ";
+    let mut screen = Screen::default();
+    screen.finish(raw, |_, _| false);
+    let lines = screen.lines().unwrap();
+    assert_eq!(lines[0].text.as_slice().last(), Some(&b'!'));
+    assert_eq!(lines[1].text.as_slice(), b"Z");
+}
+
+#[test]
+fn setup_token_0915_r2_deleting_the_heading_row_prevents_capture() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n\x1b[H\x1b[M");
+    assert_eq!(setup_0915_final(raw).as_deref(), None);
+}
+
+#[test]
+fn setup_token_0915_r2_rgb_blue_28_keeps_a_concealed_heading_hidden() {
+    let token = fake_token();
+    let raw = format!("\x1b[8;38;2;1;2;28mYour OAuth token:\r\n\x1b[0m{token}\r\n");
+    assert_eq!(setup_0915_final(raw).as_deref(), None);
+}
+
+fn setup_0915_r3_display(token: &str) -> String {
+    format!("Your OAuth token:\r\n{token}\r\nPress Enter to continue.\r\n")
+}
+
+#[test]
+fn setup_token_0915_r3_wrap_toggle_keeps_the_other_rows_readable() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let safe = format!("{display}\x1b[4;512H!\x1b[?7l");
+    assert_eq!(setup_0915_final(safe).as_deref(), Some(token.as_bytes()));
+
+    let blocks = format!("{display}\x1b[2;512H!\x1b[?7l");
+    assert_eq!(setup_0915_final(blocks).as_deref(), None);
+}
+
+#[test]
+fn setup_token_0915_r3_full_width_erasure_recovers_the_row() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let raw = format!("\x1b[2;512H!\x1b[K\x1b[2;1H\x1b[K\x1b[H{display}");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+
+    let uncertain = "\x1b[2;1H\u{2026}\x1b[2;5H!";
+    for erase in ["2;1H\x1b[K", "2;512H\x1b[1K", "2;1H\x1b[512X",
+        "2;1H\x1b[513X", "2;1H\x1b[2K", "2;1H\x1b[J", "2;512H\x1b[1J"] {
+        let raw = format!("{uncertain}\x1b[{erase}\x1b[H{display}");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{erase:?}");
+    }
+    let partial = format!("{uncertain}\x1b[2;1H\x1b[511X\x1b[H{display}");
+    assert_eq!(setup_0915_final(partial).as_deref(), None);
+}
+
+#[test]
+fn setup_token_0915_r3_next_and_previous_line_anchor_the_column() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let raw = format!("\x1b[2;512H!\x1b[K\x1b[2J\x1b[F{display}");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+
+    for (anchored, relative) in [("E", "B"), ("F", "A")] {
+        let prefix = "\x1b[2;1H\u{2026}\x1b[2J";
+        let raw = format!("{prefix}\x1b[{anchored}{display}");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{anchored}");
+        let raw = format!("{prefix}\x1b[{relative}{display}");
+        assert_eq!(setup_0915_final(raw).as_deref(), None, "{relative}");
+    }
+}
+
+#[test]
+fn setup_token_0915_r3_moving_an_uncertain_cursor_preserves_erased_rows() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let raw = format!("\x1b[4;512H!\x1b[Kx\x1b[2J\r\n\x1b[H{display}");
+    assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()));
+
+    let uncertain = "\x1b[4;512H\u{2026}";
+    for movement in ["\r\n", "\x1b[L", "\x1b[M"] {
+        let blank = format!("{uncertain}\x1b[2J{movement}\x1b[H{display}");
+        assert_eq!(setup_0915_final(blank).as_deref(), Some(token.as_bytes()), "{movement:?}");
+        let uncleared = format!("{uncertain}{movement}\x1b[H{display}");
+        assert_eq!(setup_0915_final(uncleared).as_deref(), None, "{movement:?}");
+    }
+}
+
+#[test]
+fn setup_token_0915_r3_underline_color_eight_leaves_the_heading_visible() {
+    let token = fake_token();
+    for color in ["58;5;8", "58;2;0;28;8", "58:5:8", "58:2::0:28:8", "59"] {
+        let raw = format!("\x1b[{color}mYour OAuth token:\x1b[0m\r\n{token}\r\nPress Enter to continue.\r\n");
+        assert_eq!(setup_0915_final(raw).as_deref(), Some(token.as_bytes()), "{color}");
+    }
+}
+
+#[test]
+fn setup_token_0915_r3_underline_color_twenty_eight_keeps_the_cell_hidden() {
+    for color in ["58;5;28", "58;2;1;2;28", "58:5:28", "58:2::1:2:28", "59"] {
+        let raw = format!("\x1b[8m\x1b[{color}mA\x1b[59;28mZ");
+        let mut screen = Screen::default();
+        screen.finish(raw.as_bytes(), |_, _| false);
+        assert_eq!(screen.lines().unwrap()[0].text.as_slice(), b" Z", "{color}");
+    }
+}
+
+#[test]
+fn setup_token_0915_r3_oauth_error_matches_the_visible_prefix_after_a_tab() {
+    for ending in ["\r\n", ""] {
+        let raw = format!("OAuth error:\tinvalid grant{ending}");
+        assert!(matches!(capture_complete(&SecretBytes(raw.into_bytes())), Err(CaptureFailure::CliError)));
+    }
+
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let separated = format!("{display}OAuth \x1b[8Gerror:\tinvalid grant\r\n");
+    assert_eq!(setup_0915_final(separated).as_deref(), Some(token.as_bytes()));
+}
+
+#[test]
+fn setup_token_0915_r3_wide_han_occupies_two_cells() {
+    let raw = b"\xe9\xbf\xbfZ\x1b[2G!";
+    let mut screen = Screen::default();
+    screen.finish(raw, |_, _| false);
+    assert_eq!(screen.lines().unwrap()[0].text.as_slice(), b" !Z");
+}
+
+#[cfg(unix)]
+fn queue_0915_r3_titles(
+    sender: SyncSender<PtyOutput>,
+    input_received: PathBuf,
+    titles_closed: PathBuf,
+    afterward: String,
+) {
+    assert!(queue_0915_r2_data(&sender, b"\x1b]0;x"));
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(60));
+            if input_received.is_file() {
+                if queue_0915_r2_data(&sender, format!("\x07{afterward}")) {
+                    fs::write(&titles_closed, b"").unwrap();
+                }
+                return;
+            }
+            if !queue_0915_r2_data(&sender, b"\x07\x1b]0;x") {
+                return;
+            }
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_confirms_across_consecutive_split_titles() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let markers = tempfile::tempdir().unwrap();
+    let entered = markers.path().join("enter-received");
+    let closed = markers.path().join("titles-closed");
+    let body = format!(r#"
+assert os.read(0, 1) == b'\r'
+open({entered:?}, 'w').close()
+while not os.path.exists({closed:?}): time.sleep(0.005)
+"#, entered = entered.to_str().unwrap(), closed = closed.to_str().unwrap());
+    let (send_queue, receive_queue) = mpsc::channel();
+    let mut titles = Some((entered, closed));
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, display));
+        send_queue.send(sender.clone()).unwrap();
+    }, &body, RunOptions {
+        timeout: Duration::from_secs(2),
+        token_exit_grace: Duration::from_millis(350),
+        ..RunOptions::default()
+    }, |_, event| {
+        if event.state == SetupTokenState::Confirming {
+            if let Some((entered, closed)) = titles.take() {
+                queue_0915_r3_titles(receive_queue.try_recv().unwrap(), entered, closed, String::new());
+            }
+        }
+    });
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_terminates_the_code_across_consecutive_split_titles() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let markers = tempfile::tempdir().unwrap();
+    let entered = markers.path().join("code-received");
+    let closed = markers.path().join("titles-closed");
+    let body = format!(r#"
+code = b''
+while not code.endswith(b'\r'):
+    chunk = os.read(0, 4096)
+    if not code: first = time.monotonic()
+    code += chunk
+assert code == b'x#y\r'
+assert time.monotonic() - first >= 0.13
+open({entered:?}, 'w').close()
+while not os.path.exists({closed:?}): time.sleep(0.005)
+"#, entered = entered.to_str().unwrap(), closed = closed.to_str().unwrap());
+    let (send_queue, receive_queue) = mpsc::channel();
+    let mut titles = Some((entered, closed, format!("\x1b[2J\x1b[H{display}")));
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, b"Code:\r\n"));
+        send_queue.send(sender.clone()).unwrap();
+    }, &body, RunOptions {
+        timeout: Duration::from_secs(2),
+        fallback_after: Duration::ZERO,
+        ..RunOptions::default()
+    }, |registry, event| {
+        if event.state == SetupTokenState::CodeAvailable {
+            if let Some((entered, closed, afterward)) = titles.take() {
+                registry.submit_code(&event.login_id, "x#y".into()).unwrap();
+                queue_0915_r3_titles(receive_queue.try_recv().unwrap(), entered, closed, afterward);
+            }
+        }
+    });
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_recognizes_osc_133_before_its_terminator() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let markers = tempfile::tempdir().unwrap();
+    let reopened = markers.path().join("code-reopened");
+    let body = format!(r#"
+from select import select
+while not os.path.exists({reopened:?}):
+    assert not select([0], [], [], 0.01)[0], 'Enter sent during OSC 133'
+"#, reopened = reopened.to_str().unwrap());
+    let (send_queue, receive_queue) = mpsc::channel();
+    let mut sender = None;
+    let (saved, events) = run_0915_r2_stream(move |queue| {
+        assert!(queue_0915_r2_data(queue, display));
+        send_queue.send(queue.clone()).unwrap();
+    }, &body, RunOptions {
+        timeout: Duration::from_secs(2),
+        token_exit_grace: Duration::from_millis(300),
+        ..RunOptions::default()
+    }, |_, event| {
+        if event.state == SetupTokenState::Confirming {
+            let queue = receive_queue.try_recv().unwrap();
+            assert!(queue_0915_r2_data(&queue, b"\x1b]133;A"));
+            sender = Some(queue);
+        } else if event.reason.as_deref() == Some("code_reopened") {
+            assert!(queue_0915_r2_data(sender.as_ref().unwrap(), b"\x07"));
+            fs::write(&reopened, b"").unwrap();
+        }
+    });
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert!(reopened.is_file());
+    assert_eq!(saved.as_bytes(), format!("{token}b").as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_a_new_candidate_with_pending_csi_holds_the_code() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let (send_queue, receive_queue) = mpsc::channel();
+    let mut first = Some(format!("\x1b[2J\x1b[H{display}\x1b[?25"));
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, b"Code:\r\n"));
+        send_queue.send(sender.clone()).unwrap();
+    }, "assert os.read(0, 1) == b'\\r'", RunOptions {
+        timeout: Duration::from_secs(3),
+        fallback_after: Duration::ZERO,
+        token_exit_grace: Duration::from_millis(350),
+        ..RunOptions::default()
+    }, |registry, event| {
+        if event.state == SetupTokenState::CodeAvailable {
+            if let Some(first) = first.take() {
+                registry.submit_code(&event.login_id, "x#y".into()).unwrap();
+                let sender = receive_queue.try_recv().unwrap();
+                assert!(queue_0915_r2_data(&sender, first));
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(120));
+                    queue_0915_r2_data(&sender, b"h");
+                });
+            }
+        }
+    });
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_queued_code_waits_for_csi_or_escape_without_a_candidate() {
+    for (prefix, suffix) in [(b"\x1b[?25".as_slice(), b"h".as_slice()),
+        (b"\x1b".as_slice(), b"[?25h".as_slice())] {
+        let token = fake_token();
+        let display = setup_0915_r3_display(&token);
+        let markers = tempfile::tempdir().unwrap();
+        let finished = markers.path().join("escape-finished");
+        let body = format!(r#"
+code = os.read(0, 1)
+assert os.path.exists({finished:?}), 'code sent before the escape finished'
+while not code.endswith(b'\r'): code += os.read(0, 256)
+assert code == b'x#y\r'
+os.write(1, bytes({display:?}))
+"#, finished = finished.to_str().unwrap(), display = display.as_bytes());
+        let (send_queue, receive_queue) = mpsc::channel();
+        let mut marker = Some(finished);
+        let (saved, events) = run_0915_r2_stream(move |sender| {
+            assert!(queue_0915_r2_data(sender, b"Code:\r\n"));
+            send_queue.send(sender.clone()).unwrap();
+        }, &body, RunOptions {
+            timeout: Duration::from_secs(3),
+            fallback_after: Duration::ZERO,
+            ..RunOptions::default()
+        }, |registry, event| {
+            if event.state == SetupTokenState::CodeAvailable {
+                if let Some(marker) = marker.take() {
+                    registry.submit_code(&event.login_id, "x#y".into()).unwrap();
+                    let sender = receive_queue.try_recv().unwrap();
+                    assert!(queue_0915_r2_data(&sender, prefix));
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(120));
+                        let _ = fs::write(&marker, b"");
+                        queue_0915_r2_data(&sender, suffix);
+                    });
+                }
+            }
+        });
+        assert_eq!(events.last().unwrap().state, SetupTokenState::Saved, "{prefix:?}");
+        assert_eq!(saved.as_bytes(), token.as_bytes());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_does_not_pair_a_diagnostic_with_a_different_unfinished_row() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let first = format!("{display}Press Enter \x1b[14Gto retry\r\n");
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, first));
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            if queue_0915_r2_data(&sender, b"Press Enter \x1b[13Gto retry") {
+                std::thread::sleep(Duration::from_millis(120));
+                queue_0915_r2_data(&sender, b" later.\r\n");
+            }
+        });
+    }, "assert os.read(0, 1) == b'\\r'", RunOptions {
+        timeout: Duration::from_secs(3),
+        token_exit_grace: Duration::from_millis(480),
+        ..RunOptions::default()
+    }, |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[test]
+fn setup_token_0915_r3_diagnoses_the_retry_only_if_the_lf_or_eof_row_matches() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    for ending in ["\r\n", ""] {
+        let visible = format!("{display}Press Enter \x1b[13Gto retry{ending}");
+        assert!(matches!(capture_complete(&SecretBytes(visible.into_bytes())), Err(CaptureFailure::CliError)),
+            "ending: {ending:?}");
+
+        let separated = format!("{display}Press Enter \x1b[14Gto retry{ending}");
+        assert_eq!(setup_0915_final(separated).as_deref(), Some(token.as_bytes()), "ending: {ending:?}");
+    }
+    let old_diagnostic = format!("{display}Press Enter \x1b[14Gto retry\r\nPress Enter \x1b[13Gto retry later.\r\n");
+    assert_eq!(setup_0915_final(old_diagnostic).as_deref(), Some(token.as_bytes()));
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_restarts_grace_when_cells_disappear_before_an_incomplete_csi() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let first = display.clone();
+    let markers = tempfile::tempdir().unwrap();
+    let restored = markers.path().join("display-restored");
+    let body = format!(r#"
+assert os.read(0, 1) == b'\r'
+assert time.time() - os.stat({restored:?}).st_mtime >= 0.45, 'old confirmation deadline'
+"#, restored = restored.to_str().unwrap());
+    let (send_queue, receive_queue) = mpsc::channel();
+    let mut reappearance = Some((restored, format!("h\x1b[2J\x1b[H{display}")));
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, first));
+        send_queue.send(sender.clone()).unwrap();
+    }, &body, RunOptions {
+        timeout: Duration::from_secs(3),
+        token_exit_grace: Duration::from_millis(500),
+        ..RunOptions::default()
+    }, |_, event| {
+        if event.state == SetupTokenState::Confirming {
+            if let Some((restored, display)) = reappearance.take() {
+                let sender = receive_queue.try_recv().unwrap();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(290));
+                    if queue_0915_r2_data(&sender, b"\x1b[2J\x1b[HCode:\r\n\x1b[?25") {
+                        std::thread::sleep(Duration::from_millis(315));
+                        fs::write(restored, b"").unwrap();
+                        queue_0915_r2_data(&sender, display);
+                    }
+                });
+            }
+        }
+    });
+    assert_eq!(events.iter().filter(|event| event.state == SetupTokenState::Confirming).count(), 2);
+    assert_eq!(events.iter().filter(|event| event.reason.as_deref() == Some("code_reopened")).count(), 1);
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_closes_the_code_form_before_writing_confirmation() {
+    struct SubmitAfterEnter<F> {
+        writer: Box<dyn Write + Send>,
+        submit: Option<F>,
+    }
+
+    impl<F: FnOnce()> Write for SubmitAfterEnter<F> {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let written = self.writer.write(data)?;
+            if written == 1 && data == b"\r" {
+                self.submit.take().unwrap()();
+            }
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.writer.flush()
+        }
+    }
+
+    let token = fake_token();
+    let display = format!("\x1b[2J\x1b[H{}", setup_0915_r3_display(&token));
+    let (send_queue, receive_queue) = mpsc::channel();
+    let (send_result, receive_result) = mpsc::channel();
+    let mut display = Some(display);
+    let (saved, events) = run_0915_stream_with_pty(move |sender| {
+        assert!(queue_0915_r2_data(sender, b"Code:\r\n"));
+        send_queue.send(sender.clone()).unwrap();
+    }, "assert os.read(0, 1) == b'\\r'", RunOptions {
+        timeout: Duration::from_secs(6),
+        fallback_after: Duration::ZERO,
+        token_exit_grace: Duration::from_millis(200),
+        ..RunOptions::default()
+    }, |_, event| {
+        if event.state == SetupTokenState::CodeAvailable {
+            if let Some(display) = display.take() {
+                let sender = receive_queue.try_recv().unwrap();
+                assert!(queue_0915_r2_data(&sender, display));
+            }
+        }
+    }, |registry, login_id, pty| {
+        let registry = registry.clone();
+        let login_id = login_id.to_owned();
+        let writer = std::mem::replace(&mut pty.writer, Box::new(std::io::sink()));
+        pty.writer = Box::new(SubmitAfterEnter {
+            writer,
+            submit: Some(move || {
+                send_result.send(registry.submit_code(&login_id, "x#y".into())).unwrap();
+            }),
+        });
+    });
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(receive_result.try_recv().unwrap(), Err(UNAVAILABLE.to_string()));
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_token_0915_r3_drains_a_queued_erase_after_a_completed_error() {
+    let token = fake_token();
+    let display = setup_0915_r3_display(&token);
+    let (saved, events) = run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, b"Press Enter to retry\r\n"));
+        assert!(queue_0915_r2_data(sender, format!("\x1b[2J\x1b[H{display}")));
+    }, "pass", RunOptions::default(), |_, _| {});
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Saved);
+    assert_eq!(saved.as_bytes(), token.as_bytes());
+}
+
+async fn setup_l0d_log<T>(run: impl FnOnce() -> T) -> (T, String) {
+    let logs = tempfile::tempdir().unwrap();
+    let result = crate::diag::with_test_dir(logs.path().to_path_buf(), async { run() }).await;
+    let log = match fs::read_to_string(logs.path().join("diag.log")) {
+        Ok(log) => log,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => panic!("could not read fixture diagnostic: {error}"),
+    };
+    (result, log)
+}
+
+fn setup_l0d_messages(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|line| line.split_once("[claude_setup_token] ").map(|(_, message)| message))
+        .collect()
+}
+
+fn setup_l0d_check_line(line: &str, outcome: &str, reason: &str, expected: &[(&str, &str)]) {
+    let fields: HashMap<_, _> = line.split_ascii_whitespace()
+        .map(|part| part.split_once('=').expect("diagnostic field"))
+        .collect();
+    assert_eq!(fields.len(), 13, "diagnostic field count");
+    assert_eq!(line.split_ascii_whitespace().count(), fields.len(), "duplicate field");
+    assert_eq!(fields["outcome"], outcome);
+    assert_eq!(fields["reason"], reason);
+    assert_eq!(fields["os"], std::env::consts::OS);
+    for key in ["received_bytes", "visible_rows", "value_rows", "heading_rows", "elapsed_s"] {
+        assert!(fields[key].parse::<usize>().is_ok(), "numeric field {key}");
+    }
+    assert!(matches!(fields["enter_sent"], "true" | "false"));
+    assert!(matches!(fields["code_accepted"], "true" | "false"));
+    assert!(!fields["control"].is_empty());
+    assert!(fields["exit_code"] == "none" || fields["exit_code"].parse::<u32>().is_ok());
+    assert!(!fields["previous_reason"].is_empty());
+    for &(key, value) in expected {
+        assert_eq!(fields[key], value, "diagnostic field {key}");
+    }
+}
+
+fn setup_l0d_expect_line<'a>(log: &'a str, outcome: &str, reason: &str, expected: &[(&str, &str)]) -> &'a str {
+    let messages = setup_l0d_messages(log);
+    assert_eq!(messages.len(), 1, "expected one setup-token terminal diagnostic");
+    let line = messages[0];
+    setup_l0d_check_line(line, outcome, reason, expected);
+    line
+}
+
+#[cfg(unix)]
+async fn setup_l0d_screen_attempt(raw: impl AsRef<[u8]>) -> String {
+    let raw = raw.as_ref().to_vec();
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_r2_stream(move |sender| {
+        assert!(queue_0915_r2_data(sender, raw));
+        assert!(sender.send(PtyOutput::Eof).is_ok());
+    }, "time.sleep(15)", RunOptions::default(), |_, _| {})).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert_eq!(saved, format!("{}b", fake_token()));
+    log
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_no_heading_excludes_secrets() {
+    let token = fake_token();
+    let url = "https://example.test/oauth/authorize?state=private-fixture";
+    let mail = "person@example.test";
+    let raw = format!("Open {url}\r\nPrivate account {mail}\r\n{token}\r\n");
+    let bytes = raw.len().to_string();
+    let log = setup_l0d_screen_attempt(raw).await;
+    let line = setup_l0d_expect_line(&log, "capture_failed", "no_heading", &[
+        ("received_bytes", &bytes), ("visible_rows", "3"), ("value_rows", "1"), ("heading_rows", "0"),
+        ("enter_sent", "false"), ("code_accepted", "false"),
+    ]);
+    for secret in [token.as_str(), &token[..8], url, mail, "Private account", ID, "private-fixture"] {
+        assert!(!log.contains(secret), "private fixture data in diag.log");
+    }
+    println!("no_heading_omits_fixture_data: [claude_setup_token] {line}");
+}
+
+macro_rules! l0d_screen_case {
+    ($name:ident, |$token:ident| $raw:expr, $reason:literal $(, $key:literal = $value:literal)* $(,)?) => {
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn $name() {
+            let $token = fake_token();
+            let log = setup_l0d_screen_attempt($raw).await;
+            setup_l0d_expect_line(&log, "capture_failed", $reason, &[$(($key, $value)),*]);
+        }
+    };
+}
+
+l0d_screen_case!(setup_token_l0d_value_line_not_token,
+    |_token| "Your OAuth token:\r\nsk-ant-\r\n", "value_line_not_token", "value_rows" = "1");
+l0d_screen_case!(setup_token_l0d_value_line_col512,
+    |token| format!("Your OAuth token:\r\n{}{token}\r\n", " ".repeat(512 - token.len())),
+    "value_line_col512");
+l0d_screen_case!(setup_token_l0d_heading_col512,
+    |token| format!("\x1b[1;496HYour OAuth token:\r\n{token}\r\n"), "heading_col512");
+l0d_screen_case!(setup_token_l0d_below_not_blank_or_hint,
+    |token| format!("Your OAuth token:\r\n{token}\r\nabcdef\r\n"), "below_not_blank_or_hint");
+l0d_screen_case!(setup_token_l0d_value_on_last_row,
+    |token| format!("\x1b[39;1HYour OAuth token:\r\n{token}\x1b[A"), "value_on_last_row");
+l0d_screen_case!(setup_token_l0d_conflicting_value_lines,
+    |token| format!("Your OAuth token:\r\n{token}\r\n\r\n{token}b"), "conflicting_value_lines", "value_rows" = "2");
+l0d_screen_case!(setup_token_l0d_uncertain_row,
+    |token| format!("Your OAuth token:\r\n{token}\r\nPress Enter\u{2026}\r!"), "uncertain_row");
+l0d_screen_case!(setup_token_l0d_ambiguous_width_value_row,
+    |token| format!("Your OAuth token:\r\n{token}\x1b[8m\u{2026}\x1b[28m"), "uncertain_row");
+
+l0d_screen_case!(setup_token_l0d_uncertain_screen_csi_r,
+    |token| format!("Your OAuth token:\r\n{token}\r\n\x1b[1;2r"), "uncertain_screen", "control" = "csi_r");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_alt_screen,
+    |_token| "\x1b[?1049h", "uncertain_screen", "control" = "alt_screen");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_c1,
+    |_token| b"\x9b".as_slice(), "uncertain_screen", "control" = "c1");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_c0,
+    |_token| b"\x0b".as_slice(), "uncertain_screen", "control" = "c0");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_escape,
+    |_token| "\x1b7", "uncertain_screen", "control" = "escape");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_csi,
+    |_token| "\x1b[4h", "uncertain_screen", "control" = "csi");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_osc,
+    |_token| "\x1b]0;title\x1b?", "uncertain_screen", "control" = "osc");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_osc133,
+    |_token| "\x1b]133;A\x07", "uncertain_screen", "control" = "osc_133");
+l0d_screen_case!(setup_token_l0d_uncertain_screen_incomplete_sequence,
+    |token| format!("Your OAuth token:\r\n{token}\r\n\x1b[?"), "uncertain_screen", "control" = "incomplete_sequence");
+
+macro_rules! l0d_fake_cli_case {
+    ($name:ident, $mode:literal, $outcome:literal, $reason:literal $(, $key:literal = $value:literal)* $(,)?) => {
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn $name() {
+            let ((_, _, events, _), log) = setup_l0d_log(|| run_fake($mode, false)).await;
+            assert_eq!(events.last().unwrap().reason.as_deref(), Some($outcome));
+            let line = setup_l0d_expect_line(&log, $outcome, $reason, &[$(($key, $value)),*]);
+            println!("[claude_setup_token] {line}");
+        }
+    };
+}
+
+l0d_fake_cli_case!(setup_token_l0d_cli_error, "error", "cli_error", "cli_error");
+l0d_fake_cli_case!(setup_token_l0d_child_exit, "bad_exit", "cli_error", "child_exit", "exit_code" = "1");
+l0d_fake_cli_case!(setup_token_l0d_timeout, "timeout", "timeout", "timeout");
+l0d_fake_cli_case!(setup_token_l0d_cancelled, "cancel", "cancelled", "cancelled");
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_output_limit_counts_overflow_chunk() {
+    let ((_, _, events, audit), log) = setup_l0d_log(|| run_fake("overflow", false)).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("output_limit"));
+    assert!(audit.wiped_buffer.len() <= OUTPUT_LIMIT);
+    let line = setup_l0d_expect_line(&log, "output_limit", "output_limit", &[]);
+    let received = line.split_ascii_whitespace().find_map(|part| part.strip_prefix("received_bytes="))
+        .unwrap().parse::<usize>().unwrap();
+    assert!(received > OUTPUT_LIMIT);
+    println!("[claude_setup_token] {line}");
+}
+
+#[tokio::test]
+async fn setup_token_l0d_launch_failed() {
+    let (_, log) = setup_l0d_log(setup_token_spawn_failure_releases_the_single_attempt_and_cleans_staging).await;
+    setup_l0d_expect_line(&log, "launch_failed", "launch_failed", &[
+        ("received_bytes", "0"), ("visible_rows", "0"), ("code_accepted", "false"),
+    ]);
+}
+
+#[tokio::test]
+async fn setup_token_l0d_cancelled_before_spawn() {
+    let (_, log) = setup_l0d_log(setup_token_cancelled_before_spawn_never_runs_the_command).await;
+    setup_l0d_expect_line(&log, "cancelled", "cancelled", &[("received_bytes", "0"), ("enter_sent", "false")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_confirmation_failed() {
+    let (_, log) = setup_l0d_log(setup_token_failed_confirmation_requires_a_clean_natural_exit).await;
+    setup_l0d_expect_line(&log, "capture_failed", "confirmation_failed", &[("enter_sent", "false")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_output_incomplete() {
+    let ((_, events), log) = setup_l0d_log(|| run_0915_r2_stream(|sender| {
+        assert!(queue_0915_r2_data(sender, b"Notice.\r\n"));
+        assert!(sender.send(PtyOutput::ReadFailed).is_ok());
+    }, "time.sleep(15)", RunOptions::default(), |_, _| {})).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    setup_l0d_expect_line(&log, "capture_failed", "output_incomplete", &[
+        ("received_bytes", "9"), ("visible_rows", "1"),
+    ]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_child_wait_failed() {
+    #[derive(Debug)]
+    struct RejectWait(Box<dyn Child + Send + Sync>);
+
+    impl portable_pty::ChildKiller for RejectWait {
+        fn kill(&mut self) -> std::io::Result<()> { self.0.kill() }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> { self.0.clone_killer() }
+    }
+
+    impl Child for RejectWait {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> { Err(std::io::ErrorKind::Other.into()) }
+        fn wait(&mut self) -> std::io::Result<ExitStatus> { self.0.wait() }
+        fn process_id(&self) -> Option<u32> { self.0.process_id() }
+    }
+
+    let ((_, events), log) = setup_l0d_log(|| run_0915_stream_with_pty(
+        |_| {}, "time.sleep(15)", RunOptions::default(), |_, _| {},
+        |_, _, pty| {
+            let mut child: Box<dyn Child + Send + Sync> = Box::new(std::process::Command::new("/usr/bin/true").spawn().unwrap());
+            child.wait().unwrap();
+            std::mem::swap(&mut pty.child, &mut child);
+            pty.child = Box::new(RejectWait(child));
+        },
+    )).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    setup_l0d_expect_line(&log, "capture_failed", "child_wait_failed", &[]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_stop_unconfirmed_preserves_previous_reason() {
+    let (base, cmd, live) = fixture("exit");
+    let registry = SetupTokenRegistry::default();
+    let (initial, mut control) = registry.begin(ID).unwrap();
+    let login = initial.login_id.clone();
+    control.queue_output = Some(Box::new(|sender| { assert!(sender.send(PtyOutput::Eof).is_ok()); }));
+    let (audit, log) = setup_l0d_log(|| run_attempt_with_pty(&registry, initial, control, base.path(), &live, cmd,
+        RunOptions::default(), &MemoryStore::default(), |_| panic!("must not check owner"),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+        |pty| {
+            assert!(pty.child.wait().unwrap().success());
+            pty.stopped = Some(false);
+            registry.cancel(&login).unwrap();
+        }, drop,
+    )).await;
+    assert!(!audit.child_stopped);
+    assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("capture_failed"));
+    setup_l0d_expect_line(&log, "capture_failed", "stop_unconfirmed", &[("previous_reason", "cancelled")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_save_failed_from_store() {
+    struct FailingStore;
+    impl LaunchTokenStore for FailingStore {
+        fn read(&self, _: &str) -> Result<Option<String>, String> { Err("fixture private store error".into()) }
+        fn write(&self, _: &str, _: &str) -> Result<(), String> { panic!("must not write") }
+        fn delete(&self, _: &str) -> Result<(), String> { panic!("must not delete") }
+    }
+    let (base, cmd, live) = fixture("success");
+    let registry = SetupTokenRegistry::default();
+    let (initial, control) = registry.begin(ID).unwrap();
+    let (_, log) = setup_l0d_log(|| run_attempt(&registry, initial, control, base.path(), &live, cmd,
+        RunOptions::default(), &FailingStore, |_| owner(false),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+    )).await;
+    assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("save_failed"));
+    setup_l0d_expect_line(&log, "save_failed", "save_failed", &[("value_rows", "1"), ("heading_rows", "1")]);
+    assert!(!log.contains("fixture private store error"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_save_failed_on_unwind() {
+    let (_, log) = setup_l0d_log(setup_token_panic_emits_failure_releases_attempt_and_cleans_staging).await;
+    setup_l0d_expect_line(&log, "save_failed", "save_failed", &[("value_rows", "1")]);
+    assert!(!log.contains("fixture owner panic"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_owner_mismatch() {
+    let (_, log) = setup_l0d_log(setup_token_fake_cli_owner_mismatch_never_saves_the_new_token).await;
+    setup_l0d_expect_line(&log, "owner_mismatch", "owner_mismatch", &[]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_replacement_unverified() {
+    let (_, log) = setup_l0d_log(setup_token_0915_weak_owner_checks_keep_the_saved_value_before_both_writes).await;
+    let messages = setup_l0d_messages(&log);
+    assert_eq!(messages.len(), 4);
+    for line in messages {
+        setup_l0d_check_line(line, "replacement_unverified", "replacement_unverified", &[]);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_tracks_code_acceptance_and_confirmation_enter() {
+    let token = fake_token();
+    let body = format!(r#"
+code = b''
+while not code.endswith(b'\r'):
+    code += os.read(0, 64)
+assert code == b'fixture-code#fixture-state\r'
+os.write(1, b'Your OAuth token:\r\n{token}\r\n')
+assert os.read(0, 1) == b'\r'
+os.write(1, b'\033[2J\033[HFinished.\r\n')
+"#);
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_r2_stream(|sender| {
+        assert!(queue_0915_r2_data(sender, b"Code:\r\n"));
+    }, &body, RunOptions {
+        timeout: Duration::from_secs(10), fallback_after: Duration::ZERO,
+        token_exit_grace: Duration::from_millis(50), ..RunOptions::default()
+    }, |registry, event| {
+        if event.state == SetupTokenState::CodeAvailable {
+            registry.submit_code(&event.login_id, "fixture-code#fixture-state".into()).unwrap();
+        }
+    })).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert_eq!(saved, format!("{token}b"));
+    let line = setup_l0d_expect_line(&log, "capture_failed", "no_heading", &[
+        ("visible_rows", "1"), ("value_rows", "0"), ("heading_rows", "0"),
+        ("enter_sent", "true"), ("code_accepted", "true"),
+    ]);
+    assert!(!log.contains("fixture-code"));
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_timeout_retains_unsupported_control() {
+    for (body, reason, control, bytes) in [
+        ("os.read(0, 1)", "timeout", "none", "0"),
+        ("os.write(1, b'\\033[?1049h')\nos.read(0, 1)", "uncertain_screen", "alt_screen", "8"),
+    ] {
+        let ((saved, events), log) = setup_l0d_log(|| run_0915_r2_stream(
+            |_| {}, body, RunOptions { timeout: Duration::from_secs(1), ..RunOptions::default() }, |_, _| {},
+        )).await;
+        assert_eq!(events.last().unwrap().state, SetupTokenState::Timeout);
+        assert_eq!(events.last().unwrap().reason.as_deref(), Some("timeout"));
+        assert_eq!(saved, format!("{}b", fake_token()));
+        let line = setup_l0d_expect_line(&log, "timeout", reason, &[
+            ("received_bytes", bytes), ("control", control), ("enter_sent", "false"),
+        ]);
+        println!("[claude_setup_token] {line}");
+    }
+}
+
+#[cfg(unix)]
+async fn expect_l0d_code_write_failure(reject: &'static [u8]) {
+    struct RejectWrite {
+        writer: Box<dyn Write + Send>,
+        reject: &'static [u8],
+        attempted: Arc<AtomicBool>,
+    }
+
+    impl Write for RejectWrite {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes == self.reject {
+                self.attempted.store(true, Ordering::SeqCst);
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.writer.write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> { self.writer.flush() }
+    }
+
+    const CODE: &str = "fixture-code#fixture-state";
+    let attempted = Arc::new(AtomicBool::new(false));
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_stream_with_pty(
+        |_| {}, "os.read(0, 256)\ntime.sleep(15)",
+        RunOptions { timeout: Duration::from_secs(5), fallback_after: Duration::ZERO, ..RunOptions::default() },
+        |registry, event| {
+            if event.state == SetupTokenState::CodeAvailable {
+                registry.submit_code(&event.login_id, CODE.into()).unwrap();
+            }
+        }, |_, _, pty| {
+            let writer = std::mem::replace(&mut pty.writer, Box::new(std::io::sink()));
+            pty.writer = Box::new(RejectWrite { writer, reject, attempted: attempted.clone() });
+        },
+    )).await;
+    assert!(attempted.load(Ordering::SeqCst));
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("cli_error"));
+    assert_eq!(saved, format!("{}b", fake_token()));
+    let line = setup_l0d_expect_line(&log, "cli_error", "code_write_failed", &[
+        ("code_accepted", "true"), ("enter_sent", "false"), ("received_bytes", "0"),
+    ]);
+    assert!(!log.contains(CODE));
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_code_body_write_failed() {
+    expect_l0d_code_write_failure(b"fixture-code#fixture-state").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_code_enter_write_failed() {
+    expect_l0d_code_write_failure(b"\r").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_stop_unconfirmed_retains_child_exit() {
+    let (base, _, live) = fixture("exit");
+    let registry = SetupTokenRegistry::default();
+    let (initial, mut control) = registry.begin(ID).unwrap();
+    control.queue_output = Some(Box::new(|sender| { assert!(sender.send(PtyOutput::Eof).is_ok()); }));
+    let command = setup_0915_python(base.path(), "sys.exit(7)");
+    let (audit, log) = setup_l0d_log(|| run_attempt_with_pty(&registry, initial, control, base.path(), &live, command,
+        RunOptions::default(), &MemoryStore::default(), |_| panic!("must not check owner"),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+        |pty| {
+            assert_eq!(pty.child.wait().unwrap().exit_code(), 7);
+            pty.stopped = Some(false);
+        }, drop,
+    )).await;
+    assert!(!audit.child_stopped);
+    assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("capture_failed"));
+    let line = setup_l0d_expect_line(&log, "capture_failed", "stop_unconfirmed", &[
+        ("previous_reason", "child_exit"), ("exit_code", "7"),
+    ]);
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_confirmation_flush_failure_leaves_enter_unsent() {
+    struct UnflushedConfirmation {
+        _writer: Box<dyn Write + Send>,
+        buffered: bool,
+    }
+
+    impl Write for UnflushedConfirmation {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(bytes, b"\r");
+            self.buffered = true;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            assert!(self.buffered);
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    let raw = format!("Your OAuth token:\r\n{}\r\n", fake_token());
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_stream_with_pty(
+        move |sender| assert!(queue_0915_r2_data(sender, raw)), "os.read(0, 1)",
+        RunOptions { timeout: Duration::from_secs(5), token_exit_grace: Duration::ZERO,
+            confirm_exit_grace: Duration::from_millis(200), ..RunOptions::default() }, |_, _| {},
+        |_, _, pty| {
+            let writer = std::mem::replace(&mut pty.writer, Box::new(std::io::sink()));
+            pty.writer = Box::new(UnflushedConfirmation { _writer: writer, buffered: false });
+        },
+    )).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("capture_failed"));
+    assert_eq!(saved, format!("{}b", fake_token()));
+    setup_l0d_expect_line(&log, "capture_failed", "confirmation_failed", &[("enter_sent", "false")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_child_signal_has_no_exit_code() {
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_stream_with_pty(
+        |sender| assert!(sender.send(PtyOutput::Eof).is_ok()),
+        "import signal\nos.kill(os.getpid(), signal.SIGTERM)", RunOptions::default(), |_, _| {},
+        |_, _, pty| assert!(!pty.child.wait().unwrap().success()),
+    )).await;
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("cli_error"));
+    assert_eq!(saved, format!("{}b", fake_token()));
+    let line = setup_l0d_expect_line(&log, "cli_error", "child_signal", &[("exit_code", "none")]);
+    assert!(!log.contains("Terminated by"));
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix2_confirming_unwind_keeps_visible_counts() {
+    let token = fake_token();
+    let raw = format!("Your OAuth token:\r\n{token}\r\n");
+    let bytes = raw.len().to_string();
+    let (result, log) = setup_l0d_log(|| std::panic::catch_unwind(|| run_0915_r2_stream(
+        move |sender| assert!(queue_0915_r2_data(sender, raw)), "os.read(0, 1)",
+        RunOptions { timeout: Duration::from_secs(5), ..RunOptions::default() }, |_, event| {
+            if event.state == SetupTokenState::Confirming {
+                panic!("fixture confirming notification panic");
+            }
+        },
+    ))).await;
+    let panic = result.expect_err("the confirmation notification must unwind");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"fixture confirming notification panic"));
+    let line = setup_l0d_expect_line(&log, "save_failed", "save_failed", &[
+        ("received_bytes", &bytes), ("visible_rows", "2"), ("value_rows", "1"), ("heading_rows", "1"),
+        ("enter_sent", "false"),
+    ]);
+    assert!(!log.contains(&token[..8]));
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+async fn expect_l0d_timeout_screen_rejection(raw: String, reason: &str) {
+    let bytes = raw.len().to_string();
+    let body = format!("os.write(1, {raw:?}.encode('ascii'))\nos.read(0, 1)");
+    let ((saved, events), log) = setup_l0d_log(|| run_0915_r2_stream(
+        |_| {}, &body,
+        RunOptions { timeout: Duration::from_secs(1), ..RunOptions::default() }, |_, _| {},
+    )).await;
+    assert_eq!(events.last().unwrap().state, SetupTokenState::Timeout);
+    assert_eq!(events.last().unwrap().reason.as_deref(), Some("timeout"));
+    assert!(events.iter().all(|event| event.state != SetupTokenState::Confirming));
+    let token = fake_token();
+    assert_eq!(saved, format!("{token}b"));
+    assert!(!log.contains(&token[..8]));
+    let line = setup_l0d_expect_line(&log, "timeout", reason, &[
+        ("received_bytes", &bytes), ("visible_rows", "3"), ("value_rows", "1"), ("heading_rows", "1"),
+        ("control", "none"), ("enter_sent", "false"), ("code_accepted", "false"),
+    ]);
+    println!("[claude_setup_token] {line}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix3_timeout_retains_below_not_blank_or_hint() {
+    expect_l0d_timeout_screen_rejection(
+        format!("Your OAuth token:\r\n{}\r\nabcdef\r\n", fake_token()),
+        "below_not_blank_or_hint",
+    ).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix3_timeout_retains_value_line_not_token() {
+    expect_l0d_timeout_screen_rejection(
+        format!("Your OAuth token:\r\nabcdef\r\n{}\r\n", fake_token()),
+        "value_line_not_token",
+    ).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn setup_token_l0d_fix3_stop_unconfirmed_retains_successful_exit() {
+    let (base, _, live) = fixture("exit");
+    let registry = SetupTokenRegistry::default();
+    let (initial, mut control) = registry.begin(ID).unwrap();
+    control.queue_output = Some(Box::new(|sender| { assert!(sender.send(PtyOutput::Eof).is_ok()); }));
+    let command = setup_0915_python(base.path(), "sys.exit(0)");
+    let (audit, log) = setup_l0d_log(|| run_attempt_with_pty(&registry, initial, control, base.path(), &live, command,
+        RunOptions::default(), &MemoryStore::default(), |_| panic!("must not check owner"),
+        |path| staging::cleanup_staging_with_credentials(path, &NoCredentials), |_| {},
+        |pty| {
+            assert!(pty.child.wait().unwrap().success());
+            pty.stopped = Some(false);
+        }, drop,
+    )).await;
+    assert!(!audit.child_stopped);
+    assert_eq!(registry.current().unwrap().unwrap().reason.as_deref(), Some("capture_failed"));
+    let line = setup_l0d_expect_line(&log, "capture_failed", "stop_unconfirmed", &[
+        ("previous_reason", "none"), ("exit_code", "0"),
+    ]);
+    println!("[claude_setup_token] {line}");
 }

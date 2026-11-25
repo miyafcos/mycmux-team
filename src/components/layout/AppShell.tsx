@@ -13,6 +13,7 @@ import { sidebarStrings } from "../../lib/sidebarStrings";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
+import { LauncherCoveredContext } from "../../lib/tabAccounts";
 import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import SavepointDragOverlay from "../online/SavepointDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
@@ -32,7 +33,7 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
-import { connectMainDashboardRequests } from "../../lib/mainDashboardRequests";
+import { connectAppShellRequests, refusePendingAccountManagementRequests } from "../../lib/mainDashboardRequests";
 import { DashboardView } from "../dashboard/DashboardView";
 import { GroupingFlightHost } from "./GroupingFlightHost";
 import { GroupingStatusBar } from "../dashboard/GroupingStatusBar";
@@ -509,8 +510,11 @@ export function SidebarResizer({
 }
 
 export default function AppShell({ uiVariant = "default" }: AppShellProps) {
-  const [showSetup, setShowSetup] = useState(false);
-  const [setupDefaultCwd, setSetupDefaultCwd] = useState("");
+  const showSetup = useUiStore(s => s.workspaceSetupVisible);
+  const setShowSetup = useUiStore(s => s.setWorkspaceSetupVisible);
+  const [setupDefaultCwd, setSetupDefaultCwd] = useState<string | null>(null);
+  const [accountsPanelOpen, setAccountsPanelOpen] = useState(false);
+  const [settingsMounted, setSettingsMounted] = useState(false);
   // Sticky once this session has held a workspace — drives first-run vs
   // "you closed your last workspace" copy in the empty state.
   const [hasCreatedWorkspace, setHasCreatedWorkspace] = useState(false);
@@ -529,6 +533,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const activePaneId = useUiStore((s) => s.activePaneId);
   const lastActivePaneId = useUiStore((s) => s.lastActivePaneId);
   const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
+  const accountsPanelVisible = accountsPanelOpen && (!zoomedPaneId || dashboardOpen);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
@@ -551,7 +556,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const uiDensity = useThemeStore((s) => s.uiDensity);
   const uiFontScale = useThemeStore((s) => s.uiFontScale);
 
-  useEffect(() => connectMainDashboardRequests(windowLabel()), []);
+  useEffect(() => connectAppShellRequests(windowLabel()), []);
 
   // Multi-window (Phase 3a): both of these are app-wide singleton fetches
   // (crsm session index / savepoint index). Running them once per window just
@@ -682,9 +687,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const handleOpenSetup = useCallback(() => {
     // Resolved once, on open: the live cwd would otherwise move under the
     // dialog while it is on screen.
-    setSetupDefaultCwd(activeWorkspaceCwd());
+    setSetupDefaultCwd(cwd => cwd ?? activeWorkspaceCwd());
     setShowSetup(true);
-  }, []);
+  }, [setShowSetup]);
 
   const handleLaunch = useCallback(
     (result: WorkspaceSetupResult) => {
@@ -696,8 +701,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         paneSpecs: result.paneSpecs,
       });
       setShowSetup(false);
+      setSetupDefaultCwd(null);
     },
-    [],
+    [setShowSetup],
   );
 
   const handleCloseWorkspace = useCallback(
@@ -729,7 +735,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
   const handleCancelSetup = useCallback(() => {
     setShowSetup(false);
-  }, []);
+    setSetupDefaultCwd(null);
+  }, [setShowSetup]);
 
   // Keyboard shortcuts — use refs so the listener doesn't re-attach on every state change
   // isCrsmPaletteOpen and isKeybindingsOpen live here too: they flip on every
@@ -1168,10 +1175,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
         <SocketListener />
         <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>
-          <ErrorBoundary fallback={chromeCrashFallback("タイトルバー")}>
+          <ErrorBoundary fallback={chromeCrashFallback("タイトルバー")} onError={refusePendingAccountManagementRequests}>
             <TitleBar
               onNewWorkspace={handleNewWorkspace}
               onOpenWorkspaceSetup={handleOpenSetup}
+              onAccountsPanelOpenChange={setAccountsPanelOpen}
+              onSettingsMountChange={setSettingsMounted}
               onOpenOnlinePanel={() => {
                 const workspace = workspaces.find((candidate) => candidate.id === activeId);
                 const sourcePane = workspace?.panes.find((pane) =>
@@ -1227,8 +1236,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             position: "relative",
           }}
         >
-          <div style={{ position: "absolute", inset: 0, visibility: dashboardOpen ? "hidden" : "visible", pointerEvents: dashboardOpen ? "none" : "auto" }}>
-            <WorkspaceView />
+          <div inert={showSetup || accountsPanelVisible || dashboardOpen}
+            style={{ position: "absolute", inset: 0, visibility: dashboardOpen ? "hidden" : "visible", pointerEvents: dashboardOpen ? "none" : "auto" }}>
+            <LauncherCoveredContext.Provider value={showSetup || accountsPanelVisible || settingsMounted || dashboardOpen}>
+              <WorkspaceView />
+            </LauncherCoveredContext.Provider>
           </div>
           {dashboardOpen && (
             <ErrorBoundary fallback={chromeCrashFallback("Dashboard")}>
@@ -1252,11 +1264,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
               </ErrorBoundary>
             </div>
           )}
-          {showSetup && (
-            <div data-cmux-native-webview-occluder="true" style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
+          {setupDefaultCwd !== null && (
+            <div hidden={!showSetup} inert={accountsPanelVisible} data-cmux-native-webview-occluder={showSetup ? "true" : undefined}
+              style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース作成画面")}>
                 <WorkspaceSetup
                   defaultCwd={setupDefaultCwd}
+                  visible={showSetup}
+                  covered={accountsPanelVisible || settingsMounted}
                   onLaunch={handleLaunch}
                   onCancel={handleCancelSetup}
                 />

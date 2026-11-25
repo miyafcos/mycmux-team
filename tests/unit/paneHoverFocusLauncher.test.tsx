@@ -116,3 +116,15 @@ describe("launcher hover and approved popover protection", () => {
     expect(terminal).toMatch(/ref=\{artifactLinkPopoverRef\}\s+data-pane-hover-focus-blocker="true"/);
   });
 });
+
+it("L6 fix2 opens the original extended drive path locally when PDF preview fails", async () => {
+  const uri = String.raw`\\?\X:\reports\fixture.pdf`;
+  const previous = mocks.invoke.getMockImplementation()!;
+  mocks.invoke.mockImplementation((name: string, args: unknown) =>
+    name === "preview_artifact_uri_for_session_v2" ? Promise.reject(new Error("fixture preview rejected"))
+      : previous(name, args));
+  await mount();
+  await act(async () => { mocks.props.get("a").onArtifactLinkClick(uri, { x: 20, y: 20 }); });
+  expect(mocks.invoke).toHaveBeenCalledWith("preview_artifact_uri_for_session_v2", { sessionId: "a", uri });
+  expect(mocks.invoke).toHaveBeenCalledWith("open_path_with_default_app", { uri });
+});

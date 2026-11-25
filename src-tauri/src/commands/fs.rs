@@ -208,212 +208,95 @@ pub async fn open_path_with_default_app(
     .await
 }
 
+fn file_action_diagnostic(path: &Path, normalized: bool, route: &str, outcome: &str) -> String {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let format = if bytes.starts_with(br"\\?\") {
+        "extended"
+    } else if bytes.starts_with(br"\\") {
+        "unc"
+    } else if matches!(bytes, [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic()) {
+        "drive"
+    } else if path.is_absolute() {
+        "absolute"
+    } else {
+        "relative"
+    };
+    format!("input={format} normalized={normalized} route={route} outcome={outcome}")
+}
+
+fn launch_file_action(
+    scope: &str, original: &Path, normalized: bool, route: &str, mut command: std::process::Command,
+) -> Result<(), String> {
+    let result = command.spawn();
+    let outcome = if result.is_ok() { "spawned" } else { "spawn_failed" };
+    crate::diag::warn(scope, &file_action_diagnostic(original, normalized, route, outcome));
+    result.map(|_| ()).map_err(|error| format!("failed to launch file manager or default app: {error}"))
+}
+
 /// Single implementation behind both reveal commands. Files are "revealed"
 /// (parent opened with the file selected); directories are opened directly.
-/// Cross-platform; mycmux ships on Windows so that path is the one exercised
-/// in production.
 pub(super) fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
     reveal_path_in_os_file_manager_with_original(path, path)
 }
 
 /// Reveal the checked path, preserving the original spelling for mapped-drive lookup.
-pub(super) fn reveal_path_in_os_file_manager_with_original(
-    path: &Path,
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] original: &Path,
-) -> Result<(), String> {
-    let uri = path.to_string_lossy().into_owned();
+pub(super) fn reveal_path_in_os_file_manager_with_original(path: &Path, original: &Path) -> Result<(), String> {
     if !path.exists() {
-        let message = format!("path does not exist: {uri}");
-        crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
-        return Err(message);
+        crate::diag::warn("reveal", &file_action_diagnostic(original, false, "none", "missing"));
+        return Err("path does not exist".into());
     }
-    let canonical = path.canonicalize();
-    #[cfg(target_os = "windows")]
-    let original_for_shell = canonical.is_ok().then_some(original);
-    let canonical = canonical.unwrap_or_else(|_| path.to_path_buf());
+    let normalized = path.canonicalize();
+    let canonical = normalized.as_deref().unwrap_or(path);
     let is_dir = canonical.is_dir();
     #[cfg(target_os = "windows")]
     {
-        let target = windows_explorer_target(original_for_shell, &canonical);
-        let command_line = windows_explorer_command_line(&target, is_dir);
-        let mut cmd = std::process::Command::new("explorer.exe");
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.raw_arg(&command_line);
-        }
-        match cmd.spawn() {
-            Ok(_) => {
-                crate::diag::warn(
-                    "reveal",
-                    &format!(
-                        "uri={uri} path={} cmdline={command_line}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch explorer.exe: {e}");
-                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
+        use std::os::windows::process::CommandExt;
+        let target = windows_target_from_canonical(&normalized, path, original, |path| std::path::absolute(path));
+        let mut command = std::process::Command::new("explorer.exe");
+        command.raw_arg(windows_explorer_command_line(&target, is_dir));
+        return launch_file_action("reveal", original, normalized.is_ok(),
+            if is_dir { "explorer-open" } else { "explorer-select" }, command);
     }
     #[cfg(target_os = "macos")]
     {
-        let mut cmd = std::process::Command::new("open");
-        if !is_dir {
-            cmd.arg("-R");
-        }
-        let cmdline = if is_dir {
-            format!("open {}", canonical.display())
-        } else {
-            format!("open -R {}", canonical.display())
-        };
-        match cmd.arg(&canonical).spawn() {
-            Ok(_) => {
-                crate::diag::warn(
-                    "reveal",
-                    &format!(
-                        "uri={uri} path={} cmdline={cmdline}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch open: {e}");
-                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
+        let mut command = std::process::Command::new("open");
+        if !is_dir { command.arg("-R"); }
+        command.arg(canonical);
+        return launch_file_action("reveal", original, normalized.is_ok(),
+            if is_dir { "open" } else { "open-reveal" }, command);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let target = if is_dir {
-            canonical.to_path_buf()
-        } else {
-            canonical
-                .parent()
-                .map(|x| x.to_path_buf())
-                .unwrap_or_else(|| canonical.to_path_buf())
-        };
-        let cmdline = format!("xdg-open {}", target.display());
-        match std::process::Command::new("xdg-open").arg(&target).spawn() {
-            Ok(_) => {
-                crate::diag::warn(
-                    "reveal",
-                    &format!(
-                        "uri={uri} path={} cmdline={cmdline}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch xdg-open: {e}");
-                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
+        let target = if is_dir { canonical } else { canonical.parent().unwrap_or(canonical) };
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(target);
+        return launch_file_action("reveal", original, normalized.is_ok(), "xdg-open", command);
     }
     #[allow(unreachable_code)]
-    {
-        let message = "unsupported platform".to_string();
-        crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
-        Err(message)
-    }
+    Err("unsupported platform".into())
 }
 
 fn open_path_with_default_app_impl(path: &Path) -> Result<(), String> {
-    let uri = path.to_string_lossy().into_owned();
     if !path.exists() {
-        let message = format!("path does not exist: {uri}");
-        crate::diag::warn("open", &format!("uri={uri} error={message}"));
-        return Err(message);
+        crate::diag::warn("open", &file_action_diagnostic(path, false, "none", "missing"));
+        return Err("path does not exist".into());
     }
-    let canonical = path.canonicalize();
+    let normalized = path.canonicalize();
     #[cfg(target_os = "windows")]
-    let original_for_shell = canonical.is_ok().then_some(path);
-    let canonical = canonical.unwrap_or_else(|_| path.to_path_buf());
-    #[cfg(target_os = "windows")]
-    {
-        let target = windows_shell_path(&windows_explorer_target(original_for_shell, &canonical));
-        match std::process::Command::new("explorer.exe")
-            .arg(&target)
-            .spawn()
-        {
-            Ok(_) => {
-                crate::diag::warn(
-                    "open",
-                    &format!(
-                        "uri={uri} path={} cmdline={target}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch default app: {e}");
-                crate::diag::warn("open", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
-    }
+    let (route, target) = ("explorer.exe",
+        windows_shell_path(&windows_target_from_canonical(&normalized, path, path, |path| std::path::absolute(path))));
     #[cfg(target_os = "macos")]
-    {
-        let cmdline = format!("open {}", canonical.display());
-        match std::process::Command::new("open")
-            .arg(&canonical)
-            .spawn()
-        {
-            Ok(_) => {
-                crate::diag::warn(
-                    "open",
-                    &format!(
-                        "uri={uri} path={} cmdline={cmdline}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch open: {e}");
-                crate::diag::warn("open", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
-    }
+    let (route, target) = ("open", normalized.as_deref().unwrap_or(path));
     #[cfg(all(unix, not(target_os = "macos")))]
+    let (route, target) = ("xdg-open", normalized.as_deref().unwrap_or(path));
+    #[cfg(any(target_os = "windows", unix))]
     {
-        let cmdline = format!("xdg-open {}", canonical.display());
-        match std::process::Command::new("xdg-open")
-            .arg(&canonical)
-            .spawn()
-        {
-            Ok(_) => {
-                crate::diag::warn(
-                    "open",
-                    &format!(
-                        "uri={uri} path={} cmdline={cmdline}",
-                        canonical.display()
-                    ),
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                let message = format!("failed to launch xdg-open: {e}");
-                crate::diag::warn("open", &format!("uri={uri} error={message}"));
-                return Err(message);
-            }
-        }
+        let mut command = std::process::Command::new(route);
+        command.arg(target);
+        return launch_file_action("open", path, normalized.is_ok(), route, command);
     }
     #[allow(unreachable_code)]
-    {
-        let message = "unsupported platform".to_string();
-        crate::diag::warn("open", &format!("uri={uri} error={message}"));
-        Err(message)
-    }
+    Err("unsupported platform".into())
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -427,7 +310,8 @@ fn select_windows_explorer_path(
 ) -> Cow<'_, Path> {
     if let Some(absolute) = original_absolute {
         let bytes = absolute.as_os_str().as_encoded_bytes();
-        if matches!(bytes, [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+        let drive_path = bytes.strip_prefix(br"\\?\").unwrap_or(bytes);
+        if matches!(drive_path, [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
             && canonical
                 .as_os_str()
                 .as_encoded_bytes()
@@ -439,7 +323,20 @@ fn select_windows_explorer_path(
     Cow::Borrowed(canonical)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
+fn windows_target_from_canonical<'a>(
+    canonical: &'a std::io::Result<PathBuf>,
+    fallback: &'a Path,
+    original: &Path,
+    absolute: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+) -> Cow<'a, Path> {
+    match canonical {
+        Ok(path) => select_windows_explorer_path(absolute(original).ok(), path),
+        Err(_) => Cow::Borrowed(fallback),
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
 fn windows_explorer_target<'a>(original: Option<&Path>, canonical: &'a Path) -> Cow<'a, Path> {
     let absolute = original.and_then(|path| std::path::absolute(path).ok());
     select_windows_explorer_path(absolute, canonical)
@@ -505,10 +402,45 @@ fn windows_explorer_command_line(path: &Path, is_dir: bool) -> String {
 mod windows_explorer_path_tests {
     use super::*;
 
+    #[test]
+    fn l6_keeps_the_original_verbatim_mapped_drive() {
+        assert_eq!(
+            shell_path(Some(r"\\?\X:\project\fixture.txt"), r"\\?\UNC\server\share\project\fixture.txt"),
+            r"X:\project\fixture.txt"
+        );
+        assert_eq!(shell_path(Some(r"\\?\X:\"), r"\\?\UNC\server\share\"), r"X:\");
+        assert_eq!(
+            shell_path(Some(r"\\?\UNC\server\share\old"), r"\\?\UNC\server\share\new"),
+            r"\\server\share\new"
+        );
+    }
+
+
     fn shell_path(original_absolute: Option<&str>, canonical: &str) -> String {
         let target =
             select_windows_explorer_path(original_absolute.map(PathBuf::from), Path::new(canonical));
         windows_shell_path(&target)
+    }
+
+    #[test]
+    fn shell_target_uses_the_fallback_after_canonicalization_fails() {
+        let failure = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let fallback = Path::new(r"relative\record.txt");
+        let target = windows_target_from_canonical(&failure, fallback, Path::new(r"X:\alias"), |_| {
+            panic!("the failed canonicalization must not select the alternate path");
+        });
+        assert_eq!(target.as_ref(), fallback);
+    }
+
+    #[test]
+    fn shell_target_absolutizes_the_original_relative_input() {
+        let canonical = Ok(PathBuf::from(r"\\?\UNC\server\share\record.txt"));
+        let original = Path::new(r"relative\record.txt");
+        let target = windows_target_from_canonical(&canonical, Path::new("fallback"), original, |raw| {
+            assert_eq!(raw, original);
+            Ok(PathBuf::from(r"X:\relative\record.txt"))
+        });
+        assert_eq!(target.as_ref(), Path::new(r"X:\relative\record.txt"));
     }
 
     #[test]
@@ -870,4 +802,14 @@ mod tests {
             })
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn l6_fix2_missing_path_diagnostic_does_not_log_the_input_or_error_path() {
+    let path = Path::new("sample/person@example.test/file.pdf");
+    let diagnostic = file_action_diagnostic(path, false, "none", "missing");
+    assert!(!diagnostic.contains("person@example.test"));
+    assert!(!diagnostic.contains("file.pdf"));
+    assert!(diagnostic.contains("missing"));
 }

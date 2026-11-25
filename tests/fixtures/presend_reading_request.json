@@ -19,11 +19,11 @@
         }
       },
       {
-        "eventId": "toy-event-2",
+        "eventId": "toy-event-2:0",
         "sourceRevision": 4,
         "occurredAt": 10500,
         "sourceByteStart": 55,
-        "sourceByteEnd": 90,
+        "sourceByteEnd": 207,
         "kind": {
           "type": "agentMessage",
           "text": "Latest synthetic reply"
@@ -33,8 +33,8 @@
         "eventId": "toy-event-3",
         "sourceRevision": 4,
         "occurredAt": 10750,
-        "sourceByteStart": 90,
-        "sourceByteEnd": 123,
+        "sourceByteStart": 207,
+        "sourceByteEnd": 240,
         "kind": {
           "type": "userMessage",
           "kind": "taskChange",
@@ -76,6 +76,9 @@
   },
   "request": {
     "requestId": "toy-current",
+    "requireForegroundAgent": true,
+    "editedAtMs": 20000,
+    "conversationAtEdit": { "agentKind": "claude", "agentSessionId": "toy-conversation" },
     "sessionId": "tab-a",
     "ptyGeneration": 7,
     "provider": "claude",
@@ -85,7 +88,13 @@
       "ptyGeneration": 7,
       "agentKind": "claude",
       "agentSessionId": "toy-conversation",
-      "occurredAt": 10500
+      "occurredAt": 10500,
+      "eventId": "toy-event-2:0",
+      "sourceRevision": 4,
+      "sourceByteStart": 55,
+      "sourceByteEnd": 207,
+      "fileGeneration": 1,
+      "contentDigest": "03f161051cf1bd7677f2a74c1187a38daec9da6f8a5ffd595ca3c6260cfd94dc"
     },
     "workdirName": "toy-folder",
     "workdirIsBasename": true

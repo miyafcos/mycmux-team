@@ -11,6 +11,7 @@
  * offering a sunset Gemini CLI while never offering claude-codex or agy.
  */
 import type { AgentSessionKind } from "../types";
+import type { SwitchableCliProvider } from "./ipc";
 
 export interface ModelChoice {
   /** Passed to the CLI verbatim. */
@@ -323,6 +324,16 @@ export function sanitizeLaunchSpecValue(value: string | undefined | null): strin
   return isValidLaunchSpecValue(trimmed) ? trimmed : undefined;
 }
 
+export function isLaunchAccountTarget(value: unknown): value is SwitchableCliProvider {
+  return value === "claude" || value === "codex" || value === "grok";
+}
+
+/** Mirrors the snapshot registry's path-component rules and checks the provider. */
+export function isValidLaunchAccountId(provider: SwitchableCliProvider, id: string): boolean {
+  return id.length <= 160 && !/[^A-Za-z0-9_.+-]/.test(id)
+    && (id.startsWith(`${provider}-`) || id.startsWith(`unregistered-${provider}-`));
+}
+
 /**
  * Builds the launch env for a pane, or undefined when the pane should just show
  * the launcher menu. Model and effort ride along only with a target: on their
@@ -342,9 +353,8 @@ export function buildLaunchSpecEnv(
   if (model) env.MYCMUX_LAUNCH_MODEL = model;
   const effort = sanitizeLaunchSpecValue(spec?.effort);
   if (effort) env.MYCMUX_LAUNCH_EFFORT = effort;
-  const account = sanitizeLaunchSpecValue(spec?.account);
-  if (["claude", "codex", "grok"].includes(target) && account && /^[A-Za-z0-9_-]{1,64}$/.test(account)
-    && (target === "claude" || account.startsWith(`${target}-`))) {
+  const account = spec?.account?.trim();
+  if (isLaunchAccountTarget(target) && account && isValidLaunchAccountId(target, account)) {
     env.MYCMUX_LAUNCH_ACCOUNT = account;
   }
   return env;

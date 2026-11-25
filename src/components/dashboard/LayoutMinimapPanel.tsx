@@ -460,8 +460,28 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     setClosing(true);
     setCloseError(null);
     try {
-      const result = await handleSocketCommand("pane.close_tabs", { tabIds: closeConfirmation.tabIds }) as { closed?: string[] };
-      const closed = new Set(Array.isArray(result.closed) ? result.closed : closeConfirmation.tabIds);
+      const result = await handleSocketCommand("pane.close_tabs", { tabIds: closeConfirmation.tabIds }) as {
+        closed?: string[]; unexecutedTabIds?: string[]; unknownTabIds?: string[]; reason?: string;
+      };
+      const unexecuted = result.unexecutedTabIds ?? [];
+      const unknown = result.unknownTabIds ?? [];
+      const incomplete = unexecuted.length > 0 || unknown.length > 0;
+      const closed = new Set(Array.isArray(result.closed) ? result.closed : incomplete ? [] : closeConfirmation.tabIds);
+      if (incomplete) {
+        const labels = new Map(closeConfirmation.tabIds.map((id, index) => [id, closeConfirmation.labels[index]]));
+        const list = (ids: string[]) => ids.map(id => labels.get(id) ?? id).join("、");
+        const reason = result.reason === "window_quitting" ? "終了準備中"
+          : result.reason === "window_closing" ? "ウィンドウを閉じています"
+            : result.reason === "window_deadline" ? "実行する前に時間切れになりました"
+              : result.reason === "window_target_changed" ? "対象のタブがウィンドウ内に見つかりません"
+                : result.reason === "window_close_failed" ? "ウィンドウでタブの閉鎖結果を確認できませんでした"
+                  : "ウィンドウから応答がありません";
+        const details = [
+          unexecuted.length ? `閉じられなかったタブ ${list(unexecuted)}` : null,
+          unknown.length ? `結果が確認できなかったタブ ${list(unknown)}` : null,
+        ].filter(Boolean).join("。");
+        setCloseError(`${reason}。${details}`);
+      }
       setSelectedTabIds((current) => new Set([...current].filter((tabId) => !closed.has(tabId))));
       if (selectedTabId && closed.has(selectedTabId)) {
         const fallback = tabIdsInVisualOrder.find((tabId) => !closed.has(tabId));
@@ -511,6 +531,7 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
       {TAB_GROUPING_ENTRY_ENABLED ? <TabGroupingButton /> : null}
       <TabSweepButton />
     </div>
+    {!closeConfirmation && closeError ? <div role="alert">{closeError}</div> : null}
     {closeConfirmation ? <section className="cmux-minimap-bundle-confirm" role="dialog" aria-modal="true" aria-label="選択したタブを閉じる確認" data-minimap-close-confirm="true">
       <div>{`${closeConfirmation.tabIds.length}個のタブを閉じます`}</div>
       <ul>{closeConfirmation.labels.map((label, index) => <li key={`${closeConfirmation.tabIds[index]}-${label}`}>{label}</li>)}</ul>

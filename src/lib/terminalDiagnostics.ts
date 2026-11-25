@@ -19,11 +19,20 @@ export type DiagnosticEvent = keyof typeof EVENT_COUNTERS;
 const REASONS = ["paint", "manual", "channel"] as const;
 export type RecoveryReason = typeof REASONS[number];
 const outcomes = ["start", "end", "failed", "aborted", "stall"];
+const EXCEPTION_COUNTERS = {
+  "error": "count_exception_error",
+  "type-error": "count_exception_type_error",
+  "range-error": "count_exception_range_error",
+  "unknown": "count_exception_unknown",
+} as const;
 const COUNT_KEYS = new Set<string>([
   ...Object.values(EVENT_COUNTERS), "count_dispose_failed", "count_budget_protected",
+  "count_window_evicted", "count_tool_disclosure_evicted", ...Object.values(EXCEPTION_COUNTERS),
   ...REASONS.flatMap(reason => outcomes.map(event => `count_${reason}_${event}`)),
 ]);
 const MAX_WINDOW_DETAILS = 16;
+const MAX_DIAGNOSTIC_WINDOWS = 64;
+const MAX_PENDING_DIAGNOSTICS = MAX_DIAGNOSTIC_WINDOWS;
 export type RendererKind = "auto" | "webgl" | "dom" | "unknown";
 const METRICS = new Set(["term", "visible", "focused", "budget", "victim", "requester", "attempt", "dom_ready", "dispose_ok",
   "budget_protected", "generation", "received_end", "parsed_end", "reused", "observed_at_ms", "coalesced"]);
@@ -42,6 +51,8 @@ type DiagnosticWindow = {
 // Remounting a display does not reset its diagnostic allowance.
 const windows = new Map<string, DiagnosticWindow>();
 let nextId = 0;
+let pendingSends = 0;
+let overflowCounts: Record<string, number> | undefined;
 export function terminalDiagnosticId(term: object): number {
   let id = ids.get(term);
   if (id === undefined) { id = ++nextId; ids.set(term, id); }
@@ -72,20 +83,46 @@ export function terminalDiagnosticPayload(kind: DiagnosticKind, event: Diagnosti
     exception: ["none", "error", "type-error", "range-error", "unknown"].includes(labels.exception ?? "") ? labels.exception : "none",
   };
 }
-function sendDiagnostic(diagnostic: ReturnType<typeof terminalDiagnosticPayload>): void {
-  try { void invoke<void>("report_renderer_heartbeat", { diagnostic }).catch(() => {}); }
-  catch { /* Optional diagnostics cannot interfere with output. */ }
+function finishDiagnosticSend(): void {
+  pendingSends--;
+  if (!overflowCounts) return;
+  const counts = overflowCounts;
+  overflowCounts = undefined;
+  sendDiagnostic(terminalDiagnosticPayload("renderer", "coalesced", "", counts));
 }
 
-function flushDiagnosticWindow(sessionId: string): void {
+function sendDiagnostic(diagnostic: ReturnType<typeof terminalDiagnosticPayload>, counter?: string): void {
+  if (pendingSends >= MAX_PENDING_DIAGNOSTICS) {
+    // Retain fixed counters while IPC is congested, without queuing payloads.
+    const counts = overflowCounts ??= {};
+    const added = counter === undefined ? diagnostic.numbers : { coalesced: 1, [counter]: 1 };
+    const exception = diagnostic.exception;
+    if (counter !== undefined && diagnostic.kind === "renderer" && exception && exception !== "none") {
+      added[EXCEPTION_COUNTERS[exception]] = 1;
+    }
+    for (const [key, value] of Object.entries(added)) {
+      counts[key] = Math.min(Number.MAX_SAFE_INTEGER, (counts[key] ?? 0) + value);
+    }
+    return;
+  }
+  pendingSends++;
+  try { void invoke<void>("report_renderer_heartbeat", { diagnostic }).then(finishDiagnosticSend, finishDiagnosticSend); }
+  catch { pendingSends--; }
+}
+
+function flushDiagnosticWindow(sessionId: string, evicted = false): void {
   const window = windows.get(sessionId);
   if (!window) return;
   clearTimeout(window.timer);
   windows.delete(sessionId);
-  if (window.coalesced) {
+  if (window.coalesced || evicted) {
     sendDiagnostic(terminalDiagnosticPayload("renderer", "coalesced", sessionId,
-      { coalesced: window.coalesced, ...window.counts }));
+      { coalesced: window.coalesced, ...window.counts, ...(evicted ? { count_window_evicted: 1 } : {}) }));
   }
+}
+
+export function reportToolDisclosureEvictions(count: number): void {
+  sendDiagnostic(terminalDiagnosticPayload("renderer", "coalesced", "", { count_tool_disclosure_evicted: count }));
 }
 
 if (typeof window !== "undefined") {
@@ -96,9 +133,14 @@ if (typeof window !== "undefined") {
 
 export function reportTerminalDiagnostic(kind: DiagnosticKind, event: DiagnosticEvent, sessionId: string, term: object, numbers: Record<string, number> = {}, labels: DiagnosticLabels = {}): void {
   if (!EVENTS.has(event)) return;
-  if (labels.reason === "manual") {
-    // The menu rate-limits completed attempts, each of which gets one line.
-    sendDiagnostic(terminalDiagnosticPayload(kind, event, sessionId, { ...numbers, term: terminalDiagnosticId(term) }, labels));
+  const reason = labels.reason && REASONS.includes(labels.reason) ? labels.reason : undefined;
+  let counter: string = EVENT_COUNTERS[event];
+  if (reason && outcomes.includes(event)) counter = `count_${reason}_${event}`;
+  if (event === "dispose-result" && numbers.dispose_ok === 0) counter = "count_dispose_failed";
+  if (event === "budget-denied" && numbers.budget_protected === 1) counter = "count_budget_protected";
+  if (reason === "manual") {
+    // The menu already rate-limits completed attempts.
+    sendDiagnostic(terminalDiagnosticPayload(kind, event, sessionId, { ...numbers, term: terminalDiagnosticId(term) }, labels), counter);
     return;
   }
   const now = Date.now();
@@ -108,6 +150,7 @@ export function reportTerminalDiagnostic(kind: DiagnosticKind, event: Diagnostic
     window = undefined;
   }
   if (!window) {
+    if (windows.size >= MAX_DIAGNOSTIC_WINDOWS) flushDiagnosticWindow(windows.keys().next().value!, true);
     window = {
       started: now, emitted: new Set(), counts: {}, coalesced: 0,
       timer: setTimeout(() => flushDiagnosticWindow(sessionId), TERMINAL_DIAGNOSTIC_WINDOW_MS),
@@ -115,14 +158,11 @@ export function reportTerminalDiagnostic(kind: DiagnosticKind, event: Diagnostic
     windows.set(sessionId, window);
   }
 
-  const reason = labels.reason && REASONS.includes(labels.reason) ? labels.reason : undefined;
-  let counter: string = EVENT_COUNTERS[event];
-  if (reason && outcomes.includes(event)) counter = `count_${reason}_${event}`;
-  if (event === "dispose-result" && numbers.dispose_ok === 0) counter = "count_dispose_failed";
-  if (event === "budget-denied" && numbers.budget_protected === 1) counter = "count_budget_protected";
-  if (window.emitted.size < MAX_WINDOW_DETAILS && !window.emitted.has(counter)) {
-    window.emitted.add(counter);
-    sendDiagnostic(terminalDiagnosticPayload(kind, event, sessionId, { ...numbers, term: terminalDiagnosticId(term) }, labels));
+  const exception = labels.exception;
+  const detailKey = kind === "renderer" && exception && exception !== "none" ? `${counter}:${exception}` : counter;
+  if (window.emitted.size < MAX_WINDOW_DETAILS && !window.emitted.has(detailKey)) {
+    window.emitted.add(detailKey);
+    sendDiagnostic(terminalDiagnosticPayload(kind, event, sessionId, { ...numbers, term: terminalDiagnosticId(term) }, labels), counter);
     return;
   }
   window.counts[counter] = (window.counts[counter] ?? 0) + 1;

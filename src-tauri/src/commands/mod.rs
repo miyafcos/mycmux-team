@@ -24,6 +24,7 @@ pub mod tab_sweep;
 pub mod pane_leftovers;
 pub mod jev;
 pub mod terminal;
+pub mod update;
 pub mod usage;
 pub mod wallpapers;
 pub mod window;

@@ -47,6 +47,8 @@ export interface CliAccountStoreState {
   loading: boolean;
   busyByProvider: BusyByProvider;
   lastSwitchResult: CliSwitchResult | null;
+  recentlyAdded: Partial<Record<SwitchableCliProvider, string>>;
+  noteAdded(profile: CliAccountProfile): void;
   fetch(): Promise<void>;
   capture(provider: SwitchableCliProvider, label?: string): Promise<CliAccountProfile | null>;
   switchTo(provider: SwitchableCliProvider, profileId: string, shouldSwitch?: () => boolean): Promise<CliSwitchResult | null>;
@@ -183,6 +185,8 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
     loading: false,
     busyByProvider: EMPTY_BUSY,
     lastSwitchResult: null,
+    recentlyAdded: {},
+    noteAdded: profile => set(state => ({ recentlyAdded: { ...state.recentlyAdded, [profile.provider]: profile.id } })),
 
     fetch: async () => {
       const sequence = ++fetchSeq;
@@ -209,9 +213,11 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
 
     capture: async (provider, label) => {
       if (get().busyByProvider[provider] !== null) return null;
+      const known = get().profiles;
       setBusy(provider, `capture:${provider}`);
       try {
         const profile = await enqueueMutation(() => captureCliAccount(provider, label));
+        if (!known.some(item => item.id === profile.id)) get().noteAdded(profile);
         // Refresh usage too: a capture retitles the row (live:* -> profile id),
         // and leaving the usage list on the old ids for up to one poll interval
         // reads as the panel "losing" the account it just registered.
@@ -268,9 +274,11 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
     resolveOrphan: async (orphan, action, label) => {
       const provider = orphan.provider;
       if (!provider || get().busyByProvider[provider] !== null) return false;
+      const known = get().profiles;
       setBusy(provider, `orphan:${orphan.id}`);
       try {
-        await enqueueMutation(() => resolveCliAccountOrphan(orphan.id, action, label));
+        const profile = await enqueueMutation(() => resolveCliAccountOrphan(orphan.id, action, label));
+        if (profile && !known.some(item => item.id === profile.id)) get().noteAdded(profile);
         await get().fetch();
         return true;
       } catch (error) {
@@ -308,5 +316,6 @@ export function __resetCliAccountStoreForTests(): void {
     loading: false,
     busyByProvider: EMPTY_BUSY,
     lastSwitchResult: null,
+    recentlyAdded: {},
   });
 }

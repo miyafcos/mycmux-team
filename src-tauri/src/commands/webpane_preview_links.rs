@@ -248,24 +248,29 @@ fn parse_target(url: &str) -> Result<PreviewTarget, String> {
     })
 }
 
+fn reveal_preview_target(
+    path: &Path,
+    record: impl FnOnce(&str, &str) -> Result<bool, String>,
+    reveal: impl FnOnce(&Path, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let canonical = dunce::canonicalize(path).map_err(|error| format!("mzopen target: {error}"))?;
+    let kind = if canonical.is_dir() { "open-directory" } else { "reveal-file" };
+    if record(kind, &canonical.to_string_lossy())? {
+        return Ok(());
+    }
+    // Never open the file with its application or pass a shell verb.
+    reveal(&canonical, path)
+}
+
 pub(super) async fn open(app: AppHandle, url: String) -> Result<(), String> {
     crate::util::task::run_blocking("preview_link_open", move || {
         let target = parse_target(&url)?;
         match target {
-            PreviewTarget::Reveal(path) => {
-                let canonical = dunce::canonicalize(&path)
-                    .map_err(|error| format!("mzopen target: {error}"))?;
-                let kind = if canonical.is_dir() {
-                    "open-directory"
-                } else {
-                    "reveal-file"
-                };
-                if super::record_preview_link(kind, &canonical.to_string_lossy())? {
-                    return Ok(());
-                }
-                // Never open the file with its application or pass a shell verb.
-                super::super::fs::reveal_path_in_os_file_manager_with_original(&canonical, &path)
-            }
+            PreviewTarget::Reveal(path) => reveal_preview_target(
+                &path,
+                super::record_preview_link,
+                super::super::fs::reveal_path_in_os_file_manager_with_original,
+            ),
             PreviewTarget::Browser(url) => {
                 if super::record_preview_link("browser", url.as_str())? {
                     return Ok(());
@@ -324,6 +329,35 @@ mod tests {
         }
         assert!(parse_target_with(&encoded(b"/Users/test/report.txt"), true, |_| true).is_ok());
         assert!(parse_target_with(&encoded(b"/Users/test/report.txt"), false, |_| true).is_err());
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn l6_fix2_mzopen_passes_the_checked_and_original_paths_to_the_native_revealer() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("reports");
+        std::fs::create_dir(&directory).unwrap();
+        let original = root.path().join("fixture-alias");
+        std::os::unix::fs::symlink(&directory, &original).unwrap();
+        let path = original.join("one.pdf");
+        std::fs::write(&path, b"fixture").unwrap();
+        let PreviewTarget::Reveal(parsed) = parse_target(&encoded(path.to_str().unwrap().as_bytes())).unwrap() else {
+            panic!("expected a native preview link");
+        };
+        let mut calls = 0;
+        reveal_preview_target(&parsed, |kind, checked| {
+            assert_eq!(kind, "reveal-file");
+            assert_eq!(Path::new(checked), dunce::canonicalize(&path).unwrap());
+            Ok(false)
+        }, |checked, original| {
+            calls += 1;
+            assert_eq!(checked, dunce::canonicalize(&path).unwrap());
+            assert_eq!(original, path);
+            assert_ne!(checked, original);
+            Ok(())
+        }).unwrap();
+        assert_eq!(calls, 1);
     }
 
     #[test]

@@ -342,7 +342,7 @@ describe("usage colours", () => {
 
 describe("row messaging", () => {
   it.each([
-    ["gemini_expired", "wait_for_cli", "Gemini のログインの期限が切れています。agy を一度起動すると更新されます"],
+    ["gemini_expired", "wait_for_cli", "Gemini のログインを更新できませんでした。「ログイン」から agy を開いてください"],
     ["gemini_not_signed_in", "needs_relogin", "agy にログインしていません"],
     ["gemini_credentials", "error", "Gemini の認証情報を読み取れませんでした"],
     ["gemini_unsupported", "unsupported", "この環境では Gemini の使用量を取得できません"],

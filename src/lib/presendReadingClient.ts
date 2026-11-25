@@ -3,9 +3,10 @@ import { useAiSettingsStore } from "../stores/aiSettingsStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
+import { MAX_SEND_CHARS } from "./composerSend";
 import { scrubPresendCredentials } from "./scrubCredentials";
-import { getLiveBriefs, getLiveEvents, LIVE_EVENT_DETAIL_LIMIT } from "./livebrief";
-import { PRESEND_CONTEXT_CHARS, presendWorkdirName, unicodeTail, type PresendReading, type PresendReadingProvider } from "./presendReading";
+import { getLiveEvents, LIVE_EVENT_DETAIL_LIMIT } from "./livebrief";
+import { PRESEND_CONTEXT_CHARS, presendWorkdirName, unicodeTail, type PresendResult, type PresendReadingProvider, type PresendConversation } from "./presendReading";
 import { withTerminalDeadline } from "./terminalDeadline";
 
 const PRESEND_CONTEXT_TIMEOUT_MS = 3_000;
@@ -53,44 +54,39 @@ function currentPtyGeneration(sessionId: string): Promise<number | null> {
   return invoke("get_codex_restore_epoch", { sessionId });
 }
 
-async function confirmedReply(sessionId: string, generation: number, isCurrent: () => boolean) {
-  const batch = (await getLiveEvents([sessionId], LIVE_EVENT_DETAIL_LIMIT)).find(item => item.ptySessionId === sessionId);
+async function confirmedReply(
+  sessionId: string, generation: number, isCurrent: () => boolean, conversationAtEdit?: PresendConversation | null,
+) {
+  const batch = (await getLiveEvents([sessionId], LIVE_EVENT_DETAIL_LIMIT, true)).find(item => item.ptySessionId === sessionId);
   if (!isCurrent() || batch?.telemetryHealth !== "live") return;
   const event = [...batch.events].reverse().find(item => item.kind.type === "agentMessage");
   if (event?.kind.type !== "agentMessage" || !Number.isSafeInteger(event.occurredAt) || event.occurredAt <= 0) return;
-  // The batch has no binding; the same brief revision identifies its snapshot.
-  const brief = (await getLiveBriefs()).find(item => item.ptySessionId === sessionId);
-  if (!isCurrent() || brief?.telemetryHealth !== "live" || brief.operationalState === "ended"
-    || brief.briefRevision !== batch.briefRevision || brief.ptyGeneration !== generation
-    || !brief.agentKind || !brief.agentSessionId) return;
-  const owner = await invoke<string | null>("get_agent_conversation_owner", {
-    kind: brief.agentKind, agentSessionId: brief.agentSessionId,
-  });
-  if (!isCurrent() || owner !== sessionId) return;
+  const source = batch.presendReplySource;
+  if (!source || source.ptyGeneration !== generation || source.occurredAt !== event.occurredAt
+    || !source.agentKind || !source.agentSessionId || !source.eventId || !source.contentDigest
+    || source.eventId !== event.eventId || source.sourceRevision !== event.sourceRevision
+    || source.sourceByteStart !== event.sourceByteStart || source.sourceByteEnd !== event.sourceByteEnd) return;
+  if (conversationAtEdit === null || (conversationAtEdit && conversationAtEdit.agentSessionId !== source.agentSessionId)) return;
+  // Native checks the live conversation owner with the foreground process tree.
   const confirmedGeneration = await currentPtyGeneration(sessionId);
   if (!isCurrent() || confirmedGeneration !== generation) return;
-  return {
-    text: event.kind.text,
-    source: {
-      ptyGeneration: generation, agentKind: brief.agentKind, agentSessionId: brief.agentSessionId,
-      occurredAt: event.occurredAt,
-    },
-  };
+  return { text: event.kind.text, source };
 }
 
-async function readContext(sessionId: string, isCurrent: () => boolean) {
+async function readContext(sessionId: string, isCurrent: () => boolean, conversationAtEdit?: PresendConversation | null) {
   let active = true;
   let ptyGeneration: number | null = null;
-  const canContinue = () => active && isCurrent();
+  const deadline = performance.now() + PRESEND_CONTEXT_TIMEOUT_MS;
+  const canContinue = () => active && isCurrent() && performance.now() < deadline;
   const collect = async () => {
     const generation = await currentPtyGeneration(sessionId);
     if (!canContinue() || generation === null || !Number.isSafeInteger(generation) || generation <= 0) return;
     ptyGeneration = generation;
-    return confirmedReply(sessionId, generation, canContinue);
+    return confirmedReply(sessionId, generation, canContinue, conversationAtEdit);
   };
   try {
     const reply = await withTerminalDeadline(collect(), "pre-send reply context", PRESEND_CONTEXT_TIMEOUT_MS);
-    return { ptyGeneration, reply };
+    return { ptyGeneration, reply: canContinue() ? reply : undefined };
   } catch {
     // Keep the initial generation if a later lookup failed or timed out.
     return { ptyGeneration, reply: undefined };
@@ -101,27 +97,34 @@ async function readContext(sessionId: string, isCurrent: () => boolean) {
 
 export async function requestPresendReading(
   requestId: string, sessionId: string, draft: string, provider: PresendReadingProvider,
-  isCurrent: (() => boolean) & { requireForegroundAgent?: boolean },
-): Promise<PresendReading | null> {
+  isCurrent: (() => boolean) & {
+    requireForegroundAgent?: boolean; generationAtEdit?: number | null; editedAtMs?: number;
+    conversationAtEdit?: PresendConversation | null;
+  },
+): Promise<PresendResult | null> {
+  if (draft.length > MAX_SEND_CHARS) return null;
   let active = true;
   const current = () => active && isCurrent() && canRead();
   try {
     // Observe the PTY while configuration is pending. Submission waits for both.
     const configurationReady = syncConfiguration(true);
-    const context = current() ? readContext(sessionId, current) : undefined;
+    const context = current() ? readContext(sessionId, current, isCurrent.conversationAtEdit) : undefined;
     await configurationReady;
     if (!context || !current()) return null;
     const { ptyGeneration, reply } = await context;
-    if (!current()) return null;
+    if (!current() || (isCurrent.generationAtEdit !== undefined
+      && (isCurrent.generationAtEdit === null || isCurrent.generationAtEdit !== ptyGeneration))) return null;
     let cwd = usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? "";
     if (!cwd) {
       const pane = useWorkspaceListStore.getState().workspaces.flatMap(workspace => workspace.panes)
         .find(candidate => candidate.tabs.some(tab => tab.sessionId === sessionId));
       cwd = pane?.tabs.find(candidate => candidate.sessionId === sessionId)?.cwd || pane?.cwd || "";
     }
-    return invoke<PresendReading | null>("run_presend_reading", {
+    return invoke<PresendResult | null>("run_presend_reading", {
       requestId, sessionId, ptyGeneration, provider,
       ...(isCurrent.requireForegroundAgent ? { requireForegroundAgent: true } : {}),
+      ...(isCurrent.editedAtMs === undefined ? {} : { editedAtMs: isCurrent.editedAtMs }),
+      ...(isCurrent.conversationAtEdit ? { conversationAtEdit: isCurrent.conversationAtEdit } : {}),
       draft: scrubPresendCredentials(draft),
       conversationExcerpt: unicodeTail(scrubPresendCredentials(reply?.text ?? ""), PRESEND_CONTEXT_CHARS),
       replySource: reply?.source,

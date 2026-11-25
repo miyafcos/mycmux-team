@@ -36,10 +36,10 @@ describe("pre-send reading disclosures", () => {
     const label = [...host.querySelectorAll("label")].find(label => label.textContent === notificationSettingsStrings.presendReadingLabel);
     expect(label?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(false);
     expect(host.textContent).toContain(
-      "入力欄に打った書きかけの文、そのタブの直前の返答の末尾、作業フォルダの名前を、送信の前に補助 AI へ渡します。"
+      "入力欄に打った書きかけの文全体、そのタブの直前の返答の末尾（出どころを確認できた場合）、作業フォルダの名前を、送信の前に補助 AI へ渡します。"
     );
     expect(host.textContent).toContain(
-      "別のウィンドウへ移したタブは全体の設定に戻るので、移した先でもう一度切ってください。読みが出るのは、そのタブの端末の中で、見分けられるエージェント (Claude Code・Codex・Grok・Antigravity・Hermes など) が動いていることを確かめられたときだけです。Cursor Agent のプロセスは見分けられないので、Cursor Agent だけが動いている間は読みは出ません。エージェントと同じ名前のプログラム (codex.js など) が端末で動いていると、エージェントが動いていると見なします。"
+      "停止を保存できたタブは、別のウィンドウへ移しても停止したままです。保存に失敗したときや移動を取り消したときは、編集を続けるウィンドウで停止を確認してください。読みが出るのは、そのタブの端末の中で、見分けられるエージェント (Claude Code・Codex・Grok・Antigravity・Hermes など) が動いていることを確かめられたときだけです。Cursor Agent のプロセスは見分けられないので、Cursor Agent だけが動いている間は読みは出ません。エージェントと同じ名前のプログラム (codex.js など) が端末で動いていると、エージェントが動いていると見なします。"
     );
   });
 

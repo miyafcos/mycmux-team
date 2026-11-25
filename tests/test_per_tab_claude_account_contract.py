@@ -10,7 +10,8 @@ def test_v2_evidence_is_captured_only_for_a_new_successful_pty():
     create = source[source.index("fn create_session_blocking("):source.index("pub(crate) fn prepare_spawn_command(")]
     assert create.index("TabAccountEvidence::claude(&loaded.status)") < create.index("state.session_manager.create(")
     assert create.index("created?;") < create.index("tab_evidence::remember(")
-    assert create.index("tab_evidence::remember(") < create.index('app_handle.emit("tab-account-evidence-updated"')
+    evidence_notice = 'app_handle.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile_id }))'
+    assert create.index("tab_evidence::remember(") < create.index(evidence_notice)
     assert re.search(r"if !reattach \{\s*if let Some\(\(base, evidence\)\) = pending_account_evidence", create)
     assert "if !reattach && login_launch.is_none()" in create
 
@@ -85,14 +86,16 @@ def test_rv03_profile_and_org_share_a_bounded_streaming_body_reader():
         assert "response.text()" not in body
 
 
-@pytest.mark.parametrize(("name", "profile"), [
-    ("set_cli_launch_token", "result.profile_id"), ("remove_cli_launch_token", "removed_profile_id"),
+@pytest.mark.parametrize(("name", "payload"), [
+    ("set_cli_launch_token", "launch_token_update_payload(&result.profile_id, write_id)"),
+    ("recheck_cli_launch_token", "launch_token_update_payload(&result.profile_id, write_id)"),
+    ("remove_cli_launch_token", 'serde_json::json!({ "profile_id": removed_profile_id })'),
 ])
-def test_rv04_token_mutations_emit_only_profile_id_after_success(name, profile):
+def test_rv04_token_mutations_emit_only_account_change_fields_after_success(name, payload):
     source = (ROOT / "src-tauri/src/commands/cli_accounts.rs").read_text(encoding="utf-8")
     start = source.index("pub async fn " + name + "(")
     body = source[start:source.index("\n}", start) + 2]
-    event = 'app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": ' + profile + ' }))'
+    event = f'app.emit("tab-account-evidence-updated", {payload})'
     assert event in body
     success = body.index('.await.map_err(')
     emitted = body.index(event)
@@ -114,9 +117,12 @@ def test_rc01_saved_mismatch_emits_profile_id_before_error():
     mismatch_error = body.index("Err(cli_accounts::ERR_LAUNCH_TOKEN_OWNER_MISMATCH.into())")
     success = body.index("Ok(")
     assert saved < emitted < mismatch_error < success
-    payloads = re.findall(r"serde_json::json!\(\s*\{([^}]*)\}\s*\)", body)
-    assert len(payloads) == 1
-    assert re.fullmatch(r'\s*"profile_id":\s*result\.profile_id\s*', payloads[0])
+    assert "launch_token_update_payload(&result.profile_id, write_id)" in body
+    payload_start = source.index("fn launch_token_update_payload(")
+    payload = source[payload_start:source.index("\n}", payload_start) + 2]
+    assert 'serde_json::json!({ "profile_id": profile_id })' in payload
+    assert "uuid::Uuid::parse_str(&value).ok()" in payload
+    assert re.findall(r'payload\["([^"]+)"\]', payload) == ["claude_token_write_id"]
 
 
 def test_rc02_tab_recheck_notifies_saved_token_profile_once():

@@ -96,6 +96,18 @@ describe("web pane shortcut forwarding", () => {
     window.removeEventListener("keydown", listener);
   });
 
+  it("L3 94 does not activate the forwarding tab after quit preparation", async () => {
+    const { resetLayoutQuitForTests, stopNewLayoutOperations } = await import("../../src/lib/layoutQuit");
+    await stopNewLayoutOperations();
+    try {
+      const activate = vi.fn(() => true);
+      expect(dispatchWebPaneKeydown(payload(), new Set(["ctrl+tab"]), new Set(["web-tab"]), activate)).toBe(false);
+      expect(activate).not.toHaveBeenCalled();
+    } finally {
+      resetLayoutQuitForTests();
+    }
+  });
+
   it("runs source activation only after every validation gate and before key dispatch", () => {
     const forwarded = new Set(deriveWebPaneForwardedShortcuts(DEFAULT_KEYBINDINGS));
     const tabs = new Set(["web-tab"]);

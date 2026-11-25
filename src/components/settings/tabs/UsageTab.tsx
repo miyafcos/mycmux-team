@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import type { AccountManagementSection } from "../../../lib/tabAccounts";
 import { CliAccountsPanel } from "../CliAccountsPanel";
 import { dividerStyle, sectionHeadingStyle } from "../tabStyles";
 import type { ProfileUsage, WindowStat } from "../../../lib/ipc";
@@ -20,7 +21,10 @@ const headingStyle = { ...sectionHeadingStyle, marginTop: 0 } as const;
 // The panel in the titlebar answers "how much is left"; this tab is where the
 // per-window breakdown and the account management flows live, automatic
 // switching included (per provider, inside CliAccountsPanel).
-export function UsageTab() {
+export function UsageTab({ accountSection, onLoginOpened }: {
+  accountSection?: AccountManagementSection;
+  onLoginOpened?: () => void;
+} = {}) {
   const accounts = useUsageStore((state) => state.accounts);
   const lastError = useUsageStore((state) => state.lastError);
   const rows = useMemo(() => orderAccountRows(accounts), [accounts]);
@@ -83,8 +87,8 @@ export function UsageTab() {
       <div style={dividerStyle} />
 
       <section aria-labelledby="cli-accounts-heading">
-        <h3 id="cli-accounts-heading" style={headingStyle}>CLI アカウント</h3>
-        <CliAccountsPanel />
+        <h3 id="cli-accounts-heading" style={headingStyle}>アカウント管理</h3>
+        <CliAccountsPanel accountSection={accountSection} onLoginOpened={onLoginOpened} />
       </section>
     </div>
   );

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAGIC: &[u8; 4] = b"MSBK";
 const VERSION: u16 = 1;
@@ -71,7 +71,7 @@ fn stable_tab_id_from_session_id(session_id: &str) -> Option<&str> {
     .then_some(tab_id)
 }
 
-fn scrollback_storage_id(session_id: &str) -> &str {
+pub(crate) fn scrollback_storage_id(session_id: &str) -> &str {
     stable_tab_id_from_session_id(session_id).unwrap_or(session_id)
 }
 
@@ -123,6 +123,13 @@ fn parse_persisted_scrollback(bytes: &[u8]) -> Option<PersistedScrollback> {
     })
 }
 
+fn lock_layout_directory(dir: &Path) -> io::Result<Option<crate::db::storage::LayoutActivityGuard>> {
+    let Some(parent) = dir.parent().filter(|_| dir.file_name().is_some_and(|name| name == "scrollback")) else {
+        return Ok(None);
+    };
+    crate::db::storage::lock_layout_directory(parent, Duration::from_secs(30)).map_err(io::Error::other)
+}
+
 pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
     let storage_id = scrollback_storage_id(session_id);
     let path = session_path(dir, storage_id).ok()?;
@@ -130,6 +137,10 @@ pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
         return parse_persisted_scrollback(&fs::read(path).ok()?);
     }
 
+    let _activity = lock_layout_directory(dir).ok()?;
+    if path.exists() {
+        return parse_persisted_scrollback(&fs::read(path).ok()?);
+    }
     let tab_id = stable_tab_id_from_session_id(session_id)?;
     let legacy_path = unique_legacy_scrollback_path(dir, tab_id)?;
     let persisted = parse_persisted_scrollback(&fs::read(&legacy_path).ok()?)?;
@@ -201,6 +212,7 @@ pub fn save(
         file.write_all(&hash(data).to_le_bytes())?;
         file.write_all(data)?;
         sync_scrollback(&file)?;
+        let _activity = lock_layout_directory(dir)?;
         fs::rename(&tmp_path, &path)
     })();
 
@@ -232,36 +244,6 @@ pub fn save_if_changed(
     Ok(true)
 }
 
-pub fn remove(dir: &Path, session_id: &str) -> io::Result<()> {
-    let path = session_path(dir, scrollback_storage_id(session_id))?;
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }?;
-    if path.file_stem().and_then(|stem| stem.to_str()) != Some(session_id) {
-        let legacy_path = session_path(dir, session_id)?;
-        match fs::remove_file(legacy_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    } else {
-        Ok(())
-    }
-}
-
-pub fn remove_many<I, S>(dir: &Path, session_ids: I) -> io::Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    for session_id in session_ids {
-        remove(dir, session_id.as_ref())?;
-    }
-    Ok(())
-}
-
 pub fn remove_prefix(dir: &Path, prefix: &str) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -285,12 +267,13 @@ pub fn remove_prefix(dir: &Path, prefix: &str) -> io::Result<()> {
 
 #[cfg(test)]
 pub fn gc(dir: &Path, keep: &HashSet<String>) -> io::Result<()> {
-    gc_guarded(dir, keep, || Ok(()))
+    gc_guarded(dir, keep, None, || Ok(()))
 }
 
 pub(crate) fn gc_guarded<F>(
     dir: &Path,
     keep: &HashSet<String>,
+    older_than: Option<SystemTime>,
     mut before_remove: F,
 ) -> io::Result<()>
 where
@@ -302,6 +285,9 @@ where
         Err(error) => return Err(error),
     };
 
+    // The same name can be used by a different spelling on a case-insensitive volume.
+    let keep: HashSet<_> = keep.iter().map(|key| key.to_ascii_lowercase()).collect();
+    let legacy_suffixes: Vec<_> = keep.iter().map(|key| format!("-{key}")).collect();
     for entry in entries {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
@@ -312,13 +298,20 @@ where
         let Some(session_id) = name.strip_suffix(".bin") else {
             continue;
         };
-        let is_legacy_live_tab = keep.iter().any(|tab_id| {
-            session_id.starts_with("pty-")
-                && session_id.ends_with(&format!("-{tab_id}"))
-        });
-        if !keep.contains(session_id) && !is_legacy_live_tab {
+        let key = session_id.to_ascii_lowercase();
+        let is_legacy_live_tab = key.starts_with("pty-")
+            && legacy_suffixes.iter().any(|suffix| key.ends_with(suffix));
+        if !keep.contains(&key) && !is_legacy_live_tab {
+            let observed = entry.metadata()?;
+            let modified = observed.modified()?;
+            if older_than.is_some_and(|cutoff| modified >= cutoff) {
+                continue;
+            }
             before_remove()?;
-            fs::remove_file(entry.path())?;
+            let current = fs::metadata(entry.path())?;
+            if current.len() == observed.len() && current.modified()? == modified {
+                fs::remove_file(entry.path())?;
+            }
         }
     }
     Ok(())
@@ -484,6 +477,23 @@ mod tests {
     }
 
     #[test]
+    fn l3_fix2_07_keeps_scrollback_replaced_after_the_final_reference_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let old = "pty-old-pane-aaaaaaaa-0000-4000-8000-000000000001";
+        let new = "pty-new-pane-aaaaaaaa-0000-4000-8000-000000000001";
+        save(dir, old, 0, 3, b"old").unwrap();
+
+        gc_guarded(dir, &HashSet::new(), None, || {
+            save(dir, new, 3, 12, b"new bytes")
+        }).unwrap();
+
+        let kept = load(dir, new).expect("the newly committed history still belongs to the new window");
+        assert_eq!((kept.start_offset, kept.end_offset), (3, 12));
+        assert_eq!(kept.data, b"new bytes");
+    }
+
+    #[test]
     fn gc_keeps_referenced_files_and_removes_orphans() {
         let temp = tempfile::tempdir().unwrap();
         save(temp.path(), "pty-keep", 0, 1, b"a").unwrap();
@@ -505,7 +515,7 @@ mod tests {
         save(temp.path(), "pty-drop-two", 0, 1, b"b").unwrap();
         let mut checks = 0;
 
-        let error = gc_guarded(temp.path(), &HashSet::new(), || {
+        let error = gc_guarded(temp.path(), &HashSet::new(), None, || {
             checks += 1;
             if checks == 2 {
                 return Err(io::Error::other("retention input changed"));

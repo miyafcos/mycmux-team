@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex, OnceLock};
 
 use crate::cli_accounts::{
@@ -1004,8 +1004,23 @@ async fn claim_codex_verified(
 pub async fn get_account_usage(
     app: tauri::AppHandle, state: tauri::State<'_, UsageState>,
     refresh_metadata: Option<bool>, api_command: Option<crate::usage::logging::ApiUsageCommand>,
-    after_switch: Option<bool>,
+    after_switch: Option<bool>, gemini_only: Option<bool>,
 ) -> Result<AccountUsageReport, String> {
+    if gemini_only == Some(true) && api_command.is_none() {
+        let mut report = AccountUsageReport {
+            accounts: Vec::new(), generated_at: String::new(), inventory_error: None, gemini_revision: None,
+        };
+        let isolated = crate::test_profile::is_active();
+        let snapshot = if isolated {
+            None
+        } else {
+            Some(state.gemini_usage.fetch_snapshot_with(
+                &oauth_gemini::Antigravity, Utc::now, refresh_metadata == Some(true),
+            ).await)
+        };
+        append_gemini_report(&mut report, snapshot, Utc::now(), isolated);
+        return Ok(report);
+    }
     get_account_usage_command(UsageApp::Native(app), &state, refresh_metadata, api_command,
         Some(GeminiRequest {
             source: &oauth_gemini::Antigravity,
@@ -1030,10 +1045,11 @@ async fn get_account_usage_command(
     };
     let isolated = crate::test_profile::is_active();
     let now = || gemini.source.now();
+    let cache_only = gemini.after_switch || matches!(api_command, Some(ApiUsageCommand::Switch));
     let gemini_snapshot = async {
         if isolated {
             None
-        } else if gemini.after_switch || matches!(api_command, Some(ApiUsageCommand::Switch)) {
+        } else if cache_only {
             state.gemini_usage.snapshot()
         } else {
             Some(state.gemini_usage.fetch_snapshot_with(gemini.source, &now, refresh_metadata == Some(true)).await)
@@ -1047,6 +1063,18 @@ async fn get_account_usage_command(
         gemini_revision: None,
     });
     let now = now();
+    // Expiry of a cached snapshot does not tell us how the active refresh ended.
+    let gemini_snapshot = gemini_snapshot.filter(|snapshot| !cache_only || !snapshot.expired_since_fetch(now));
+    append_gemini_report(&mut report, gemini_snapshot, now, isolated);
+    Ok(report)
+}
+
+fn append_gemini_report(
+    report: &mut AccountUsageReport,
+    gemini_snapshot: Option<oauth_gemini::UsageSnapshot>,
+    now: DateTime<Utc>,
+    isolated: bool,
+) {
     if isolated {
         report.accounts.push(oauth_gemini::unsupported_row(now));
     } else if let Some(snapshot) = gemini_snapshot {
@@ -1055,7 +1083,6 @@ async fn get_account_usage_command(
         report.accounts.push(row);
     }
     report.generated_at = now.to_rfc3339();
-    Ok(report)
 }
 
 async fn get_account_usage_inner(

@@ -11,7 +11,7 @@ function containsTab(workspaces: WorkspaceList, id: string): boolean {
     pane.sessionId === id || pane.tabs?.some(tab => tab.sessionId === id)));
 }
 
-export function admitPaintRepair(id: string, now = Date.now()): {
+export function admitPaintRepair(id: string, now = performance.now()): {
   state: "admitted" | "cooldown" | "exhausted" | "silent"; attempt: number;
 } {
   if (!observing) {

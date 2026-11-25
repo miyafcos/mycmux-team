@@ -19,7 +19,7 @@ function toSettingsUpdateStatus(phase: UpdatePhase): UpdateStatus {
 // Ported from SettingsMenu.tsx: current version display + manual update check.
 export function AppInfoTab() {
   const hasRole = useWindowRole();
-  const installing = useUpdateAvailabilityStore((state) => state.state === "installing");
+  const updating = useUpdateAvailabilityStore((state) => state.state === "installing" || state.state === "restarting");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
   const [currentVersion, setCurrentVersion] = useState<string>("読み込み中…");
@@ -61,7 +61,7 @@ export function AppInfoTab() {
     });
   };
 
-  const checking = updateStatus === "checking" || installing;
+  const checking = updateStatus === "checking" || updating;
   // Multi-window (Phase 3a): the updater relaunches the whole process after
   // installing, so it follows the reactive, exclusive window role.
   const canCheckForUpdates = hasRole && testProfile === null;

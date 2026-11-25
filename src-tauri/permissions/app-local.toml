@@ -280,6 +280,7 @@ permissions = [
     "allow-toggle-savepoint-pin",
     "allow-unregister-cli-account-home",
     "allow-unsubscribe-live-briefs",
+    "allow-update-restart-pending",
     "allow-use-reset-ticket",
     "allow-verify-pane-message",
     "allow-watch-window-drag",

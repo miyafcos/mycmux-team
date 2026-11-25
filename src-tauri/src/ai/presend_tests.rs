@@ -254,12 +254,15 @@ fn tab_owner(window: &str, session_id: &str) -> ReadingOwner {
         window: window.to_owned(),
         session_id: session_id.to_owned(),
         pty_generation: Some(1),
+        conversation: Some(SourceConversation {
+            kind: "claude".into(), id: "toy-conversation".into(), agent_pid: 42, started_at: 1,
+        }),
     }
 }
 
 async fn read(service: &PresendService, id: &str, provider: Provider) -> Option<Reading> {
     service
-        .read(id.to_owned(), provider, tab_owner("main", "tab"), || id.to_owned(), || true, std::future::ready(true))
+        .read(id.to_owned(), provider, tab_owner("main", "tab"), || id.to_owned(), || true, std::future::ready(true), None)
         .await
 }
 
@@ -304,6 +307,7 @@ async fn claude_context_is_reused_only_by_the_same_tab_in_the_same_window() {
                 Workdir::Path("example-folder"),
                 || true,
                 std::future::ready(true),
+                None,
             )
             .await
     }
@@ -367,6 +371,7 @@ async fn claude_context_follows_pty_generation_and_never_reuses_unknown_owner() 
                 Workdir::Path("example-folder"),
                 || true,
                 std::future::ready(true),
+                None,
             )
             .await
             .is_some());
@@ -389,6 +394,7 @@ async fn changed_pty_generation_is_rejected_before_writing_to_a_warm_child() {
             || "draft from the old PTY".to_owned(),
             || false,
             std::future::ready(true),
+            None,
         )
         .await;
     assert!(result.is_none());
@@ -625,6 +631,7 @@ struct CredentialExample {
     input_parts: Vec<String>,
     expected_parts: Vec<String>,
     jev_parts: Vec<String>,
+    rescrub_parts: Option<Vec<String>>,
     secret: Option<String>,
 }
 
@@ -647,15 +654,44 @@ fn renderer_and_backend_share_all_synthetic_credential_examples() {
     for row in cases {
         let input = row.input_parts.concat();
         let expected = row.expected_parts.concat();
-        assert_eq!(credentials::scrub(&input), expected, "{}", row.name);
-        assert_eq!(
-            credentials::legacy(&input),
-            row.jev_parts.concat(),
-            "{}",
-            row.name
-        );
-        assert_eq!(credentials::scrub(&expected), expected, "{}", row.name);
+        let second = row.rescrub_parts.as_ref().map(|parts| parts.concat());
+        let rescrubbed = second.as_deref().unwrap_or(&expected);
+        assert!(credentials::scrub(&input) == expected, "first pass: {}", row.name);
+        assert!(credentials::legacy(&input) == row.jev_parts.concat(), "jev: {}", row.name);
+        assert!(credentials::scrub(&expected) == rescrubbed, "second pass: {}", row.name);
+        assert!(credentials::scrub(rescrubbed) == rescrubbed, "stable: {}", row.name);
     }
+}
+
+fn check_historical_credential_ranges(policy: usize) {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Table {
+        cases: Vec<CredentialExample>,
+        historical_byte_ranges: std::collections::HashMap<String, [Vec<[usize; 2]>; 2]>,
+    }
+    let table: Table = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/presend_credentials.json"
+    )).unwrap();
+    assert_eq!(table.historical_byte_ranges.len(), table.cases.len());
+    for row in table.cases {
+        let input = row.input_parts.concat();
+        let actual = credentials::presend_credential_ranges(&input);
+        for &[start, end] in &table.historical_byte_ranges[&row.name][policy] {
+            assert!(actual.iter().any(|span| span.start <= start && end <= span.end),
+                "{} bytes {start}..{end}", row.name);
+        }
+    }
+}
+
+#[test]
+fn union_covers_v09014_original_byte_ranges() {
+    check_historical_credential_ranges(0);
+}
+
+#[test]
+fn union_covers_l5_original_byte_ranges() {
+    check_historical_credential_ranges(1);
 }
 
 #[test]
@@ -752,6 +788,7 @@ async fn global_ai_off_never_spawns_and_also_closes_an_existing_warm_child() {
             Workdir::Path("folder"),
             || true,
             std::future::ready(true),
+            None,
         )
         .await
         .is_none());
@@ -769,6 +806,7 @@ async fn global_ai_off_never_spawns_and_also_closes_an_existing_warm_child() {
             Workdir::Path("folder"),
             || true,
             std::future::ready(true),
+            None,
         )
         .await
         .is_none());
@@ -866,6 +904,7 @@ async fn direct_backend_request_scrubs_draft_and_excerpt_before_the_session_read
             Workdir::Path("folder"),
             || true,
             std::future::ready(true),
+            None,
         )
         .await
         .is_some());
@@ -882,6 +921,99 @@ async fn direct_backend_request_scrubs_draft_and_excerpt_before_the_session_read
         "before [credential omitted] after"
     );
     service.configure(false, Provider::Claude).await;
+}
+
+async fn fix5_read_draft(service: &PresendService, id: &str, draft: &str) -> bool {
+    service.read_request(
+        true, id.into(), Provider::Claude, tab_owner("main", "tab"), draft, || "",
+        Workdir::Basename("folder"), || true, std::future::ready(true), None,
+    ).await.is_some()
+}
+
+#[tokio::test]
+async fn l5_fix6_native_masks_the_whole_numeric_end_comment() {
+    let cases = credential_examples();
+    let counter = cases.iter().find(|r| r.name == "0915-L5-fix2-19-counter-numeric").unwrap();
+    let credential = cases.iter().find(|r| r.name == "0915-L5-119-nonnumeric-token-counter").unwrap();
+    let prefix = cases.iter().find(|r| r.name.starts_with("prefix-") && r.expected_parts.concat() == credentials::OMITTED).unwrap();
+    let rendered = credentials::scrub(&counter.input_parts.concat());
+    let marker = credentials::OMITTED;
+    let field = format!("token_count: {marker} \t# ordinary note ");
+    let protected = format!("{field}{} password={}", prefix.input_parts.concat(), credential.secret.as_ref().unwrap());
+    let plain_expected = counter.rescrub_parts.as_ref().unwrap().concat();
+    let expected = format!("token_count: {marker}");
+    assert_eq!((counter.input_parts.concat().len(), rendered.len()), (80, 155));
+    assert_eq!(credentials::scrub(&rendered).len(), 138);
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let mut observed = Vec::new();
+    for (id, input, wanted) in [("plain", &rendered, &plain_expected), ("protected", &protected, &expected)] {
+        assert!(fix5_read_draft(&service, id, input).await);
+        let prompts = stats.prompts.lock().unwrap();
+        let fields = wire_prompt_fields(prompts.last().unwrap());
+        let body = fields["\u{66f8}\u{304d}\u{304b}\u{3051}\u{306e}\u{4f9d}\u{983c}"].as_str().unwrap();
+        observed.push((body.len(), body == wanted));
+    }
+    assert_eq!(observed, [(138, true), (expected.len(), true)]);
+}
+
+#[test]
+fn l5_fix6_masks_end_comments_in_all_shared_yaml_contexts_on_later_passes() {
+    let contexts: std::collections::BTreeMap<String, String> = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/presend_comment_contexts.json"
+    )).unwrap();
+    let cases = credential_examples();
+    let counter = cases.iter().find(|r| r.name == "0915-L5-fix2-19-counter-numeric").unwrap();
+    let sample = cases.iter().find(|r| r.name == "0915-L5-119-nonnumeric-token-counter").unwrap();
+    let raw = counter.input_parts.concat();
+    let (field, note) = raw.lines().last().unwrap().split_once("# ").unwrap();
+    let mut unexpected = Vec::new();
+    for (name, document) in contexts {
+        for (source, value) in [("note", note), ("sample", sample.secret.as_deref().unwrap())] {
+            let input = document.replace("{counter}", &format!("{field}# {value}"));
+            let first = credentials::scrub(&input);
+            let second = credentials::scrub(&first);
+            let third = credentials::scrub(&second);
+            let observed = (first.contains(value), second.contains(value), third.contains(value), third == second);
+            if observed != (true, false, false, true) {
+                unexpected.push((name.clone(), source, observed));
+            }
+        }
+    }
+    assert!(unexpected.is_empty(), "unexpected comment coverage: {unexpected:?}");
+}
+
+#[tokio::test]
+async fn l5_fix5_native_accepts_all_three_expanded_renderer_drafts() {
+    let cases = credential_examples();
+    let rows = ["0915-L5-119-ordinary-token-counter", "0915-L5-111-yaml"]
+        .map(|name| cases.iter().find(|r| r.name == name).unwrap());
+    let suffix = format!("\n{}\n{}", rows[0].input_parts.concat(), rows[1].input_parts.concat());
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let mut observed = Vec::new();
+    for size in [99_982, 99_983, 99_995] {
+        let draft = "x".repeat(size - suffix.len()) + &suffix;
+        let transfer = credentials::scrub(&draft);
+        assert_eq!(transfer.chars().count(), size + 24);
+        let accepted = fix5_read_draft(&service, &format!("expanded-{size}"), &transfer).await;
+        observed.push((size, transfer.chars().count(), accepted));
+    }
+    assert_eq!(observed, [(99_982, 100_006, true), (99_983, 100_007, true), (99_995, 100_019, true)]);
+    assert_eq!(stats.prompts.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn l5_fix5_native_enforces_the_transfer_limit_in_unicode_scalars() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    // One supplementary character counts as one received scalar and four UTF-8 bytes.
+    let mut draft = "x".repeat(2_300_021) + "\u{1f600}";
+    let at_limit = fix5_read_draft(&service, "at-limit", &draft).await;
+    draft.push('x');
+    let beyond = fix5_read_draft(&service, "beyond-limit", &draft).await;
+    assert_eq!((at_limit, beyond), (true, false));
+    assert_eq!(stats.prompts.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -918,6 +1050,7 @@ async fn assert_scrubbed_read_requests(prefix: &str) {
                     Workdir::Path("toy-folder"),
                     || true,
                     std::future::ready(true),
+                    None,
                 )
                 .await
                 .is_some(),
@@ -987,7 +1120,9 @@ async fn read_wire_example(
                 })
             },
             || true,
-            std::future::ready(None),
+            || true,
+            std::future::ready(Some(true)),
+            None, None,
         )
         .await
 }
@@ -1009,7 +1144,8 @@ async fn renderer_foreground_request(foreground: Option<bool>) -> (bool, usize, 
             "occurredAt": 20_000
         },
         "workdirName": "toy-folder",
-        "requireForegroundAgent": true
+        "requireForegroundAgent": true,
+        "editedAtMs": 20_000
     })).unwrap();
     let result = service.read_renderer_request(
         true,
@@ -1025,7 +1161,9 @@ async fn renderer_foreground_request(foreground: Option<bool>) -> (bool, usize, 
             from_hook: false,
         }),
         || true,
+        || true,
         std::future::ready(foreground),
+        None, None,
     ).await;
     let writes = stats.write_sessions.lock().unwrap().len();
     (result.is_some(), count(&stats.spawned), writes)
@@ -1047,16 +1185,47 @@ async fn renderer_ipc_writes_once_if_the_foreground_agent_is_confirmed() {
 }
 
 #[tokio::test]
-async fn command_forwards_foreground_requirement_before_spawning_or_writing() {
-    for (required, expected) in [(Some(true), (false, 0, 0)), (None, (true, 1, 1))] {
+async fn l5_attempt_is_recorded_when_the_helper_returns_invalid_output() {
+    let (service, stats) = fake(Ok("synthetic invalid reading".into()), Duration::ZERO, None);
+    let progress = ReadProgress::default();
+    assert!(service.read(
+        "invalid".into(), Provider::Claude, tab_owner("main", "tab"),
+        || "synthetic draft".into(), || true, std::future::ready(true), Some(&progress),
+    ).await.is_none());
+    assert!(!progress.attempted.load(Ordering::Relaxed));
+
+    service.configure(true, Provider::Claude).await;
+    assert!(service.read(
+        "valid-attempt".into(), Provider::Claude, tab_owner("main", "tab"),
+        || "synthetic draft".into(), || true, std::future::ready(true), Some(&progress),
+    ).await.is_none());
+    assert_eq!(stats.write_sessions.lock().unwrap().len(), 1);
+    assert!(progress.attempted.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn l5_command_rejects_missing_or_false_foreground_flags_without_an_agent() {
+    for required in [None, Some(false)] {
         let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
         let mut request = presend_wire_example().request;
-        request.pty_generation = None;
+        request.require_foreground_agent = required;
+        service.configure(true, request.provider).await;
+        let result = read_presend_from_command(&service, || true, "toy-window", request, None, None, None, crate::diag::log).await;
+        assert!(result.is_none(), "foreground flag {required:?}");
+        assert_eq!(count(&stats.spawned), 0);
+    }
+}
+
+#[tokio::test]
+async fn command_forwards_foreground_requirement_before_spawning_or_writing() {
+    for (required, expected) in [(Some(true), (false, 0, 0)), (None, (false, 0, 0))] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        let mut request = presend_wire_example().request;
         request.require_foreground_agent = required;
         service.configure(true, request.provider).await;
 
         // No AppState is available, so the production check cannot confirm an agent.
-        let result = read_presend_from_command(&service, || true, "toy-window", request, None).await;
+        let result = read_presend_from_command(&service, || true, "toy-window", request, None, None, None, crate::diag::log).await;
         let writes = stats.write_sessions.lock().unwrap().len();
         assert_eq!(
             (result.is_some(), count(&stats.spawned), writes),
@@ -1103,7 +1272,7 @@ async fn check_fake_foreground(
         FakeForegroundSession::intervention_observation,
         FakeForegroundSession::session_observation,
         FakeForegroundSession::is_running,
-        detect,
+        move |root| detect(root).ok_or(ForegroundCheckFailure::ProcessUnavailable),
         timeout,
         crate::diag::log,
     )
@@ -1215,7 +1384,7 @@ async fn foreground_check_returns_while_diagnostic_write_is_blocked() {
                 FakeForegroundSession::is_running,
                 |_| {
                     std::thread::sleep(Duration::from_millis(160));
-                    Some(true)
+                    Ok(true)
                 },
                 Duration::from_secs(5),
                 move |line| {
@@ -1234,8 +1403,44 @@ async fn foreground_check_returns_while_diagnostic_write_is_blocked() {
 }
 
 #[test]
+#[ignore = "used as a child process by the foreground inspection test"]
+fn l5_idle_probe_fixture() {
+    std::thread::sleep(Duration::from_secs(10));
+}
+
+#[test]
 fn foreground_agent_in_pty_reports_no_agent_for_test_process() {
-    assert_eq!(foreground_agent_in_pty(std::process::id()), Some(false));
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "ai::presend::tests::l5_idle_probe_fixture", "--ignored"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = foreground_agent_in_pty(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(result, Some(None));
+}
+
+#[test]
+fn l5_foreground_timeout_and_diagnostic_share_the_same_decision() {
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(250);
+    let before = finish_foreground_check(Ok(true), started, deadline, started + Duration::from_millis(249));
+    assert_eq!(before.0, Some(true));
+    assert_eq!(before.1.as_deref(), Some("presend_foreground_check result=slow_ok elapsed_ms=249.000"));
+    let after = finish_foreground_check(Ok(true), started, deadline, deadline);
+    assert_eq!(after.0, None);
+    assert_eq!(after.1.as_deref(), Some("presend_foreground_check result=timeout elapsed_ms=250.000"));
+}
+
+#[test]
+fn l5_foreground_process_has_to_predate_the_edit() {
+    let process = LiveProcess { pid: sysinfo::Pid::from_u32(42), started_at: 7 };
+    assert!(!process.predates_edit(6_999));
+    assert!(!process.predates_edit(7_999));
+    assert!(process.predates_edit(8_000));
 }
 
 #[test]
@@ -1250,7 +1455,14 @@ fn foreground_check_diagnostic_uses_only_fixed_result_and_milliseconds() {
     assert_eq!(foreground_check_line(Ok(true), 150.0), None);
     for (result, elapsed_ms, expected) in [
         (Ok(false), 9.0, "no_agent elapsed_ms=9.000"),
-        (Err(Unavailable), 2.0, "unavailable elapsed_ms=2.000"),
+        (Err(StateUnavailable), 2.0, "state_unavailable elapsed_ms=2.000"),
+        (Err(PtyUnavailable), 2.0, "pty_unavailable elapsed_ms=2.000"),
+        (Err(RootUnavailable), 2.0, "root_unavailable elapsed_ms=2.000"),
+        (Err(ProcessUnavailable), 2.0, "process_unavailable elapsed_ms=2.000"),
+        (Err(ProbeFailed), 2.0, "probe_failed elapsed_ms=2.000"),
+        (Err(ProbeBusy), 2.0, "probe_busy elapsed_ms=2.000"),
+        (Err(PtyExited), 2.0, "pty_exited elapsed_ms=2.000"),
+        (Err(AgentChanged), 2.0, "agent_changed elapsed_ms=2.000"),
         (Err(Timeout), 251.0, "timeout elapsed_ms=251.000"),
         (Err(GenerationChanged), 4.0, "generation_changed elapsed_ms=4.000"),
         (Ok(true), 150.125, "slow_ok elapsed_ms=150.125"),
@@ -1264,6 +1476,57 @@ fn foreground_check_diagnostic_uses_only_fixed_result_and_milliseconds() {
 
 fn wire_prompt_fields(prompt: &str) -> serde_json::Value {
     serde_json::from_str(prompt.rsplit("\n\n").next().unwrap().trim()).unwrap()
+}
+
+#[tokio::test]
+async fn l5_warm_child_does_not_cross_a_conversation_change_in_the_same_pty() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let fixture = presend_wire_example();
+    let generation = fixture.generation;
+    for (index, conversation) in ["toy-first-conversation", "toy-second-conversation"].into_iter().enumerate() {
+        let mut request = presend_wire_example().request;
+        request.request_id = format!("toy-{index}");
+        request.conversation_at_edit.as_mut().unwrap().agent_session_id = conversation.into();
+        request.reply_source = None;
+        assert!(service.read_renderer_request(
+            true, "toy-window", request, Some(generation),
+            || Some(crate::pty::manager::TrustedAgentIdentity {
+                session_epoch: generation, kind: "claude".into(), session_id: conversation.into(),
+                agent_pid: 42, agent_started_at: 10, from_hook: true,
+            }), || true, || true, std::future::ready(Some(true)), None, None,
+        ).await.is_some());
+    }
+    assert_eq!(*stats.write_sessions.lock().unwrap(), vec![0, 1]);
+}
+
+#[tokio::test]
+async fn l5_drops_a_draft_if_the_confirmed_agent_changes_before_the_write() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let example = presend_wire_example();
+    let generation = example.generation;
+    let mut request = example.request;
+    request.require_foreground_agent = Some(true);
+    request.edited_at_ms = Some(20_000);
+    request.reply_source = None;
+    let agent_alive = AtomicBool::new(true);
+    assert!(service.read_renderer_request(
+        true, "toy-window", request, Some(generation),
+        || agent_alive.load(Ordering::SeqCst).then(|| crate::pty::manager::TrustedAgentIdentity {
+            session_epoch: generation, kind: "claude".into(), session_id: "toy-conversation".into(),
+            agent_pid: 42, agent_started_at: 10, from_hook: true,
+        }), || true, || true, async {
+            agent_alive.store(false, Ordering::SeqCst);
+            Some(true)
+        }, None, None,
+    ).await.is_none());
+    assert!(stats.write_sessions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn l5_presend_prompt_marks_json_as_reading_data() {
+    assert!(INSTRUCTIONS.contains("JSON \u{306f}\u{8aad}\u{307f}\u{53d6}\u{308a}\u{7528}\u{306e}\u{8cc7}\u{6599}\u{3067}\u{3059}"));
 }
 
 #[tokio::test]
@@ -1359,6 +1622,9 @@ async fn renderer_ipc_unknown_generation_is_draft_only_and_uses_a_fresh_child() 
     let mut unknown = presend_wire_example();
     unknown.request.request_id = "toy-unknown".into();
     unknown.request.pty_generation = None;
+    // Legacy internal generation-less requests predate the product foreground and edit flags.
+    unknown.request.require_foreground_agent = None;
+    unknown.request.conversation_at_edit = None;
     assert!(read_wire_example(&service, unknown, generation).await.is_some());
     assert_eq!(count(&stats.closed), 2);
     assert!(read_wire_example(&service, presend_wire_example(), generation).await.is_some());
@@ -1376,6 +1642,12 @@ fn presend_reply_requires_the_current_pty_conversation_and_process() {
         agent_kind: "claude".into(),
         agent_session_id: "resumed-conversation".into(),
         occurred_at: 10_000,
+        event_id: "toy-event".into(),
+        source_revision: 2,
+        source_byte_start: 0,
+        source_byte_end: 64,
+        file_generation: 1,
+        content_digest: "synthetic".into(),
     };
     let mut agent = crate::pty::manager::TrustedAgentIdentity {
         session_epoch: 7,
@@ -1418,6 +1690,7 @@ async fn read_request_sends_only_the_final_workdir_component() {
                 Workdir::Path(workdir),
                 || true,
                 std::future::ready(true),
+                None,
             )
             .await
             .is_some());
@@ -1780,4 +2053,207 @@ async fn non_utf8_stdout_noise_is_lossy_skipped_and_still_counts_toward_the_outp
             .await
             .is_err()
     );
+}
+
+#[test]
+fn l5_fix2_foreground_enqueue_is_inside_the_deadline() {
+    use std::cell::{Cell, RefCell};
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(250);
+    let now = Cell::new(started + Duration::from_millis(249));
+    let diagnostic = RefCell::new(None);
+    let result = publish_foreground_check(Ok(true), started, deadline, || now.get(), |receiver| {
+        now.set(deadline);
+        *diagnostic.borrow_mut() = Some(receiver);
+    });
+    let line = diagnostic.into_inner().unwrap().try_recv().unwrap();
+    assert_eq!((result, line.as_str()), (None, "presend_foreground_check result=timeout elapsed_ms=250.000"));
+}
+
+#[tokio::test]
+async fn l5_fix2_renderer_rejects_missing_edit_evidence_before_writing() {
+    let generation = presend_wire_example().generation;
+    for (pty_generation, edited_at_ms, writes) in [
+        (Some(generation), Some(20_000), 1),
+        (None, Some(20_000), 0),
+        (Some(generation), None, 0),
+    ] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let mut request = presend_wire_example().request;
+        request.pty_generation = pty_generation;
+        request.conversation_at_edit = None;
+        request.edited_at_ms = edited_at_ms;
+        request.require_foreground_agent = Some(true);
+        let result = service.read_renderer_request(
+            true, "toy-window", request, Some(generation),
+            || None, || true, || true, std::future::ready(Some(true)), None, None,
+        ).await;
+        assert_eq!(stats.write_sessions.lock().unwrap().len(), writes, "generation={pty_generation:?} edited_at_ms={edited_at_ms:?}");
+        assert_eq!(result.is_some(), writes == 1);
+    }
+}
+
+#[tokio::test]
+async fn l5_fix2_new_process_cannot_write_to_the_helper_for_the_cached_process() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let generation = presend_wire_example().generation;
+    let foreground_proof = Mutex::new(None);
+    let cached = || Some(crate::pty::manager::TrustedAgentIdentity {
+        session_epoch: generation, kind: "claude".into(), session_id: "toy-conversation".into(),
+        agent_pid: 41, agent_started_at: 9, from_hook: true,
+    });
+    for (pid, started_at) in [(41, 9), (42, 11)] {
+        let mut request = presend_wire_example().request;
+        request.request_id = format!("toy-process-{pid}");
+        request.require_foreground_agent = Some(true);
+        request.edited_at_ms = Some(20_000);
+        request.reply_source = None;
+        request.conversation_at_edit = Some(PresendConversationAtEdit {
+            agent_kind: "claude".into(), agent_session_id: "toy-conversation".into(),
+        });
+        let _ = service.read_renderer_request(
+            true, "toy-window", request, Some(generation), cached,
+            || true, || true, async {
+                *foreground_proof.lock().unwrap() = Some(LiveProcess { pid: sysinfo::Pid::from_u32(pid), started_at });
+                Some(true)
+            },
+            Some(&foreground_proof), None,
+        ).await;
+    }
+    assert_eq!(*stats.write_sessions.lock().unwrap(), vec![0]);
+}
+
+#[tokio::test]
+async fn l5_fix3_command_records_one_reason_for_each_early_rejection() {
+    let manager = Arc::new(SessionManager::new());
+    let example = presend_wire_example();
+    manager.install_fixture_owner(&example.request.session_id, 0, Duration::ZERO, crate::pty::monitor::new_metadata_store());
+    for reason in ["state_unavailable", "pty_unavailable", "generation_changed"] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let mut request = presend_wire_example().request;
+        request.edited_at_ms = Some(20_000);
+        if reason == "pty_unavailable" { request.session_id.push_str("-missing"); }
+        let available = (reason != "state_unavailable").then_some(&manager);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let result = read_presend_from_command(&service, || true, "toy-window", request, available, None, None,
+            move |line| { let _ = sender.send(line.to_owned()); }).await;
+        assert!(result.is_none() && stats.write_sessions.lock().unwrap().is_empty());
+        let line = tokio::time::timeout(Duration::from_secs(2), receiver).await.unwrap().unwrap();
+        let elapsed = line.strip_prefix(&format!("presend_foreground_check result={reason} elapsed_ms=")).unwrap();
+        assert!(elapsed.parse::<f64>().unwrap() >= 0.0);
+    }
+}
+
+#[tokio::test]
+async fn l5_fix3_shared_wire_example_reaches_the_product_command() {
+    use std::io::{BufRead, BufReader};
+    struct IdleNode(std::process::Child);
+    impl Drop for IdleNode {
+        fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+    }
+    let example = presend_wire_example();
+    assert_eq!(example.request.require_foreground_agent, Some(true));
+    let edited_at = example.request.edited_at_ms.expect("the shared request includes the edit time");
+    assert_eq!(example.request.pty_generation, Some(example.generation));
+    let edit = example.request.conversation_at_edit.as_ref().expect("the shared request includes the conversation");
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("claude");
+    std::fs::create_dir(&package).unwrap();
+    let script = package.join("cli.js");
+    std::fs::write(&script, "process.on('disconnect', () => process.exit()); console.log('ready'); setInterval(() => {}, 1000);").unwrap();
+    let host = dir.path().join("host.js");
+    let stop = dir.path().join("stop");
+    std::fs::write(&host, r#"
+        const child = require('node:child_process').fork(process.argv[2], [], {stdio: ['ignore', 'inherit', 'ignore', 'ipc']});
+        const poll = setInterval(() => {
+            if (require('node:fs').existsSync(process.argv[3])) { clearInterval(poll); child.kill(); }
+        }, 10);
+        child.on('exit', () => { console.log('stopped'); setInterval(() => {}, 1000); });
+    "#).unwrap();
+    let mut child = IdleNode(std::process::Command::new("node").arg(host).arg(&script).arg(&stop)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap());
+    let mut output = BufReader::new(child.0.stdout.take().unwrap());
+    let mut ready = String::new();
+    output.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "ready");
+    let process = foreground_agent_in_pty(child.0.id()).flatten().expect("isolated node fixture is the foreground agent");
+    let manager = Arc::new(SessionManager::new());
+    let id = &example.request.session_id;
+    let metadata = crate::pty::monitor::new_metadata_store();
+    manager.install_fixture_owner(id, child.0.id(), Duration::ZERO, metadata.clone());
+    let generation = manager.session_observation(id).unwrap().0;
+    let livebrief = crate::livebrief::LiveBriefService::new(manager.clone(), metadata);
+    let original = example.request.reply_source.as_ref().unwrap();
+    let native_id = original.event_id.strip_suffix(":0").unwrap();
+    let offset = (process.started_at - example.agent_started_at) * 1000;
+    let at = chrono::DateTime::from_timestamp_millis((original.occurred_at + offset) as i64).unwrap();
+    let record = serde_json::json!({"type":"assistant", "uuid":native_id,
+        "timestamp":at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "message":{"content":[{"type":"text","text":example.request.conversation_excerpt}]}}).to_string();
+    assert_eq!(original.source_byte_end, original.source_byte_start + record.len() as u64);
+    livebrief.cache_presend_fixture_record(id, &record, original.source_byte_start, original.source_revision, original.file_generation);
+    manager.remember_hook_identity(id, crate::pty::manager::TrustedAgentIdentity {
+        session_epoch: generation, kind: edit.agent_kind.clone(), session_id: edit.agent_session_id.clone(),
+        agent_pid: process.pid.as_u32(), agent_started_at: process.started_at, from_hook: true,
+    }, Some(native_id));
+    // Bind the wire example's clock and generation to the disposable native process.
+    let wire_request = || {
+        let mut request = presend_wire_example().request;
+        request.pty_generation = Some(generation);
+        request.edited_at_ms = Some(offset + edited_at);
+        let source = request.reply_source.as_mut().unwrap();
+        source.pty_generation = generation;
+        source.occurred_at += offset;
+        request
+    };
+    // All variants below begin with this same request and change one field.
+    for (variant, writes) in [
+        ("complete", 1), ("no-edit-time", 0), ("no-generation", 0), ("wrong-generation", 0),
+        ("no-conversation", 1), ("wrong-conversation", 0), ("no-source", 1),
+        ("no-foreground-flag", 1), ("false-foreground-flag", 1),
+    ] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let mut request = wire_request();
+        match variant {
+            "no-edit-time" => request.edited_at_ms = None,
+            "no-generation" => request.pty_generation = None,
+            "wrong-generation" => request.pty_generation = Some(generation + 1),
+            "no-conversation" => request.conversation_at_edit = None,
+            "wrong-conversation" => request.conversation_at_edit.as_mut().unwrap().agent_session_id.push_str("-other"),
+            "no-source" => request.reply_source = None,
+            "no-foreground-flag" => request.require_foreground_agent = None,
+            "false-foreground-flag" => request.require_foreground_agent = Some(false),
+            _ => {}
+        }
+        let result = read_presend_from_command(&service, || true, "toy-window", request, Some(&manager), Some(&livebrief), None, crate::diag::log).await;
+        assert_eq!(stats.write_sessions.lock().unwrap().len(), writes, "{variant}");
+        assert_eq!(result.is_some(), writes == 1, "{variant}");
+        if writes == 1 {
+            let expected_excerpt = if matches!(variant, "no-conversation" | "no-source") { "" } else { &example.request.conversation_excerpt };
+            let expected = prompt(&example.request.draft, expected_excerpt, &example.request.workdir_name);
+            assert!(stats.prompts.lock().unwrap()[0] == expected, "prompt fields for {variant}");
+        }
+    }
+
+    // Retire just the synthetic agent. The root PTY, generation and edit evidence remain valid.
+    std::fs::write(stop, b"stop").unwrap();
+    ready.clear();
+    output.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "stopped");
+    for flag in [None, Some(false), Some(true)] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let mut request = wire_request();
+        request.require_foreground_agent = flag;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let result = read_presend_from_command(&service, || true, "toy-window", request, Some(&manager), Some(&livebrief),
+            None, move |line| { let _ = sender.send(line.to_owned()); }).await;
+        assert!(result.is_none() && stats.write_sessions.lock().unwrap().is_empty(), "foreground flag {flag:?}");
+        let line = tokio::time::timeout(Duration::from_secs(2), receiver).await.unwrap().unwrap();
+        assert!(line.starts_with("presend_foreground_check result=no_agent elapsed_ms="), "foreground flag {flag:?}");
+    }
 }

@@ -19,6 +19,7 @@ export function AppFontScope({ children }: { children: ReactNode }) {
 interface Props {
   children: ReactNode;
   fallback?: (error: Error, reset: () => void) => ReactNode;
+  onError?: () => void;
 }
 
 interface State {
@@ -37,6 +38,7 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("[ErrorBoundary]", error, info.componentStack);
+    this.props.onError?.();
   }
 
   reset = () => {

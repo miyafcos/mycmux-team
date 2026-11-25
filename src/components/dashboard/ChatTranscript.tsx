@@ -9,6 +9,7 @@ import { labelsMatch } from "../terminal/terminalTurnChipState";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
 import { tidyToolOutput } from "../../lib/toolOutputTidy";
+import { reportToolDisclosureEvictions } from "../../lib/terminalDiagnostics";
 import { ToolOutputNote } from "./ToolOutputText";
 import { MarkdownView } from "./MarkdownView";
 import {
@@ -26,6 +27,7 @@ import { dashboardStrings } from "./dashboardStrings";
 import { stateLabels } from "./stateLabels";
 
 const FOLLOW_SLACK_PX = 24;
+const MAX_EXPANDED_TOOL_GROUPS = 256;
 
 function clockLabel(at: number): string {
   const date = new Date(at);
@@ -267,7 +269,19 @@ function LegacyChatTranscript({
   const followRef = useRef(true);
   const navRafRef = useRef<number | null>(null);
   const lastNavRef = useRef<UserTurnNavState | null>(null);
-  const [expandedToolGroups, setExpandedToolGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [{ expandedToolGroups, evictedToolGroups, evictions }, setToolDisclosures] = useState(() => ({
+    expandedToolGroups: new Set<string>(), evictedToolGroups: new Set<string>(), evictions: 0,
+  }));
+  const reportedEvictions = useRef(0);
+  useLayoutEffect(() => {
+    if (evictions === reportedEvictions.current) return;
+    reportToolDisclosureEvictions(evictions - reportedEvictions.current);
+    reportedEvictions.current = evictions;
+    // The refs have closed the evicted elements during this commit.
+    setToolDisclosures(current => current.evictedToolGroups === evictedToolGroups
+      ? { ...current, evictedToolGroups: new Set<string>() }
+      : current);
+  }, [evictions, evictedToolGroups]);
   const rows = useMemo(() => toChatTranscriptRows(events, agentKind), [events, agentKind]);
   const userTurns = useMemo(() => userTurnsFromRows(rows), [rows]);
   const lastRow = rows.length ? rows[rows.length - 1] : undefined;
@@ -363,11 +377,19 @@ function LegacyChatTranscript({
   }, [findEventElement, sessionId, targetEventId, targetMessageId, targetEventRequest, rows, syntheticSourceId]);
 
   const onToolGroupToggle = useCallback((key: string, open: boolean) => {
-    setExpandedToolGroups((current) => {
-      const next = new Set(current);
+    setToolDisclosures(current => {
+      if (current.expandedToolGroups.has(key) === open) return current;
+      const next = new Set(current.expandedToolGroups);
       if (open) next.add(key);
       else next.delete(key);
-      return next;
+      if (next.size <= MAX_EXPANDED_TOOL_GROUPS) return { ...current, expandedToolGroups: next };
+      const oldest = next.values().next().value!;
+      next.delete(oldest);
+      return {
+        expandedToolGroups: next,
+        evictedToolGroups: new Set(current.evictedToolGroups).add(oldest),
+        evictions: current.evictions + 1,
+      };
     });
   }, []);
 
@@ -443,17 +465,22 @@ function LegacyChatTranscript({
       />;
     }
     const disclosureKey = `${sessionId ?? "none"}:${row.id}`;
+    const open = expandedToolGroups.has(disclosureKey);
     const tools = row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />);
     return <details
       key={row.id}
       className="cmux-dashboard-toolfold"
-      open={expandedToolGroups.has(disclosureKey)}
+      open={open}
+      ref={element => {
+        // A native toggle can open and be evicted before React commits open=true.
+        if (element?.open && !open && evictedToolGroups.has(disclosureKey)) element.open = false;
+      }}
       onToggle={(event) => onToolGroupToggle(disclosureKey, event.currentTarget.open)}
     >
       <summary>{compact ? <><span className="cmux-dashboard-tool-marker">▸ </span><span className="cmux-dashboard-tool-name">{`ツール実行 ${row.tools.length}件`}</span><span className="cmux-dashboard-tool-target">{row.tools[0]?.target}</span><span className="cmux-dashboard-tool-time">{clockLabel(events.find((event) => event.eventId === row.id)?.occurredAt ?? 0)}</span></> : `▸ ツール実行 ${row.tools.length}件`}</summary>
       {compact ? <div className="cmux-dashboard-tool-content">{tools}</div> : tools}
     </details>;
-  }), [rows, compact, linkContext, targetMessageId, registerEventElement, sessionId, expandedToolGroups, onToolGroupToggle, events]);
+  }), [rows, compact, linkContext, targetMessageId, registerEventElement, sessionId, expandedToolGroups, evictedToolGroups, onToolGroupToggle, events]);
   const footer = compact ? null : <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
   // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと
   // 会話が消えたように読めるので、取得できていない側は別文言+理由を出す。

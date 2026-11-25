@@ -6,6 +6,7 @@ import WebPaneController from "../../src/components/workspace/WebPaneController"
 import WebPaneStatusBar from "../../src/components/workspace/WebPaneStatusBar";
 import { focusWindow, getWindowFragments, type WindowFragment } from "../../src/lib/ipc";
 import { jumpToPaneTab } from "../../src/lib/jumpToPaneTab";
+import { isPreparingLayoutQuit, resetLayoutQuitForTests, stopNewLayoutOperations } from "../../src/lib/layoutQuit";
 import { connectOperatorFocusWindowNavigation } from "../../src/lib/operatorFocusRequest";
 import { windowLabel } from "../../src/lib/windowContext";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
@@ -107,7 +108,8 @@ function startPeer() {
   stopPeer = connectOperatorFocusWindowNavigation();
 }
 
-async function sendPeer(payload: unknown = { targetTabId: target.id }) {
+async function sendPeer(payload: unknown = { targetTabId: target.id, sourceWindow: "mycmux-w-source", requestId,
+  expiresAt: Date.now() + 3_000 }) {
   const handler = eventListen.mock.calls.find(([event]) => event === peerEventName)?.[1];
   await act(async () => handler?.({ payload }));
 }
@@ -177,7 +179,9 @@ it("forwards exactly once to a live other window without acknowledging or displa
   setLayout(workspace("from", "source-pane", source));
   await mount();
   await send();
-  expect(emitTo).toHaveBeenCalledExactlyOnceWith("mycmux-w-live", peerEventName, { targetTabId: target.id });
+  expect(emitTo).toHaveBeenCalledExactlyOnceWith("mycmux-w-live", peerEventName, {
+    targetTabId: target.id, sourceWindow: windowLabel(), requestId, expiresAt: expect.any(Number),
+  });
   expect(emit).not.toHaveBeenCalled();
   expect(jumpToPaneTab).not.toHaveBeenCalled();
   expect(focusWindow).not.toHaveBeenCalled();
@@ -283,13 +287,13 @@ it("receives in the primary webview and requests both window and input focus aft
   expect(eventListen).toHaveBeenCalledWith(peerEventName, expect.any(Function), { target: { kind: "Webview", label: windowLabel() } });
   await sendPeer();
   expect(jumpToPaneTab).toHaveBeenCalledExactlyOnceWith({ workspaceId: "to", paneId: "target-pane", tab: target });
-  expect(focusWindow).toHaveBeenCalledExactlyOnceWith(windowLabel(), { focusPrimary: true });
+  expect(focusWindow).toHaveBeenCalledExactlyOnceWith(windowLabel(), { focusPrimary: true, expiresAt: expect.any(Number) });
   expect(vi.mocked(jumpToPaneTab).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(focusWindow).mock.invocationCallOrder[0]!);
   expect(emit).not.toHaveBeenCalled();
 });
 
 it.each(["missing", "not-terminal", "closing", "dragging", "regrouping", "blocked"] as const)(
-  "silently refuses a request to focus this window when %s", async state => {
+  "refuses focus in the destination and reports the result to the source when %s", async state => {
     if (state === "missing") setLayout(workspace("from", "source-pane", source));
     if (state === "not-terminal") setLayout(workspace("from", "source-pane", source, { ...target, type: "launcher" }));
     if (state === "closing") vi.mocked(isPaneTabClosing).mockReturnValue(true);
@@ -303,9 +307,51 @@ it.each(["missing", "not-terminal", "closing", "dragging", "regrouping", "blocke
     expect(jumpToPaneTab).not.toHaveBeenCalled();
     expect(focusWindow).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+    expect(emitTo).toHaveBeenCalledWith("mycmux-w-source", "mycmux:web-pane-operator-focus-result",
+      { requestId, fromWindow: windowLabel(), reason: state === "not-terminal" ? "notTerminal"
+        : state === "missing" || state === "closing" ? state : "blocked" });
     expect(container.querySelector('[role="status"]')).toBeNull();
   },
 );
+
+it.each([
+  { state: "before quit preparation", reason: null, preparing: false, expired: false, dashboard: false },
+  { state: "under the dashboard", reason: "blocked", preparing: false, expired: false, dashboard: true },
+  { state: "after quit preparation", reason: "blocked", preparing: true, expired: false, dashboard: false },
+  { state: "after quit preparation with an expired request", reason: "timeout", preparing: true, expired: true, dashboard: false },
+])("preserves the peer focus result $state with real layout selection", async ({ reason, preparing, expired, dashboard }) => {
+  const realFocus = await vi.importActual<typeof import("../../src/lib/jumpToPaneTab")>("../../src/lib/jumpToPaneTab");
+  vi.mocked(jumpToPaneTab).mockImplementation(realFocus.jumpToPaneTab);
+  const currentTab = { ...target, id: "current", sessionId: "current-session" };
+  const destination = workspace("to", "target-pane", currentTab, target);
+  setLayout(workspace("from", "source-pane", source), destination);
+  useUiStore.getState().setActivePaneId(source.sessionId);
+  try {
+    startPeer();
+    if (preparing) {
+      await stopNewLayoutOperations();
+      document.body.setAttribute("inert", "");
+    }
+    expect(isPreparingLayoutQuit()).toBe(preparing);
+    useDashboardViewStore.setState({ open: dashboard });
+    const expiresAt = Date.now() + (expired ? -1 : 1_000);
+    await sendPeer({ targetTabId: target.id, sourceWindow: "mycmux-w-source", requestId, expiresAt });
+    const layout = useWorkspaceListStore.getState();
+    expect(layout.activeWorkspaceId).toBe(reason === null ? "to" : "from");
+    expect(layout.getWorkspace("to")?.panes[0].activeTabId).toBe(reason === null ? target.id : currentTab.id);
+    if (reason === null) {
+      expect(focusWindow).toHaveBeenCalledExactlyOnceWith(windowLabel(), { focusPrimary: true, expiresAt });
+    } else {
+      expect(focusWindow).not.toHaveBeenCalled();
+    }
+    expect(emitTo).toHaveBeenCalledExactlyOnceWith("mycmux-w-source", "mycmux:web-pane-operator-focus-result",
+      { requestId, fromWindow: windowLabel(), reason });
+  } finally {
+    document.body.removeAttribute("inert");
+    resetLayoutQuitForTests();
+    vi.mocked(jumpToPaneTab).mockReset();
+  }
+});
 
 it.each([null, {}, { targetTabId: "bad\n" }, { targetTabId: target.id, extra: true }])(
   "drops a malformed request to focus this window %o", async payload => {
@@ -405,5 +451,80 @@ it("renders the blocked refusal above the overlay while it is still open", async
     expect(notice?.textContent).toBe("いまは前に出せません。開いている画面を閉じてから、もう一度押してください。");
   } finally {
     overlay.remove();
+  }
+});
+
+
+it("L6 reports the refusal to the source window if the destination has a dialog open", async () => {
+  useUiStore.setState({ isKeybindingsOpen: true });
+  startPeer();
+  await sendPeer();
+  expect(focusWindow).not.toHaveBeenCalled();
+  expect(emitTo).toHaveBeenCalledWith("mycmux-w-source", "mycmux:web-pane-operator-focus-result",
+    { requestId, fromWindow: windowLabel(), reason: "blocked" });
+});
+
+
+it("L6 shows a correlated peer refusal in the initiating browser pane", async () => {
+  vi.mocked(getWindowFragments).mockResolvedValue([peerFragment("mycmux-w-live")]);
+  setLayout(workspace("from", "source-pane", source));
+  await mount();
+  await send();
+  const result = eventListen.mock.calls.find(([name]) => name === "mycmux:web-pane-operator-focus-result")?.[1];
+  expect(result).toBeDefined();
+  await act(async () => result?.({ payload: { requestId, fromWindow: "other", reason: "missing" } }));
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  await act(async () => result?.({ payload: { requestId, fromWindow: "mycmux-w-live", reason: "missing" } }));
+  expectStatus("そのタブは見つかりませんでした。閉じたか、別の窓にあります。");
+});
+
+it("L6 fix2 rejects a focus request delivered after the originating window timed out", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.mocked(getWindowFragments).mockResolvedValue([peerFragment("mycmux-w-live")]);
+    setLayout(workspace("from", "source-pane", source));
+    await mount();
+    await send();
+    const forwarded = emitTo.mock.calls.find(([, event]) => event === peerEventName)?.[2] as object;
+    expect(forwarded).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_001); });
+    setLayout(workspace("from", "source-pane", source), workspace("to", "target-pane", target));
+    startPeer();
+    await sendPeer({ ...forwarded, sourceWindow: "mycmux-w-source" });
+    expect(jumpToPaneTab).not.toHaveBeenCalled();
+    expect(focusWindow).not.toHaveBeenCalled();
+    expectStatus("移動先の窓から応答がありませんでした。もう一度押してください。");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("L6 fix3 passes the origin deadline into a queued native focus operation", async () => {
+  setLayout(workspace("from", "source-pane", source), workspace("to", "target-pane", target));
+  startPeer();
+  const expiresAt = Date.now() + 5;
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const foreground = vi.fn();
+  vi.spyOn(Date, "now").mockReturnValue(expiresAt - 1);
+  vi.mocked(focusWindow).mockImplementationOnce(async (_label, options) => {
+    await waiting;
+    const deadline = (options as { expiresAt?: number } | undefined)?.expiresAt;
+    if (deadline !== undefined && Date.now() >= deadline) throw "focus_request_expired";
+    foreground();
+  });
+  try {
+    const handler = eventListen.mock.calls.find(([event]) => event === peerEventName)![1];
+    const result = handler({ payload: { targetTabId: target.id, sourceWindow: "mycmux-w-source", requestId, expiresAt } });
+    expect(jumpToPaneTab).toHaveBeenCalledOnce();
+    vi.mocked(Date.now).mockReturnValue(expiresAt + 1);
+    release();
+    await result;
+    expect(foreground).not.toHaveBeenCalled();
+    expect(emitTo).toHaveBeenCalledWith("mycmux-w-source", "mycmux:web-pane-operator-focus-result",
+      { requestId, fromWindow: windowLabel(), reason: "timeout" });
+  } finally {
+    release();
+    vi.mocked(Date.now).mockRestore();
   }
 });

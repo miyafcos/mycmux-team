@@ -1,4 +1,5 @@
 import { persistenceStrings } from "../../lib/persistenceStrings";
+import { refusePendingAccountManagementRequests, retryAccountManagementRegistration, setAppShellClosing } from "../../lib/mainDashboardRequests";
 import { delegationId, delegationTimestamp } from "../../lib/delegationMetadata";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
@@ -31,13 +32,13 @@ import {
   publishWindowFragment,
   releaseWorkspaces,
   takePendingAdoption,
-  discardSessionScrollback,
   openWorkspaceWindow,
   quitPrepared,
   quitSaved,
   QUIT_PREPARE_EVENT,
   QUIT_SAVE_EVENT,
   WINDOW_ADOPT_EVENT,
+  WINDOW_OPEN_FAILED_EVENT,
   DOCK_SAVE_EVENT,
   WINDOW_REGISTRY_CHANGED_EVENT,
   type AgentSessionMapping,
@@ -45,6 +46,7 @@ import {
   type PaneConfig,
   type PaneTabConfig,
   type WindowAdoptPayload,
+  type WindowOpenFailure,
   type WindowFragment,
   type WorkspaceConfig,
   type PersistentData,
@@ -97,13 +99,13 @@ import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
-import { handleSocketCommand, listenForPeerSocketCommands, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
+import { handleSocketCommand, isSocketLayoutMutation, listenForPeerSocketCommands, listenForPeerSpawns, startLocalTabSession } from "./socketCommands";
 import { listenForPeerTabStarts } from "../../lib/socketTabWindows";
 import { beginLayoutOperation, isPreparingLayoutQuit, resetLayoutQuitForTests, stopNewLayoutOperations } from "../../lib/layoutQuit";
 import { IS_MAC } from "../../lib/keybindings";
 import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, hasWindowRole, setWindowRole, subscribeWindowRole } from "../../lib/windowContext";
-import { detachedMetadata, detachedWorkspaceForWindow, isTransferableTab, partitionSavedWindows, type SavedWindow, type SavedWindowWorkspace } from "../../lib/detachedPane";
+import { coalesceSavedWorkspaceRows, detachedMetadata, detachedWorkspaceForWindow, isTransferableTab, partitionSavedWindows, type SavedWindow, type SavedWindowWorkspace } from "../../lib/detachedPane";
 import { mergeWindowFragmentWorkspaces } from "../../lib/windowFragments";
 import {
   filterAlreadyRestoredConfigs,
@@ -405,14 +407,6 @@ function collectDiscardScrollbackSessionIds(
     if (sessionId) sessionIds.add(sessionId);
   }
   return [...sessionIds];
-}
-
-function discardDedupeLoserScrollbacks(sessionIds: string[]): void {
-  for (const sessionId of sessionIds) {
-    void discardSessionScrollback(sessionId).catch((error) => {
-      console.warn("[persist] Failed to discard loser scrollback:", sessionId, error);
-    });
-  }
 }
 
 function getTerminalSnapshot(sessionId: string): string[] | undefined {
@@ -1494,12 +1488,14 @@ export function __resetWindowCloseStateForTests(): void {
   windowClosing = false;
   windowSaveInFlight = Promise.resolve();
   windowPublishInFlight = Promise.resolve();
+  persistLoaded = createPersistLoaded();
 }
 
 let _resolveLoaded: () => void;
-export const persistLoaded = new Promise<void>((resolve) => {
-  _resolveLoaded = resolve;
-});
+function createPersistLoaded(): Promise<void> {
+  return new Promise((resolve) => { _resolveLoaded = resolve; });
+}
+export let persistLoaded = createPersistLoaded();
 
 /**
  * Take over workspaces handed to this window by another one (Phase 3b):
@@ -1544,6 +1540,8 @@ export async function reopenSavedWindows(windows: readonly SavedWindow[]): Promi
         height: Math.max((saved.group?.native_tearout ?? saved.group?.decorated === false) ? 160 : 400, finite(frame?.height, DETACHED_WINDOW_FALLBACK.height)),
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : error;
+      if (message === "Application is preparing to quit") break;
       console.warn("[persist] Failed to reopen a saved window:", error);
       stranded.push(...saved.configs.map((config) => ({
         ...config, detached: false, detached_from: null, window_frame: null, window_group: null,
@@ -1760,6 +1758,8 @@ async function hydrateChildWindow(): Promise<void> {
 /** This window's current workspaces, in the shape `data.json` stores. */
 export function buildWindowFragment(purpose: "save" | "transfer" = "save"): WindowFragment {
   const state = useWorkspaceListStore.getState();
+  const isMain = isMainWindow();
+  const nativeTearout = globalThis.window?.__MYCMUX_TEAROUT_WINDOW__ === true;
   const uiState = useUiStore.getState();
   const activeSessionId = uiState.activePaneId;
   const activeWorkspace = state.workspaces.find((workspace) =>
@@ -1780,7 +1780,7 @@ export function buildWindowFragment(purpose: "save" | "transfer" = "save"): Wind
         // Fragment-only metadata: Rust records it in the optional saved group.
         // Undecorated Windows children can use either shell, so chrome alone
         // cannot identify their original window kind.
-        return isMainWindow() ? config : { ...config, window_native_tearout: globalThis.window?.__MYCMUX_TEAROUT_WINDOW__ === true };
+        return isMain ? config : { ...config, window_native_tearout: nativeTearout };
       })
       .filter((config) => config.panes.length > 0),
     active_workspace_id: activeWorkspace?.id ?? null,
@@ -1802,6 +1802,10 @@ export function useWorkspacePersist() {
   const loaded = useRef(false);
   const layoutHydrated = useRef(false);
   const quitting = useRef(false);
+  const quitFragmentPublished = useRef(false);
+  const quitFragmentSealing = useRef(false);
+  const windowFragmentGeneration = useRef(0);
+  const selectionChangedAfterRestore = useRef(false);
   const isLeader = useRef(hasWindowRole());
   const lastActivePaneSessionId = useRef<string | null>(null);
   const startupAutosaveHoldUntil = useRef(0);
@@ -1923,17 +1927,22 @@ export function useWorkspacePersist() {
 
           if (data.workspaces.length > 0) {
             let restoredActivePaneSessionId: string | null = null;
-            const persistedConfigs = data.workspaces
+            const persistedConfigs = coalesceSavedWorkspaceRows(data.workspaces
               .map(dropEmptyTabPanesFromConfig)
-              .filter((cfg) => cfg.panes.length > 0);
+              .filter(cfg => cfg.panes.some(pane => pane.tabs == null || pane.tabs.some(tab =>
+                tab.lifecycle == null || tab.lifecycle === "declared"))));
             const safeStartupMappings = filterConflictingAgentMappings(
               persistedConfigs,
               startupAgentMappings,
             );
+            const selectedTabWasSaved = Boolean(data.active_tab_id && persistedConfigs.some(cfg =>
+              cfg.id === data.active_workspace_id &&
+              cfg.panes.some(pane => pane.tabs?.some(tab =>
+                tab.tab_id === data.active_tab_id && isRestorableTabConfig(tab)))));
             const restoredDedupe = dedupeAgentSessionsInConfigs(
               persistedConfigs.map((cfg) => applyMappingsToConfig(cfg, safeStartupMappings)),
               data.active_workspace_id,
-              data.active_pane_id,
+              selectedTabWasSaved ? undefined : data.active_pane_id,
               data.active_tab_id,
             );
             // A workspace that was in its own window last time goes back to its
@@ -1944,7 +1953,6 @@ export function useWorkspacePersist() {
             const savedWindows = partitionSavedWindows(restoredDedupe.configs);
             const restoredConfigs = savedWindows.main;
             reportAgentSessionDedupeConflicts(restoredDedupe.conflicts);
-            discardDedupeLoserScrollbacks(restoredDedupe.discardScrollbackSessionIds);
             const startupRestoreTargetWorkspaceCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
             const startupRestoreTargetPaneCount = restoredConfigs.reduce(
               (count, cfg) => count + workspaceConfigRestorableAgentSessionCount(cfg),
@@ -1969,6 +1977,16 @@ export function useWorkspacePersist() {
               activeTabId: data.active_tab_id,
             }).activePaneSessionId;
             const restoredWorkspaceIds = new Set(restoredConfigs.map((cfg) => cfg.id));
+            const restoredList = useWorkspaceListStore.getState();
+            const byId = new Map(restoredList.workspaces.map(workspace => [workspace.id, workspace]));
+            const ordered = restoredConfigs.flatMap(({ id }) => {
+              const workspace = byId.get(id);
+              return workspace ? [workspace] : [];
+            });
+            ordered.push(...restoredList.workspaces.filter(workspace => !restoredWorkspaceIds.has(workspace.id)));
+            if (ordered.some((workspace, index) => workspace !== restoredList.workspaces[index])) {
+              restoredList._replaceWorkspaces(ordered, "restore");
+            }
 
             const fallbackWorkspaceId = restoredConfigs[restoredConfigs.length - 1]?.id ?? null;
             const nextActiveWorkspaceId =
@@ -2098,7 +2116,6 @@ export function useWorkspacePersist() {
         },
       });
       reportAgentSessionDedupeConflicts(serialized.conflicts);
-      discardDedupeLoserScrollbacks(serialized.discardScrollbackSessionIds);
 
       return {
         schema_version: CURRENT_PERSISTENT_SCHEMA_VERSION,
@@ -2179,7 +2196,12 @@ export function useWorkspacePersist() {
           }
           let windowFragments: WindowFragment[] = [];
           try {
-            windowFragments = await getWindowFragments();
+            try {
+              windowFragments = await getWindowFragments();
+            } catch (fragmentError) {
+              if (force !== "quit") throw fragmentError;
+              windowFragments = await getWindowFragments();
+            }
             if (disposed || windowClosing) return request ? null : false;
           } catch (err) {
             console.warn("[persist] Failed to read other windows' workspaces:", err);
@@ -2204,7 +2226,8 @@ export function useWorkspacePersist() {
             return request ? null : false;
           }
           const snapshot = snapshotToSave;
-          const serializedSnapshot = JSON.stringify(snapshot);
+          const selectionChanged = selectionChangedAfterRestore.current;
+          const serializedSnapshot = JSON.stringify({ snapshot, selectionChanged });
           if (!request && serializedSnapshot === lastWrittenSnapshot) {
             dirty = false;
             if (debounceTimer) {
@@ -2222,8 +2245,10 @@ export function useWorkspacePersist() {
             return request ? null : false;
           }
           assertSideEffectAllowed("autosave");
-          const run = savePersistentData(snapshot)
-            .then(() => {
+          const pendingSave = selectionChanged
+            ? savePersistentData(snapshot, true)
+            : savePersistentData(snapshot);
+          const run = pendingSave.then(() => {
               completeAiFeatureSettingsMigrationAfterSave();
               if (disposed || windowClosing) return request ? null : false;
               if (!isLeader.current) return request ? null : true;
@@ -2403,11 +2428,14 @@ export function useWorkspacePersist() {
     // data.json writes the union. Rust waits for both, with a deadline —
     // commands/quit.rs.
     let restoreQuitInput: (() => void) | undefined;
-    const unlistenPrepareQuit = listen(QUIT_PREPARE_EVENT, () => {
-      if (quitting.current) return;
+    const unlistenPrepareQuit = listen<"seal" | null>(QUIT_PREPARE_EVENT, ({ payload }) => {
+      const sealing = payload === "seal";
+      if (sealing ? !quitting.current || quitFragmentSealing.current : quitting.current) return;
+      if (sealing) quitFragmentSealing.current = true;
       const deadline = performance.now() + QUIT_PREPARE_BUDGET_MS;
       quitting.current = true;
       const settled = stopNewLayoutOperations();
+      if (!sealing) refusePendingAccountManagementRequests();
       void (async () => {
         let fragmentPublished = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2418,7 +2446,7 @@ export function useWorkspacePersist() {
             debounceTimer = null;
           }
           clearSaveRetry();
-          restoreQuitInput = blockQuitInput();
+          if (!sealing) restoreQuitInput = blockQuitInput();
           const timeout = new Promise<false>((resolve) => {
             timer = setTimeout(() => { expired = true; resolve(false); },
               Math.max(0, deadline - performance.now()));
@@ -2427,22 +2455,32 @@ export function useWorkspacePersist() {
             && !disposed && !windowClosing && layoutHydrated.current && isPersistenceWriteAllowed();
           const publish = async () => {
             await Promise.all([persistLoaded, settled]);
-            await windowPublishInFlight;
-            if (!ready()) return false;
-            const fragment = buildWindowFragment();
-            if (!ready()) return false;
-            await publishWindowFragment(fragment, true);
-            return ready();
+            while (ready()) {
+              const generation = windowFragmentGeneration.current;
+              const pending = windowPublishInFlight.then(async () => {
+                if (!ready()) return false;
+                await publishWindowFragment(buildWindowFragment(), true);
+                return true;
+              });
+              windowPublishInFlight = pending.catch(() => {});
+              if (!await pending) return false;
+              if (generation === windowFragmentGeneration.current) return ready();
+            }
+            return false;
           };
           fragmentPublished = await Promise.race([publish(), timeout]);
         } catch (error) {
           console.warn("[quit] Failed to prepare this window:", error);
         } finally {
           clearTimeout(timer);
-          await quitPrepared(fragmentPublished);
+          if (sealing) await quitPrepared(fragmentPublished, true);
+          else {
+            quitFragmentPublished.current = fragmentPublished;
+            await quitPrepared(fragmentPublished);
+          }
         }
       })().catch((error) => console.warn("[quit] Failed to acknowledge preparation:", error));
-    });
+    }, { target: { kind: "Window", label: windowLabel() } });
     const unlistenSaveQuit = listen(QUIT_SAVE_EVENT, () => {
       if (!isLeader.current) return;
       void syncBound("quit")
@@ -2637,6 +2675,7 @@ export function useWorkspacePersist() {
 
         closePromptOpen = false;
         closing = true;
+        setAppShellClosing(true);
         if (debounceTimer) {
           clearTimeout(debounceTimer);
           debounceTimer = null;
@@ -2723,6 +2762,7 @@ export function useWorkspacePersist() {
         if (error instanceof WindowCloseTimeoutError) {
           // An unanswered close operation must not permanently disable the X.
           closing = true;
+          setAppShellClosing(true);
           if (debounceTimer) {
             clearTimeout(debounceTimer);
             debounceTimer = null;
@@ -2740,6 +2780,7 @@ export function useWorkspacePersist() {
         } catch (error) {
           console.warn("[window-close] Failed to close this window:", error);
         } finally {
+          if (closing && !shouldQuitAfterSave) setAppShellClosing(false);
           closing = false;
           closePromptOpen = false;
         }
@@ -2776,7 +2817,6 @@ export function useWorkspacePersist() {
   useEffect(() => {
     let publishTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
-    let publishing: Promise<void> = Promise.resolve();
 
     const clearPublishTimer = () => {
       if (publishTimer) {
@@ -2785,13 +2825,18 @@ export function useWorkspacePersist() {
       }
     };
 
-    const publishNow = (): Promise<void> => {
+    const publishNow = (duringQuit = false): Promise<void> => {
       clearPublishTimer();
-      publishing = publishing.then(async () => {
+      const publishing = windowPublishInFlight.then(async () => {
         await persistLoaded;
-        if (disposed || windowClosing || quitting.current) return;
+        if (disposed || windowClosing || (quitting.current && !duringQuit)) return;
         try {
-          await publishWindowFragment(buildWindowFragment());
+          const fragment = buildWindowFragment();
+          if (duringQuit) await publishWindowFragment(fragment, true);
+          else {
+            retryAccountManagementRegistration();
+            await publishWindowFragment(fragment);
+          }
         } catch (err) {
           console.warn("[persist] Failed to publish window fragment:", err);
         }
@@ -2801,7 +2846,14 @@ export function useWorkspacePersist() {
     };
 
     const markDirty = () => {
-      if (disposed || windowClosing || quitting.current) return;
+      if (disposed || windowClosing) return;
+      windowFragmentGeneration.current += 1;
+      if (quitting.current) {
+        // A peer may finish preparing well before the leader takes its final
+        // snapshot. Keep its background updates in the same publication queue.
+        if (quitFragmentPublished.current) void publishNow(true);
+        return;
+      }
       clearPublishTimer();
       publishTimer = setTimeout(() => {
         publishTimer = null;
@@ -2816,10 +2868,16 @@ export function useWorkspacePersist() {
       if (!disposed) void publishNow();
     });
 
-    const unsubList = useWorkspaceListStore.subscribe(markDirty);
+    const unsubList = useWorkspaceListStore.subscribe((state, previous) => {
+      if (layoutHydrated.current && previous.activeWorkspaceId && state.activeWorkspaceId
+        && state.activeWorkspaceId !== previous.activeWorkspaceId) selectionChangedAfterRestore.current = true;
+      markDirty();
+    });
     const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
     const unsubMeta = subscribePersistedPaneMetadata(markDirty);
     const unsubUi = useUiStore.subscribe((state, previousState) => {
+      if (layoutHydrated.current && previousState.activePaneId && state.activePaneId
+        && state.activePaneId !== previousState.activePaneId) selectionChangedAfterRestore.current = true;
       if (
         state.activePaneId !== previousState.activePaneId
         || state.sidebarWidth !== previousState.sidebarWidth
@@ -2887,22 +2945,32 @@ export function useWorkspacePersist() {
       if (event.payload.to_label !== windowLabel()) return;
       void drain();
     });
+    const unlistenFailed = listen<WindowOpenFailure>(WINDOW_OPEN_FAILED_EVENT, ({ payload }) => {
+      if (disposed || !payload) return;
+      const message = payload.kind === "move" ? persistenceStrings.openWindowFailed
+        : payload.kind === "restore" && payload.moved_count > 0
+          ? persistenceStrings.detachedWindowFallback(payload.moved_count) : null;
+      if (message) useToastStore.getState().pushToast(message, "warning");
+    }, { target: { kind: "Window", label: windowLabel() } });
 
     return () => {
       disposed = true;
       unlisten.then((f) => f()).catch(() => {});
+      unlistenFailed.then((f) => f()).catch(() => {});
     };
   }, []);
 
   useEffect(() => {
-    const readyForPeerCommand = async () => {
-      // Let the owner refuse mutations even if hydration is still pending.
-      if (!isPreparingLayoutQuit()) await persistLoaded;
+    const readyForPeerCommand = async (readOnly = false) => {
+      // Mutations must be refused promptly. Reads can use the hydrated layout.
+      if (!isPreparingLayoutQuit() || readOnly) await persistLoaded;
       if (windowClosing) throw new Error("socket command owner window is closing");
     };
-    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession, readyForPeerCommand);
-    const unlistenPeerSpawn = listenForPeerSpawns(readyForPeerCommand);
-    const unlistenPeerCommand = listenForPeerSocketCommands(readyForPeerCommand);
+    const unlistenPeerStart = listenForPeerTabStarts(startLocalTabSession, () => readyForPeerCommand());
+    const unlistenPeerSpawn = listenForPeerSpawns(() => readyForPeerCommand());
+    const unlistenPeerCommand = listenForPeerSocketCommands((request) =>
+      readyForPeerCommand(!isSocketLayoutMutation(request.cmd)));
+
     // Rust broadcasts; only the elected executor runs a request.
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       if (!isLeader.current) return;
@@ -2969,6 +3037,7 @@ export async function transferWindowWorkspacesAndClose(toLabel: string): Promise
   if (!finish) return;
   recordPerf("dock.return.request", windowLabel());
   windowClosing = true;
+  setAppShellClosing(true);
   try {
     await windowSaveInFlight;
     await windowPublishInFlight;
@@ -2981,6 +3050,7 @@ export async function transferWindowWorkspacesAndClose(toLabel: string): Promise
   } catch (error) {
     windowClosing = false;
     await setWindowCloseIntent(false).catch(() => {});
+    setAppShellClosing(false);
     throw error;
   } finally {
     finish();
@@ -2992,6 +3062,7 @@ export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
   const finish = beginLayoutOperation();
   if (!finish) return;
   windowClosing = true;
+  setAppShellClosing(true);
   try {
     await continueWindowCloseAfterTimeout(windowSaveInFlight, "pending save", undefined);
     await continueWindowCloseAfterTimeout(windowPublishInFlight, "pending publish", undefined);
@@ -3029,6 +3100,7 @@ export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
     // intent so the registry does not misclassify it as a crash and rescue it.
     if (!(error instanceof WindowCloseTimeoutError)) {
       await waitForWindowClose(setWindowCloseIntent(false), "clear close intent").catch(() => {});
+      setAppShellClosing(false);
     }
     throw error;
   } finally {

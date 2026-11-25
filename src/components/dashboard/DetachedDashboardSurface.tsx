@@ -3,6 +3,7 @@ import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { focusController } from "../../lib/focusController";
+import { LauncherCoveredContext } from "../../lib/tabAccounts";
 import { dashboardStrings } from "./dashboardStrings";
 import "./DashboardView.css";
 import "./DetachedDashboardSurface.css";
@@ -34,8 +35,10 @@ export function DetachedDashboardSurface({ children }: { children: ReactNode }) 
     if (target) focusController.focusEligibleTerminal(target);
   }, [open]);
   return <div className="cmux-detached-dashboard-host" style={{ flex: 1, minHeight: 0, minWidth: 0, position: "relative", overflow: "hidden" }}>
-    <div data-detached-terminal="true" aria-hidden={open} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-      visibility: open ? "hidden" : "visible", pointerEvents: open ? "none" : "auto" }}>{children}</div>
+    <div data-detached-terminal="true" aria-hidden={open} inert={open} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      visibility: open ? "hidden" : "visible", pointerEvents: open ? "none" : "auto" }}>
+      <LauncherCoveredContext.Provider value={open}>{children}</LauncherCoveredContext.Provider>
+    </div>
     {open && <Suspense fallback={<div role="region" aria-label={dashboardStrings.viewAriaLabel} className="cmux-dashboard-view">{dashboardStrings.buttonTitle}</div>}>
       <DashboardView onClose={close} />
     </Suspense>}

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { SettingsTabId } from "../components/settings/SettingsDialog";
+import type { SwitchableCliProvider } from "../lib/ipc";
 import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH } from "../lib/constants";
 import { isolateSubscribers } from "../lib/isolatedStoreListeners";
 
@@ -16,8 +17,13 @@ interface UiState {
   focusRevision: number;
   zoomedPaneId: string | null;
   requestedSettingsTab: SettingsTabId | null;
-  requestSettingsTab: (tab: SettingsTabId) => void;
+  requestedAccountProvider: SwitchableCliProvider | null;
+  requestedAccountProfileId: string | null;
+  requestedAccountManagementId: string | null;
+  requestSettingsTab: (tab: SettingsTabId, provider?: SwitchableCliProvider, profileId?: string, managementRequestId?: string) => void;
   clearRequestedSettingsTab: () => void;
+  workspaceSetupVisible: boolean;
+  setWorkspaceSetupVisible: (visible: boolean) => void;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -36,8 +42,19 @@ export const useUiStore = create<UiState>((set) => ({
   focusRevision: 0,
   zoomedPaneId: null,
   requestedSettingsTab: null,
-  requestSettingsTab: (tab) => set({ requestedSettingsTab: tab }),
-  clearRequestedSettingsTab: () => set({ requestedSettingsTab: null }),
+  requestedAccountProvider: null,
+  requestedAccountProfileId: null,
+  requestedAccountManagementId: null,
+  requestSettingsTab: (tab, provider, profileId, managementRequestId) => set({
+    requestedSettingsTab: tab, requestedAccountProvider: provider ?? null, requestedAccountProfileId: profileId ?? null,
+    requestedAccountManagementId: managementRequestId ?? null,
+  }),
+  clearRequestedSettingsTab: () => set({
+    requestedSettingsTab: null, requestedAccountProvider: null, requestedAccountProfileId: null,
+    requestedAccountManagementId: null,
+  }),
+  workspaceSetupVisible: false,
+  setWorkspaceSetupVisible: (visible) => set({ workspaceSetupVisible: visible }),
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),

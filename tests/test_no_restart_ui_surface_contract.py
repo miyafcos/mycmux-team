@@ -298,8 +298,9 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
     assert_snippets(
         "src/components/layout/AccountsButton.tsx",
         [
-            "export function AccountsButton({ onOpenUsageSettings }",
+            "export function AccountsButton({ onOpenUsageSettings",
             "<AccountsPanel",
+            "onOpenUsageSettings={openUsageSettings}",
             "resolveMeterMode(flags, hasAccountChips)",
         ],
     )

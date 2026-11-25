@@ -7,6 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), cancel: vi.fn(), send: vi.fn(), focus: vi.fn(), toast: vi.fn() }));
 vi.mock("../../src/lib/presendReadingClient", () => ({ requestPresendReading: mocks.request, cancelPresendReading: mocks.cancel }));
+vi.mock("@tauri-apps/api/core", async original => {
+  const core = await original<typeof import("@tauri-apps/api/core")>();
+  return {
+    ...core,
+    invoke: (name: string, args?: { sessionId?: string; tabEnabled?: boolean }) =>
+      name === "configure_presend_reading" && args?.sessionId ? Promise.resolve(args.tabEnabled ?? true) : core.invoke(name, args),
+  };
+});
 vi.mock("../../src/components/layout/socketCommands", () => ({ handleSocketCommand: mocks.send }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({ evictTerminalCache: vi.fn() }));
 vi.mock("../../src/lib/focusController", () => ({ focusController: { focusSessionSoon: mocks.focus } }));
@@ -16,7 +24,8 @@ import { PaneComposer } from "../../src/components/composer/PaneComposer";
 import type { WorkspaceConfig } from "../../src/lib/ipc";
 import * as ipc from "../../src/lib/ipc";
 import { applyPtyMetadata } from "../../src/lib/liveAgentMetadata";
-import { presendDraftFingerprint, presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
+import { publishCodexRestoreNoticeEpoch } from "../../src/lib/codexRestoreLifecycle";
+import { presendAttemptKey, presendTab, setPresendTabEnabled } from "../../src/lib/presendReading";
 import { closeWorkspaceAfterConfirmation } from "../../src/lib/workspaceClose";
 import { restoreWorkspaceConfigs } from "../../src/lib/workspaceRestore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
@@ -66,6 +75,157 @@ afterEach(() => {
 });
 
 describe("PaneComposer pre-send reading", () => {
+
+  it("stops a pending presend request when its workspace is hidden", async () => {
+    let finish!: (value: typeof reading) => void;
+    mocks.request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    const hidden = { presendVisible: false };
+    act(() => root.render(<PaneComposer sessionId={session} target={{ command: "claude" }} {...hidden} />));
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+    await act(async () => finish(reading));
+    expect(host.textContent).not.toContain(reading.reading);
+    render();
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it.each(["global", "tab"])("requires a new edit when resuming reading after a %s OFF", async (kind) => {
+    const enable = (value: boolean) => act(() => {
+      if (kind === "global") useSettingsStore.setState({ presendReadingEnabled: value });
+      else setPresendTabEnabled(session, value);
+    });
+    enable(false);
+    type(draft);
+    enable(true);
+    await wait();
+    expect(mocks.request).not.toHaveBeenCalled();
+    type(draft + "x");
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it("keeps shell draft protection when a monitor observation is unavailable", async () => {
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, null, true));
+    act(() => usePaneMetadataStore.getState().setVolatileMetadata(session, { liveAgentObservationKnown: false }));
+    type(draft);
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, "claude", true));
+    await wait();
+    expect(mocks.request).not.toHaveBeenCalled();
+    type(draft + "x");
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it("remembers a shell observation after the same PTY is mounted again", async () => {
+    act(() => publishCodexRestoreNoticeEpoch(session, 7));
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, null, true));
+    act(() => usePaneMetadataStore.getState().setVolatileMetadata(session, { liveAgentObservationKnown: false }));
+    act(() => root.render(null));
+    render();
+    expect(host.querySelector(".cmux-presend-pending")?.textContent).toBe("\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306e\u78ba\u8a8d\u5f85\u3061");
+    type(draft);
+    await wait();
+    expect(mocks.request).not.toHaveBeenCalled();
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, "claude", true));
+    type(draft + "x");
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("keeps an attempted draft across an intervening edit (return before settlement: %s)", async returnEarly => {
+    let complete!: (result: { disposition: "attempted"; attempted: true }) => void;
+    mocks.request.mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    type("an intervening draft");
+    if (returnEarly) {
+      type(draft);
+      await wait();
+      expect(mocks.request).toHaveBeenCalledOnce();
+    }
+    await act(async () => complete({ disposition: "attempted", attempted: true }));
+    expect(presendTab(session)?.attempted.has(presendAttemptKey(draft, "claude"))).toBe(true);
+    if (!returnEarly) type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it("requires an edit after an IME composition that started in the shell", async () => {
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, null, true));
+    act(() => field().dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    act(() => usePaneMetadataStore.getState().setLiveAgent(session, "claude", true));
+    type(draft);
+    act(() => field().dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+    await wait();
+    expect(mocks.request).not.toHaveBeenCalled();
+    type(draft + "x");
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+  });
+
+  it("explains why a shell tab has no reading while allowing it to be paused", () => {
+    render(session, "powershell");
+    expect(host.querySelector(".cmux-presend-pending")?.textContent).toBe("\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8\u306e\u78ba\u8a8d\u5f85\u3061");
+    expect(host.querySelector(".cmux-presend-toggle")).not.toBeNull();
+  });
+
+  it("allows the same draft once on each explicitly selected provider", async () => {
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    act(() => useSettingsStore.setState({ presendReadingProvider: "codex" }));
+    await wait();
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request.mock.calls[1][3]).toBe("codex");
+    act(() => useSettingsStore.setState({ presendReadingProvider: "claude" }));
+    await wait();
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("will read another edit after a queued request was displaced", async () => {
+    mocks.request.mockResolvedValueOnce({ disposition: "superseded" });
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    type(draft + "x");
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+  });
+
+
+  it("discards a pending reading when its PTY generation is replaced under the same tab", async () => {
+    const observed = (epoch: number) => ({
+      session_id: session, session_epoch: epoch, cwd: "", process_name: "claude",
+      live_agent_kind: "claude",
+    });
+    act(() => applyPtyMetadata(observed(7)));
+    let finish!: (value: typeof reading) => void;
+    mocks.request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    type(draft);
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    act(() => {
+      publishCodexRestoreNoticeEpoch(session, 8);
+      usePaneMetadataStore.setState(state => ({
+        volatileMetadata: { ...state.volatileMetadata, [session]: {
+          ptyAlive: true, liveAgentKind: "claude", liveAgentObservationKnown: true,
+        } },
+      }));
+    });
+    await act(async () => finish(reading));
+    expect(host.textContent).not.toContain(reading.reading);
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+    await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    type(draft + "x");
+    await wait();
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+  });
   it("keeps the original two child rows and no frame when off", async () => {
     act(() => useSettingsStore.setState({ presendReadingEnabled: false }));
     expect(host.querySelector(".cmux-presend-frame")).toBeNull();
@@ -191,7 +351,7 @@ describe("PaneComposer pre-send reading", () => {
     const attempted = presendTab(session)!.attempted;
     // Simulate a collision in the stored fingerprint of the completed attempt.
     attempted.clear();
-    attempted.add(presendDraftFingerprint(nextDraft));
+    attempted.add(presendAttemptKey(nextDraft, "claude"));
     type(nextDraft);
     expect(host.textContent).not.toContain(reading.reading);
     await wait();
@@ -326,6 +486,8 @@ describe("PaneComposer pre-send reading", () => {
     expect(host.textContent).toContain(reading.reading);
 
     observeCodex(false);
+    // Check the editing gate even without the completed attempt's fingerprint.
+    presendTab(session)?.attempted.clear();
     observeCodex(true);
     expect(field().value).toBe(editedDraft);
     await wait(1600);
@@ -482,12 +644,13 @@ describe("pre-send cancellation and the global AI gate", () => {
     expect(mocks.request).not.toHaveBeenCalled();
   });
   it("can request the same text again after an unfinished request was canceled", async () => {
-    let finish!: (value: typeof reading) => void;
+    let finish!: (value: null) => void;
     mocks.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     type(draft); await wait();
     type(draft + "x"); type(draft);
-    await act(async () => finish(reading));
     await wait();
+    expect(mocks.request).toHaveBeenCalledOnce();
+    await act(async () => finish(null));
     expect(mocks.request).toHaveBeenCalledTimes(2);
   });
   it("does not count a dropped request as an attempt", async () => {
@@ -495,7 +658,7 @@ describe("pre-send cancellation and the global AI gate", () => {
     type(draft);
     await wait();
     expect(mocks.request).toHaveBeenCalledOnce();
-    expect(presendTab(session)?.attempted.has(presendDraftFingerprint(draft))).toBe(false);
+    expect(presendTab(session)?.attempted.has(presendAttemptKey(draft, "claude"))).toBe(false);
     type(draft + "x");
     type(draft);
     await wait();

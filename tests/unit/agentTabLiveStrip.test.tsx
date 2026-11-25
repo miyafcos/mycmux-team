@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { applicationIntervals } from "./fixtures/applicationIntervals";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
@@ -104,8 +105,10 @@ describe("actual terminal rows above the tab composer", () => {
   it("stops its 250ms timer while hidden and releases it on unmount", async () => {
     const interval = vi.spyOn(window, "setInterval");
     await render({ live: false });
-    expect(interval).not.toHaveBeenCalled(); expect(mocks.counter).not.toHaveBeenCalled(); expect(strip()).toBeNull();
-    await render(); expect(interval).toHaveBeenCalledWith(expect.any(Function), 250);
+    expect(applicationIntervals(interval)).toHaveLength(0);
+    expect(mocks.counter).not.toHaveBeenCalled(); expect(strip()).toBeNull();
+    await render();
+    expect(applicationIntervals(interval).map(item => item.args)).toContainEqual([expect.any(Function), 250]);
     await render({ live: false });
     const counts = [mocks.counter.mock.calls.length, mocks.rows.mock.calls.length];
     write++; await tick(2000);

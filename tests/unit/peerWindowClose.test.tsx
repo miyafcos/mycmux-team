@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   takePending: vi.fn(async (): Promise<import("../../src/lib/ipc").WorkspaceConfig[]> => []),
   close: null as null | ((event: { preventDefault: () => void }) => Promise<void>),
   confirm: vi.fn(async () => true),
-  intent: vi.fn(async (_closing: boolean) => {}),
+  intent: vi.fn(async (_closing: boolean, _persist?: true) => {}),
   kill: vi.fn(async (_id: string) => {}),
   destroy: vi.fn(async () => {}),
   save: vi.fn(async (_data: import("../../src/lib/ipc").PersistentData) => {}),
@@ -298,6 +298,24 @@ describe("native close-request path scopes its victims to the closing window", (
       expect(alive.has("keeper-b")).toBe(true);
     },
   );
+
+  it("L3 drop 84 destroys the child after the local sessions stop without a close write", async () => {
+    await boot("mycmux-w2");
+    mocks.intent.mockImplementation(async (_closing, persist) => {
+      if (persist) throw new Error("close write failed");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await act(async () => mocks.close!({ preventDefault: vi.fn() }));
+
+    expect(mocks.kill.mock.calls.map(([id]) => id)).toEqual(["victim-a", "victim-b"]);
+    expect(mocks.destroy).toHaveBeenCalledOnce();
+    expect(mocks.kill.mock.invocationCallOrder[1]).toBeLessThan(mocks.destroy.mock.invocationCallOrder[0]);
+    expect(mocks.intent.mock.calls).toEqual([[true]]);
+    expect(useWorkspaceListStore.getState().workspaces).toEqual([]);
+    expect([...alive].sort()).toEqual(["keeper-a", "keeper-b"]);
+    expect(warn).not.toHaveBeenCalled();
+  });
 
   it.each(["publish", "intent", "adoption", "destroy"] as const)(
     "bounds a hung %s during destruction and releases the close guards",

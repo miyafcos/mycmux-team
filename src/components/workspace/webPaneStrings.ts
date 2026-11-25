@@ -4,6 +4,7 @@
 export const webPaneStrings = {
   shortcutWaiting: "AI の操作の返事を待っているので、mycmux のキーを止めています。",
   operatorFocus: {
+    timeout: "移動先の窓から応答がありませんでした。もう一度押してください。",
     missing: "そのタブは見つかりませんでした。閉じたか、別の窓にあります。",
     notTerminal: "端末のタブではないので、前に出しませんでした。",
     closing: "そのタブは閉じている途中なので、前に出しませんでした。",

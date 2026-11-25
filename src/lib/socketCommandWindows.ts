@@ -9,6 +9,12 @@ export const PEER_COMMAND_EVENTS = {
 };
 const PEER_COMMAND_TIMEOUT_MS = 20_000;
 
+export class SocketCommandDeadlineError extends Error {
+  constructor(command: string, readonly phase: "before_dispatch" | "after_dispatch") {
+    super(phase === "before_dispatch" ? command + " owner request expired" : command + " owner window did not respond");
+  }
+}
+
 export interface PeerSocketCommandRequest {
   requestId: string;
   targetWindow: string;
@@ -24,6 +30,7 @@ interface PeerSocketCommandResponse {
   ownerWindow: string;
   result?: unknown;
   error?: string;
+  expiredBeforeExecution?: boolean;
 }
 type PeerEvents = typeof PEER_COMMAND_EVENTS;
 
@@ -42,13 +49,15 @@ export async function requestPeerSocketCommand(
   const unlisten = await listen<PeerSocketCommandResponse>(events.response, ({ payload }) => {
     if (finished || payload.requestId !== requestId || payload.ownerWindow !== targetWindow) return;
     finished = true;
-    if (Date.now() >= expiresAt) { reject(new Error(`${cmd} owner window did not respond`)); return; }
+    if (payload.expiredBeforeExecution) { reject(new SocketCommandDeadlineError(cmd, "before_dispatch")); return; }
+    if (Date.now() >= expiresAt) { reject(new SocketCommandDeadlineError(cmd, "after_dispatch")); return; }
     if (payload.error !== undefined) reject(new Error(payload.error));
     else resolve(payload.result);
   }, { target: { kind: "Window", label: replyWindow } });
-  const timer = setTimeout(() => reject(new Error(`${cmd} owner window did not respond`)), Math.max(0, expiresAt - Date.now()));
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    if (Date.now() >= expiresAt) throw new Error(`${cmd} owner window did not respond`);
+    if (Date.now() >= expiresAt) throw new SocketCommandDeadlineError(cmd, "before_dispatch");
+    timer = setTimeout(() => reject(new SocketCommandDeadlineError(cmd, "after_dispatch")), expiresAt - Date.now());
     const [, result] = await Promise.all([
       emitTo(targetWindow, events.request, {
         requestId, targetWindow, replyWindow, cmd, args, expiresAt, context,
@@ -69,7 +78,7 @@ export async function requestPeerSocketCommand(
 export async function listenForPeerSocketCommandEvent(
   accepts: (request: PeerSocketCommandRequest) => boolean,
   execute: (request: PeerSocketCommandRequest) => Promise<unknown>,
-  ready: () => Promise<void> = async () => {},
+  ready: (request: PeerSocketCommandRequest) => Promise<void> = async () => {},
   events: PeerEvents = PEER_COMMAND_EVENTS,
 ): Promise<UnlistenFn> {
   const label = windowLabel(), seen = new Map<string, number>();
@@ -82,11 +91,16 @@ export async function listenForPeerSocketCommandEvent(
     seen.set(payload.requestId, payload.expiresAt);
     let response: PeerSocketCommandResponse;
     try {
-      await ready();
-      if (disposed || Date.now() >= payload.expiresAt) throw new Error(`${payload.cmd} owner request expired`);
+      await ready(payload);
+      if (disposed || Date.now() >= payload.expiresAt) throw new SocketCommandDeadlineError(payload.cmd, "before_dispatch");
       response = { requestId: payload.requestId, ownerWindow: label, result: await execute(payload) };
     } catch (error) {
-      response = { requestId: payload.requestId, ownerWindow: label, error: error instanceof Error ? error.message : String(error) };
+      response = {
+        requestId: payload.requestId, ownerWindow: label,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof SocketCommandDeadlineError && error.phase === "before_dispatch"
+          ? { expiredBeforeExecution: true } : {}),
+      };
     }
     if (!disposed) await emitTo(payload.replyWindow, events.response, response);
   }, { target: { kind: "Window", label } });

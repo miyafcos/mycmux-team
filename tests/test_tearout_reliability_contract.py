@@ -14,7 +14,7 @@ def test_lifecycle_moves_do_not_add_a_spawn_path():
 
 def test_legacy_window_label_is_not_a_receipt():
     legacy = source("src/lib/workspaceTearOut.ts")
-    assert legacy.index("await waitForTearoutReceiver(label)") < legacy.index("removeWorkspace(workspaceId)")
+    assert legacy.index("await waitForTearoutReceiver(label, id, opening.signal)") < legacy.index("removeWorkspace(workspaceId)")
     assert legacy.index("await sendTearoutWorkspaces(") < legacy.index('phase: "received"')
     assert "deferredAdoption: true" in legacy
     registry = source("src-tauri/src/commands/window_registry.rs")

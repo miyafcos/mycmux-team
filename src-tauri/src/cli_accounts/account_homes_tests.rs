@@ -1,5 +1,13 @@
 use super::*;
 
+fn poll_login(base: &Path, login_id: &str, alive: impl Fn(&str) -> bool) -> Result<HomeLoginStatus, String> {
+    match poll_login_watch(base, login_id, alive)? {
+        HomeLoginPoll::Status(status) => Ok(status),
+        HomeLoginPoll::Restoring => Err(ERR_HOME_ISOLATION_UNAVAILABLE.into()),
+        HomeLoginPoll::RestoreFinished(_) => login_status(base, login_id),
+    }
+}
+
 #[test]
 fn v2_launch_and_recheck_return_only_the_confirmed_owner_email() {
     use base64::Engine;
@@ -169,11 +177,64 @@ fn account_homes_state_transitions_ignore_expiry_and_retain_generation() {
         f.auth("other-owner");
         assert_eq!(f.launch("wrong", |_| false).unwrap_err(), ERR_HOME_OWNER_MISMATCH);
         assert_eq!(list(f.base.path()).unwrap()[0].state, HomeState::NeedsLogin);
-        let relogin = f.begin(); assert_eq!(relogin.home.state, HomeState::AwaitingLogin);
+        let relogin = f.begin(); assert_eq!(relogin.home.state, HomeState::NeedsLogin);
         claim_login(f.base.path(), &relogin.login_id, "again").unwrap(); finish_login_launch(&relogin.login_id, true); f.auth("owner-fixture");
         poll_login(f.base.path(), &relogin.login_id, |_| true).unwrap();
         let ready = poll_login(f.base.path(), &relogin.login_id, |_| true).unwrap();
         assert_eq!(ready.home.state, HomeState::Ready); assert_eq!(ready.home.generation, 2);
+    }
+}
+
+#[test]
+fn l12b_home_launch_records_the_owner_mismatch() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        f.ready();
+        f.auth("other-owner");
+        let notifications = std::cell::Cell::new(0);
+        let rejected = prepare_launch_notifying(
+            f.base.path(), provider, &f.id, "wrong", |_| false, f.source.path(), || {
+                notifications.set(notifications.get() + 1);
+                assert_eq!(list(f.base.path()).unwrap()[0].state, HomeState::NeedsLogin);
+            },
+        );
+        assert_eq!(rejected.unwrap_err(), ERR_HOME_OWNER_MISMATCH);
+        let second = prepare_launch_notifying(
+            f.base.path(), provider, &f.id, "wrong-again", |_| false, f.source.path(),
+            || panic!("unchanged state must not notify"),
+        );
+        assert_eq!(second.unwrap_err(), ERR_HOME_NOT_READY);
+        assert_eq!(notifications.get(), 1);
+        let saved = list(f.base.path()).unwrap().remove(0);
+        assert_eq!(saved.state, HomeState::NeedsLogin);
+        assert_eq!(saved.owner, "mismatch");
+        assert_eq!(saved.generation, 1);
+    }
+}
+
+#[test]
+fn l12b_registered_home_records_mismatch_and_retains_it_after_cancel() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        f.ready();
+        let login = f.begin();
+        claim_login(f.base.path(), &login.login_id, "relogin").unwrap();
+        finish_login_launch(&login.login_id, true);
+        f.auth("other-owner");
+        assert_eq!(poll_login(f.base.path(), &login.login_id, |_| true).unwrap().state, "pending");
+        assert_eq!(poll_login(f.base.path(), &login.login_id, |_| true).unwrap().reason.as_deref(), Some(ERR_HOME_OWNER_MISMATCH));
+        let saved = list(f.base.path()).unwrap().remove(0);
+        assert_eq!(saved.state, HomeState::NeedsLogin);
+        assert_eq!(saved.owner, "mismatch");
+        assert_eq!(saved.generation, 1);
+
+        let retry = f.begin();
+        cancel_login(f.base.path(), &retry.login_id);
+        assert_eq!(poll_login(f.base.path(), &retry.login_id, |_| false).unwrap().state, "failed");
+        let retained = list(f.base.path()).unwrap().remove(0);
+        assert_eq!(retained.state, HomeState::NeedsLogin);
+        assert_eq!(retained.owner, "mismatch");
+        assert_eq!(retained.generation, 1);
     }
 }
 
@@ -388,7 +449,10 @@ fn account_homes_needs_login_and_failed_login_cannot_reauthenticate_until_tabs_e
     f.auth("still-wrong-owner"); poll_login(f.base.path(),&login.login_id,|_|true).unwrap();
     assert_eq!(poll_login(f.base.path(),&login.login_id,|_|true).unwrap().state,"failed");
     assert_eq!(begin_login(f.base.path(),f.provider,&f.id,|_|true,f.source.path()).unwrap_err(),ERR_HOME_IN_USE);
-    assert_eq!(f.begin().home.state,HomeState::AwaitingLogin);
+    let retry = f.begin();
+    assert_eq!(retry.state, "pending");
+    assert_eq!(retry.home.state, HomeState::NeedsLogin);
+    assert_eq!(retry.home.owner, "mismatch");
 }
 
 #[test]
@@ -419,7 +483,11 @@ fn account_homes_identity_only_or_empty_credentials_never_finish_login_or_launch
         poll_login(f.base.path(),&login.login_id,|_|false).unwrap();
         let status=poll_login(f.base.path(),&login.login_id,|_|false).unwrap();
         assert_eq!(status.state,"failed"); assert_eq!(status.reason.as_deref(),Some(ERR_HOME_NOT_READY));
-        assert_eq!(list(f.base.path()).unwrap()[0].state,HomeState::AwaitingLogin);
+        let saved = list(f.base.path()).unwrap().remove(0);
+        assert_eq!(saved.state, HomeState::NeedsLogin);
+        assert_eq!(saved.owner, "unverified");
+        assert_eq!(saved.generation, 1);
+        assert_eq!(status.home, saved);
     }
 }
 
@@ -708,4 +776,427 @@ fn fixr2_context_and_login_poll_are_shallow_but_startup_and_claim_check_nested_l
             assert_eq!(login_fixture.launch("refused-after-login", |_| false).unwrap_err(), ERR_HOME_PATH_INVALID);
         }
     }
+}
+
+#[test]
+fn l12b_round2_restores_established_home_after_an_unchanged_login_attempt() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        for (exit, reason) in [
+            ("cancel", super::super::ERR_LOGIN_CANCELLED),
+            ("tab_closed", super::super::ERR_LOGIN_CANCELLED),
+            ("timeout", super::super::ERR_LOGIN_TIMEOUT),
+        ] {
+            for expected in [HomeState::Ready, HomeState::NeedsLogin] {
+                let f = Fixture::new(provider);
+                f.ready();
+                if expected == HomeState::NeedsLogin {
+                    fs::write(f.home().join("auth.json"), b"{}").unwrap();
+                    assert_eq!(f.launch("unavailable", |_| false).unwrap_err(), ERR_HOME_NOT_READY);
+                }
+                let base = f.base.path();
+                let previous = list(base).unwrap().pop().unwrap();
+                assert_eq!(previous.state, expected);
+                let retry = f.begin();
+                assert_eq!(retry.home.state, HomeState::AwaitingLogin);
+                claim_login(base, &retry.login_id, "retry").unwrap();
+                finish_login_launch(&retry.login_id, true);
+                if exit == "cancel" {
+                    assert!(cancel_login(base, &retry.login_id));
+                } else if exit == "timeout" {
+                    runtime().logins.get_mut(&retry.login_id).unwrap().started = Instant::now() - LOGIN_TIMEOUT;
+                }
+                let failed = poll_login(base, &retry.login_id, |_| exit != "tab_closed").unwrap();
+                assert_eq!(failed.state, "failed");
+                assert_eq!(failed.reason.as_deref(), Some(reason));
+                assert_eq!(failed.home, previous, "retry exit: {exit}");
+                assert_eq!(list(base).unwrap(), [previous], "retry exit: {exit}");
+            }
+        }
+    }
+}
+
+fn assert_failed_home_reauthentication_is_saved(provider: CliProvider) {
+    let f = Fixture::new(provider);
+    assert_eq!(f.ready().home.state, HomeState::Ready);
+    let base = f.base.path();
+    let retry = f.begin();
+    assert_eq!(retry.home.state, HomeState::AwaitingLogin);
+    claim_login(base, &retry.login_id, "retry").unwrap();
+    finish_login_launch(&retry.login_id, true);
+    fs::write(f.home().join("auth.json"), b"{}").unwrap();
+
+    assert_eq!(poll_login(base, &retry.login_id, |_| true).unwrap().state, "pending");
+    let failed = poll_login(base, &retry.login_id, |_| true).unwrap();
+    assert_eq!(failed.state, "failed");
+    assert_eq!(failed.reason.as_deref(), Some(ERR_HOME_NOT_READY));
+    let saved = list(base).unwrap().pop().unwrap();
+    assert_eq!(saved.state, HomeState::NeedsLogin);
+    assert_eq!(saved.owner, "unverified");
+    assert_eq!(saved.generation, 1);
+    assert_eq!(failed.home, saved);
+}
+
+#[test]
+fn l12b_round3_saves_failed_codex_home_reauthentication() {
+    assert_failed_home_reauthentication_is_saved(CliProvider::Codex);
+}
+
+#[test]
+fn l12b_round3_saves_failed_grok_home_reauthentication() {
+    assert_failed_home_reauthentication_is_saved(CliProvider::Grok);
+}
+
+fn assert_registered_home_survives_auth_read_error(provider: CliProvider) {
+    let f = Fixture::new(provider);
+    let previous = f.ready().home;
+    let base = f.base.path();
+    assert_eq!(previous.state, HomeState::Ready);
+    assert_eq!(previous.owner, "matched");
+    let retry = f.begin();
+    claim_login(base, &retry.login_id, "read-error-retry").unwrap();
+    finish_login_launch(&retry.login_id, true);
+    assert_eq!(list(base).unwrap()[0].state, HomeState::AwaitingLogin);
+
+    let auth = f.home().join("auth.json");
+    let backup = f.home().join("auth.fixture-backup");
+    // Use a non-regular path so the auth read fails even with elevated test permissions.
+    fs::rename(&auth, &backup).unwrap();
+    fs::create_dir(&auth).unwrap();
+    let failed = poll_login(base, &retry.login_id, |_| true);
+    fs::rename(&auth, f.home().join("auth.fixture-unreadable")).unwrap();
+    fs::rename(&backup, &auth).unwrap();
+
+    assert_eq!(list(base).unwrap(), [previous.clone()]);
+    let failed = failed.unwrap();
+    assert_eq!(failed.state, "failed");
+    assert_eq!(failed.reason.as_deref(), Some(ERR_HOME_ISOLATION_UNAVAILABLE));
+    assert_eq!(failed.home, previous);
+    assert!(f.launch("after-read-error", |_| false).is_ok());
+}
+
+#[test]
+fn l12b_fix4_restores_registered_codex_home_on_auth_read_error() {
+    assert_registered_home_survives_auth_read_error(CliProvider::Codex);
+}
+
+#[test]
+fn l12b_fix4_restores_registered_grok_home_on_auth_read_error() {
+    assert_registered_home_survives_auth_read_error(CliProvider::Grok);
+}
+
+#[test]
+fn l12b_round2_changed_auth_cannot_restore_a_ready_home_on_cancel() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        f.ready();
+        let base = f.base.path();
+        let retry = f.begin();
+        f.auth("other-fixture");
+        assert!(cancel_login(base, &retry.login_id));
+        let failed = poll_login(base, &retry.login_id, |_| false).unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.home.state, HomeState::NeedsLogin);
+        assert_eq!(failed.home.owner, "mismatch");
+        assert_eq!(failed.home.generation, 1);
+        assert_eq!(list(base).unwrap(), [failed.home]);
+    }
+}
+
+thread_local! {
+    static FAIL_MANIFEST_SAVE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn check_manifest_save(base: &Path) -> Result<(), String> {
+    FAIL_MANIFEST_SAVE.with(|fault| {
+        let mut fault = fault.borrow_mut();
+        if fault.as_deref() == Some(base) {
+            *fault = None;
+            return Err(ERR_HOME_ISOLATION_UNAVAILABLE.into());
+        }
+        Ok(())
+    })
+}
+
+fn begin_reauthentication_with_changed_auth(f: &Fixture, owner: &str) -> HomeLoginStatus {
+    let retry = f.begin();
+    claim_login(f.base.path(), &retry.login_id, "fix5-retry").unwrap();
+    finish_login_launch(&retry.login_id, true);
+    if owner == "owner-fixture" {
+        // Change the auth bytes without changing its owner.
+        let auth = f.home().join("auth.json");
+        fs::OpenOptions::new().append(true).open(auth).unwrap().write_all(b"\n").unwrap();
+    } else {
+        f.auth(owner);
+    }
+    assert_eq!(poll_login(f.base.path(), &retry.login_id, |_| true).unwrap().state, "pending");
+    retry
+}
+
+#[test]
+fn l12b_fix5_mismatch_save_error_cannot_restore_verified_home() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        let previous = f.ready().home;
+        let retry = begin_reauthentication_with_changed_auth(&f, "other-fixture");
+        let base = f.base.path();
+        FAIL_MANIFEST_SAVE.with(|fault| fault.replace(Some(base.canonicalize().unwrap())));
+        let _ = poll_login(base, &retry.login_id, |_| true);
+        FAIL_MANIFEST_SAVE.with(|fault| assert!(fault.borrow().is_none()));
+        assert_eq!(login_status(base, &retry.login_id).unwrap().state, "failed");
+        assert_eq!(list(base).unwrap(), [retry.home], "never restore the previous {previous:?} after the mismatch");
+        assert!(f.launch("after-mismatch-save-error", |_| false).is_err());
+    }
+}
+
+#[test]
+fn l12b_fix5_retries_registration_restore_when_manifest_is_readable_again() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        let previous = f.ready().home;
+        let retry = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+        let base = f.base.path();
+        let manifest = base.join("cli_account_homes/manifest.json");
+        let backup = manifest.with_extension("fixture-backup");
+        fs::rename(&manifest, &backup).unwrap();
+        fs::create_dir(&manifest).unwrap();
+        let _ = poll_login(base, &retry.login_id, |_| true);
+        assert_eq!(login_status(base, &retry.login_id).unwrap().state, "failed");
+        fs::rename(&manifest, manifest.with_extension("fixture-unreadable")).unwrap();
+        fs::rename(&backup, &manifest).unwrap();
+
+        assert_eq!(list(base).unwrap(), [retry.home]);
+        assert!(matches!(poll_login_watch(base, &retry.login_id, |_| true).unwrap(),
+            HomeLoginPoll::RestoreFinished(Some(profile_id)) if profile_id == f.id));
+        let recovered = login_status(base, &retry.login_id).unwrap();
+        assert_eq!(recovered.state, "failed");
+        assert_eq!(recovered.home, previous);
+        assert_eq!(list(base).unwrap(), [previous]);
+        assert!(f.launch("after-manifest-recovery", |_| false).is_ok());
+    }
+}
+
+#[test]
+fn l12b_fix5_old_restore_leaves_the_new_login_and_saved_home_untouched() {
+    for newer_completes in [false, true] {
+        let f = Fixture::new(CliProvider::Codex);
+        let previous = f.ready().home;
+        let old = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+        let base = f.base.path();
+        let manifest = base.join("cli_account_homes/manifest.json");
+        let backup = manifest.with_extension("fixture-backup");
+        fs::rename(&manifest, &backup).unwrap();
+        fs::create_dir(&manifest).unwrap();
+        let _ = poll_login(base, &old.login_id, |_| true);
+        assert_eq!(login_status(base, &old.login_id).unwrap().state, "failed");
+        fs::rename(&manifest, manifest.with_extension("fixture-unreadable")).unwrap();
+        fs::rename(&backup, &manifest).unwrap();
+
+        let new = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+        let now = if newer_completes {
+            let status = poll_login(base, &new.login_id, |_| true).unwrap();
+            assert_eq!(status.home.generation, previous.generation + 1);
+            status.home
+        } else {
+            // The two attempts can write equal public intermediate states.
+            assert_eq!(new.home, old.home);
+            new.home
+        };
+        let _ = poll_login(base, &old.login_id, |_| true);
+        assert_eq!(list(base).unwrap(), [now]);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReauthenticationEnd { Success, Cancel, Timeout }
+
+fn reauthentication_ready_to_finish(f: &Fixture, end: ReauthenticationEnd) -> HomeLoginStatus {
+    let base = f.base.path();
+    match end {
+        ReauthenticationEnd::Success => begin_reauthentication_with_changed_auth(f, "owner-fixture"),
+        ReauthenticationEnd::Cancel => {
+            let login = f.begin();
+            assert!(cancel_login(base, &login.login_id));
+            login
+        }
+        ReauthenticationEnd::Timeout => {
+            let login = f.begin();
+            runtime().logins.get_mut(&login.login_id).unwrap().started = Instant::now() - LOGIN_TIMEOUT;
+            login
+        }
+    }
+}
+
+fn fail_next_home_save(base: &Path) {
+    FAIL_MANIFEST_SAVE.with(|fault| fault.replace(Some(base.canonicalize().unwrap())));
+}
+
+fn assert_decided_home_is_retried(end: ReauthenticationEnd) {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        for failed_writes in [1, 3] {
+            let f = Fixture::new(provider);
+            let previous = f.ready().home;
+            let base = f.base.path();
+            let login = reauthentication_ready_to_finish(&f, end);
+            for _ in 0..failed_writes {
+                fail_next_home_save(base);
+                let _ = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+                assert_eq!(list(base).unwrap(), [login.home.clone()]);
+            }
+            let polled = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+            let mut expected = previous;
+            if matches!(end, ReauthenticationEnd::Success) { expected.generation += 1; }
+            assert_eq!(list(base).unwrap(), [expected.clone()]);
+            assert_eq!(login_status(base, &login.login_id).unwrap().home, expected);
+            assert!(matches!(polled, HomeLoginPoll::RestoreFinished(Some(id)) if id == f.id));
+            assert!(f.launch("after-save-retry", |_| false).is_ok());
+        }
+    }
+}
+
+#[test]
+fn l12b_fix6_retries_the_decided_home_after_manifest_save_errors() {
+    assert_decided_home_is_retried(ReauthenticationEnd::Success);
+}
+
+#[test]
+fn l12b_fix6_retries_unchanged_cancel_after_manifest_save_errors() {
+    assert_decided_home_is_retried(ReauthenticationEnd::Cancel);
+}
+
+#[test]
+fn l12b_fix6_retries_unchanged_timeout_after_manifest_save_errors() {
+    assert_decided_home_is_retried(ReauthenticationEnd::Timeout);
+}
+
+#[test]
+fn l12b_fix6_retry_write_cannot_replace_a_new_login() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        for end in [ReauthenticationEnd::Success, ReauthenticationEnd::Cancel, ReauthenticationEnd::Timeout] {
+            for completes in [false, true] {
+                let f = Fixture::new(provider);
+                f.ready();
+                let base = f.base.path();
+                let old = reauthentication_ready_to_finish(&f, end);
+                fail_next_home_save(base);
+                let _ = poll_login_watch(base, &old.login_id, |_| true).unwrap();
+                let newer = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+                let current = if completes {
+                    poll_login(base, &newer.login_id, |_| true).unwrap().home
+                } else {
+                    assert_eq!(newer.home, old.home);
+                    newer.home
+                };
+                let _ = poll_login_watch(base, &old.login_id, |_| true).unwrap();
+                assert_eq!(list(base).unwrap(), [current]);
+            }
+        }
+    }
+}
+
+#[test]
+fn l12b_fix6_ready_write_retry_checks_the_current_owner() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        for end in [ReauthenticationEnd::Success, ReauthenticationEnd::Cancel, ReauthenticationEnd::Timeout] {
+            let f = Fixture::new(provider);
+            let mut expected = f.ready().home;
+            let base = f.base.path();
+            let login = reauthentication_ready_to_finish(&f, end);
+            fail_next_home_save(base);
+            let _ = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+            f.auth("other-fixture");
+            let polled = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+            expected.state = HomeState::NeedsLogin;
+            expected.owner = "mismatch".into();
+            assert_eq!(list(base).unwrap(), [expected]);
+            assert!(matches!(polled, HomeLoginPoll::RestoreFinished(Some(id)) if id == f.id));
+            assert!(f.launch("after-owner-changed", |_| false).is_err());
+        }
+    }
+}
+
+
+fn make_home_manifest_unreadable(base: &Path) -> impl FnOnce() {
+    let manifest = base.join("cli_account_homes/manifest.json");
+    let backup = manifest.with_extension("fixture-good");
+    fs::rename(&manifest, &backup).unwrap();
+    fs::write(&manifest, b"fixture invalid manifest").unwrap();
+    move || {
+        fs::rename(&manifest, manifest.with_extension("fixture-unreadable")).unwrap();
+        fs::rename(&backup, &manifest).unwrap();
+    }
+}
+
+#[test]
+fn l12b_fix6_restores_only_the_current_owner_after_manifest_read_errors() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        for (owner, failed_mismatch_save) in [("owner-fixture", false), ("other-fixture", false), ("other-fixture", true)] {
+            let f = Fixture::new(provider);
+            let mut expected = f.ready().home;
+            let login = begin_reauthentication_with_changed_auth(&f, owner);
+            let base = f.base.path();
+            let make_readable = make_home_manifest_unreadable(base);
+            assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(), HomeLoginPoll::Restoring));
+            make_readable();
+            if failed_mismatch_save {
+                fail_next_home_save(base);
+                assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(), HomeLoginPoll::Restoring));
+                assert_eq!(list(base).unwrap(), [login.home.clone()]);
+                f.auth("owner-fixture");
+            }
+            let polled = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+            if owner != "owner-fixture" {
+                expected.state = HomeState::NeedsLogin;
+                expected.owner = "mismatch".into();
+            }
+            assert_eq!(list(base).unwrap(), [expected.clone()]);
+            assert_eq!(login_status(base, &login.login_id).unwrap().home, expected);
+            assert!(matches!(polled, HomeLoginPoll::RestoreFinished(Some(id)) if id == f.id));
+            assert_eq!(f.launch("after-delayed-owner-read", |_| false).is_ok(), owner == "owner-fixture");
+        }
+    }
+}
+
+#[test]
+fn l12b_fix6_unreadable_auth_cannot_restore_a_verified_home() {
+    for provider in [CliProvider::Codex, CliProvider::Grok] {
+        let f = Fixture::new(provider);
+        let previous = f.ready().home;
+        let login = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+        let base = f.base.path();
+        let make_readable = make_home_manifest_unreadable(base);
+        let _ = poll_login_watch(base, &login.login_id, |_| true).unwrap();
+        make_readable();
+        let auth = f.home().join("auth.json");
+        let readable_auth = auth.with_extension("fixture-good");
+        fs::rename(&auth, &readable_auth).unwrap();
+        fs::create_dir(&auth).unwrap();
+        for _ in 0..2 {
+            assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(), HomeLoginPoll::Restoring));
+            assert_eq!(list(base).unwrap(), [login.home.clone()]);
+        }
+        fs::rename(&auth, auth.with_extension("fixture-unreadable")).unwrap();
+        fs::rename(&readable_auth, &auth).unwrap();
+        assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(),
+            HomeLoginPoll::RestoreFinished(Some(id)) if id == f.id));
+        assert_eq!(list(base).unwrap(), [previous]);
+    }
+}
+
+#[test]
+fn l12b_fix6_slows_repeated_read_retries_and_recovers_after_the_cap() {
+    let f = Fixture::new(CliProvider::Codex);
+    let previous = f.ready().home;
+    let login = begin_reauthentication_with_changed_auth(&f, "owner-fixture");
+    let base = f.base.path();
+    let make_readable = make_home_manifest_unreadable(base);
+    let mut seconds = Vec::new();
+    for retry in 0..10 {
+        seconds.push(home_login_poll_delay(retry).as_secs());
+        assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(), HomeLoginPoll::Restoring));
+    }
+    make_readable();
+    assert!(matches!(poll_login_watch(base, &login.login_id, |_| true).unwrap(),
+        HomeLoginPoll::RestoreFinished(Some(id)) if id == f.id));
+    assert_eq!(list(base).unwrap(), [previous]);
+    assert_eq!(seconds, [1, 1, 2, 4, 8, 16, 30, 30, 30, 30]);
 }

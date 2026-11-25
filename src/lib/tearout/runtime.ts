@@ -21,9 +21,9 @@ import { restoreTearoutSource, restoreTearoutGroup, removeTearoutTab, nativeDrop
 import { detachedOriginForDrag, detachedWorkspaceConfig, isTransferableTab, type DetachedReturnTarget } from "../detachedPane";
 import { restoreWorkspaceConfigs } from "../workspaceRestore";
 import { beginLayoutOperation, isPreparingLayoutQuit } from "../layoutQuit";
-import { clearPresendAttempts } from "../presendReading";
+import { adoptPresendPause, clearPresendAttempts, presendTab } from "../presendReading";
 import { windowLabel, isMainWindow } from "../windowContext";
-import { isSessionAlive, WINDOW_REGISTRY_CHANGED_EVENT, type WorkspaceConfig } from "../ipc";
+import { isSessionAlive, WINDOW_OPEN_FAILED_EVENT, WINDOW_REGISTRY_CHANGED_EVENT, type WindowOpenFailure, type WorkspaceConfig } from "../ipc";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -42,7 +42,7 @@ import type { Workspace } from "../../types";
 import { createPaneMoveRequest, executePaneMove, type PaneMoveRequest, type NativeMoveDestination,
   type PaneMoveExecution, type PaneMoveOptions, type PaneMoveResult } from "../paneMoveOperation";
 
-declare global { interface Window { __MYCMUX_TEAROUT_WINDOW__?: boolean } }
+declare global { interface Window { __MYCMUX_TEAROUT_WINDOW__?: boolean; __MYCMUX_WORKSPACE_CREATION_ID__?: string } }
 type RestoredWindow = Window & { __MYCMUX_RESTORED_WINDOW__?: boolean };
 const isRestoredWindow = (): boolean => (globalThis.window as RestoredWindow | undefined)?.__MYCMUX_RESTORED_WINDOW__ === true;
 // A restored child uses the same paint-ready startup gate, then resumes its
@@ -59,13 +59,13 @@ const FINALIZE = "mycmux://tearout-finalize";
 const HIGHLIGHT = "mycmux://tearout-highlight";
 const PROGRESS = "mycmux://tearout-progress";
 type Approval = ReleaseApproval;
-interface Delivery { token: string; source: string; configs: WorkspaceConfig[]; placement?: DetachedReturnTarget; approval?: Approval; activeSessionId?: string | null; liveSessions?: string[]; dock?: { requester: string } }
+interface Delivery { token: string; source: string; configs: WorkspaceConfig[]; placement?: DetachedReturnTarget; approval?: Approval; activeSessionId?: string | null; liveSessions?: string[]; pendingPresendPauses?: string[]; dock?: { requester: string } }
 interface DockReservationRefusal { kind: "reservation"; pre_ownership: true; source: string; deliveryToken: string;
   refusalSource?: TearoutRefusalSource; blockerId?: string | null }
 type DockRefusal = DockReservationRefusal | {
   kind: "window_quitting"; pre_ownership: true; source: string; deliveryToken: string;
 };
-interface Receipt extends DockDiagnostics { token: string; ok: boolean; error?: string; reason?: string; failedSessions?: string[]; refusal?: DockRefusal }
+interface Receipt extends DockDiagnostics { token: string; ok: boolean; creationId?: string; error?: string; reason?: string; failedSessions?: string[]; refusal?: DockRefusal }
 interface DockRequest { token: string; deliveryToken: string; requester: string; approval: Approval; record?: RecordData }
 export interface NativeSample {
   id: string; readonly mode: TearoutMode; label: string; x: number; y: number; phase: "move" | "end"; at: number; escaped: boolean;
@@ -84,6 +84,7 @@ interface Adapter {
 }
 let adapter: Adapter | null = null;
 let listenersReady: Promise<void> = Promise.resolve();
+const windowOpenings = new Map<string, AbortController>();
 export const TEAROUT_SPARE_IDLE_MS = 3000;
 const SPARE_REFILL_LIMIT_MS = 30000;
 // Backstop for the 30-second deadline, which normally expires first.
@@ -359,33 +360,51 @@ function removeReceived(entry: Incoming): void {
   for (const sessionId of sessions(entry.delivery.configs)) evictTerminalCache(sessionId);
 }
 
-async function receive(delivery: Delivery): Promise<void> {
+async function receive(delivery: Delivery & { receiverCreationId?: string }): Promise<void> {
+  if (delivery.receiverCreationId && delivery.receiverCreationId !== window.__MYCMUX_WORKSPACE_CREATION_ID__) {
+    await emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: false, error: "tearout_receiver_unavailable" })
+      .catch(error => console.warn("[tearout] Could not refuse delivery:", error));
+    return;
+  }
   if (incoming.has(delivery.token) || revokedTokens.has(delivery.token)) return;
   if (!reserveIncomingTearout(delivery.token)) {
     await emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: false, error: "window_quitting" })
       .catch((error) => console.warn("[tearout] Could not refuse delivery:", error));
     return;
   }
-  spareRefill?.activity();
   let settle = () => {};
   const settled = new Promise<void>((resolve) => { settle = resolve; });
   let cancel = () => {};
   const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(new Error("tearout_receive_cancelled")); });
   void cancelled.catch(() => {});
   const wait = <T,>(promise: Promise<T>) => Promise.race([promise, cancelled]);
-  const existingIds = new Set(useWorkspaceListStore.getState().workspaces.flatMap((ws) => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id))));
-  const rawDeliveryIds = delivery.configs.flatMap((cfg) => cfg.panes.flatMap((pane) => (pane.tabs ?? []).map((tab) => tab.tab_id)));
-  const deliveryIds = rawDeliveryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
-  const entry: Incoming = { delivery, before: useWorkspaceListStore.getState().workspaces, revoked: false, settled,
-    settle: () => { if (entry.receiving) { entry.receiving = false; settle(); } }, cancel, failed: false, receiving: true, finalized: false, notices: new Set(),
-    workspace: useWorkspaceListStore.getState().activeWorkspaceId, session: useUiStore.getState().activePaneId,
-    zoom: useUiStore.getState().zoomedPaneId, remembered: useWorkspaceListStore.getState().lastActivePaneByWorkspace,
-    addedIds: new Set(deliveryIds.filter((id) => !existingIds.has(id))) };
-  incoming.set(delivery.token, entry);
+  let rawDeliveryIds: (string | null | undefined)[];
+  let deliveryIds: string[];
+  let existingIds: Set<string>;
+  let entry: Incoming;
+  try {
+    spareRefill?.activity();
+    const { workspaces: before, activeWorkspaceId: workspace, lastActivePaneByWorkspace: remembered } =
+      useWorkspaceListStore.getState();
+    const { activePaneId: session, zoomedPaneId: zoom } = useUiStore.getState();
+    rawDeliveryIds = delivery.configs.flatMap(cfg => cfg.panes.flatMap(pane => (pane.tabs ?? []).map(tab => tab.tab_id)));
+    deliveryIds = rawDeliveryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+    existingIds = new Set(before.flatMap(ws => ws.panes.flatMap(pane => pane.tabs.map(tab => tab.id))));
+    entry = { delivery, before, revoked: false, settled,
+      settle: () => { if (entry.receiving) { entry.receiving = false; settle(); } }, cancel,
+      failed: false, receiving: true, finalized: false, notices: new Set(),
+      workspace, session, zoom, remembered,
+      addedIds: new Set(deliveryIds.filter(id => !existingIds.has(id))) };
+    incoming.set(delivery.token, entry);
+  } catch (error) {
+    finishIncomingTearout(delivery.token);
+    await emitTo(delivery.source, RECEIPT, {
+      token: delivery.token, ok: false, error: "tearout_receive_failed", reason: reasonOf(error),
+    }).catch(sendError => console.warn("[tearout] Could not report failed delivery:", sendError));
+    return;
+  }
   queueIncomingCheck();
-  const expected = delivery.liveSessions ?? sessions(delivery.configs).filter(id =>
-    !delivery.configs.some(config => config.panes.some(pane => pane.tabs?.some(tab => tab.session_id === id && tab.lifecycle === "declared"))));
-  rememberTearoutDormantSessions(sessions(delivery.configs), expected);
+  let expected = delivery.liveSessions ?? [];
   let attachment: ReturnType<typeof expectTearoutAttachments> | undefined;
   const details: DockDiagnostics = {};
   const stage = (name: DockStage["stage"]) => {
@@ -393,6 +412,10 @@ async function receive(delivery: Delivery): Promise<void> {
   };
   let checkpoint: FailureCheckpoint = "other";
   try {
+    const allSessionIds = sessions(delivery.configs);
+    expected = delivery.liveSessions ?? allSessionIds.filter(id =>
+      !delivery.configs.some(config => config.panes.some(pane => pane.tabs?.some(tab => tab.session_id === id && tab.lifecycle === "declared"))));
+    rememberTearoutDormantSessions(allSessionIds, expected);
     attachment = expectTearoutAttachments(expected, "transfer", undefined, delivery.token);
     stage("attachment_prepared_wait");
     await wait(attachment.prepared);
@@ -444,6 +467,10 @@ async function receive(delivery: Delivery): Promise<void> {
     if (entry.revoked) return;
     if (delivery.approval?.release_id && delivery.approval.layout_revision !== releaseLayoutRevision(delivery.approval.target)) throw new Error("tearout_drop_target_changed");
     flushSync(() => {
+      if (delivery.pendingPresendPauses) {
+        const pending = new Set(delivery.pendingPresendPauses);
+        for (const id of sessions(delivery.configs)) adoptPresendPause(id, pending.has(id));
+      }
       const configs = delivery.placement?.kind === "workspace"
         ? delivery.configs.map((config) => ({ ...config, detached: false, detached_from: null })) : delivery.configs;
       restoreWorkspaceConfigs(configs, {
@@ -595,12 +622,18 @@ async function receiveRevoke(request: { token: string; ack: string; source: stri
   }
 }
 
+const emitToReceiver = (target: string, event: string, payload: Delivery & { receiverCreationId?: string }) =>
+  emitTo(target, event, payload);
+
 async function send(label: string, configs: WorkspaceConfig[], placement?: DetachedReturnTarget, approval?: Approval,
   token: string = crypto.randomUUID(), activeSessionId?: string | null, liveSessions?: string[],
-  dock?: { requester: string; details: DockDiagnostics }): Promise<string> {
+  dock?: { requester: string; details: DockDiagnostics }, receiverCreationId?: string): Promise<string> {
+  const emitTo = (target: string, event: string, payload: Delivery) =>
+    emitToReceiver(target, event, receiverCreationId ? { ...payload, receiverCreationId } : payload);
   const receipt = new Promise<Receipt>((resolve) => receipts.set(token, resolve));
   try {
-    await emitTo(label, DELIVERY, { token, source: windowLabel(), configs, placement, approval, activeSessionId, liveSessions,
+    const pendingPresendPauses = sessions(configs).filter(id => presendTab(id)?.paused);
+    await emitTo(label, DELIVERY, { token, source: windowLabel(), configs, placement, approval, activeSessionId, liveSessions, pendingPresendPauses,
       ...(dock ? { dock: { requester: dock.requester } } : {}) });
     if (dock) {
       dockStage(token, dock.details, "child", "delivery_sent", [dock.requester]);
@@ -630,18 +663,36 @@ async function send(label: string, configs: WorkspaceConfig[], placement?: Detac
 }
 
 
+/** Track the creation before asking the backend to open the receiving window. */
+export function watchTearoutWindowOpening(creationId: string) {
+  const controller = new AbortController();
+  windowOpenings.set(creationId, controller);
+  return { ready: listenersReady, signal: controller.signal, dispose: () => { windowOpenings.delete(creationId); } };
+}
+
 /** Readiness is an addressed handshake; an OS label alone is not adoption. */
-export async function waitForTearoutReceiver(label: string): Promise<void> {
+export async function waitForTearoutReceiver(label: string, creationId: string, signal: AbortSignal): Promise<void> {
   await listenersReady;
+  if (signal.aborted) throw signal.reason;
   const token = crypto.randomUUID();
-  const ready = new Promise<Receipt>(resolve => receipts.set(token, resolve));
-  const ping = () => { void emitTo(label, "mycmux://tearout-ready-query", { token, source: windowLabel() }).catch(() => {}); };
+  let cancel!: () => void;
+  const ready = new Promise<Receipt>((resolve, reject) => {
+    cancel = () => reject(signal.reason);
+    receipts.set(token, result => {
+      if (result.ok && result.creationId === creationId) resolve(result);
+    });
+  });
+  signal.addEventListener("abort", cancel, { once: true });
+  const ping = () => {
+    void emitTo(label, "mycmux://tearout-ready-query", { token, source: windowLabel(), creationId }).catch(() => {});
+  };
   const timer = window.setInterval(ping, 100);
   try { ping(); await timeout(ready, 6000, "tearout_child_boot_timeout"); }
-  finally { window.clearInterval(timer); receipts.delete(token); }
+  finally { window.clearInterval(timer); receipts.delete(token); signal.removeEventListener("abort", cancel); }
 }
-export async function sendTearoutWorkspaces(label: string, configs: WorkspaceConfig[], liveSessions: string[], activeSessionId?: string | null, token = crypto.randomUUID()): Promise<string> {
-  return send(label, configs, undefined, undefined, token, activeSessionId, liveSessions);
+export async function sendTearoutWorkspaces(label: string, configs: WorkspaceConfig[], liveSessions: string[],
+  activeSessionId?: string | null, token = crypto.randomUUID(), receiverCreationId?: string): Promise<string> {
+  return send(label, configs, undefined, undefined, token, activeSessionId, liveSessions, undefined, receiverCreationId);
 }
 export function visitTearoutLocation(workspaceId: string, sessionId: string | null, label = windowLabel()): void {
   if (label !== windowLabel()) { void WebviewWindow.getByLabel(label).then(view => view?.setFocus()).catch(() => {}); return; }
@@ -933,13 +984,19 @@ export function installTearoutRuntime(value: Adapter): () => void {
   });
   const ownReleaseReceiver = releaseReceiver;
   const registered = [
-    listen<Delivery>(DELIVERY, ({ payload }) => { void receive(payload); }, ownWindow),
-    listen<{ token: string; source: string }>("mycmux://tearout-ready-query", ({ payload }) => {
+    listen<Delivery & { receiverCreationId?: string }>(DELIVERY, ({ payload }) => { void receive(payload); }, ownWindow),
+    listen<{ token: string; source: string; creationId: string }>("mycmux://tearout-ready-query", ({ payload }) => {
+      if (!payload.creationId || payload.creationId !== window.__MYCMUX_WORKSPACE_CREATION_ID__) return;
       void Promise.resolve(value.hydrated).then(() => listenersReady).then(() => {
-        if (live) return emitTo(payload.source, RECEIPT, { token: payload.token, ok: true });
+        if (live) return emitTo(payload.source, RECEIPT, { token: payload.token, ok: true, creationId: payload.creationId });
       }).catch(() => {});
     }, ownWindow),
     listen<Receipt>(RECEIPT, ({ payload }) => receipts.get(payload.token)?.(payload), ownWindow),
+    listen<WindowOpenFailure>(WINDOW_OPEN_FAILED_EVENT, ({ payload }) => {
+      if (payload?.kind === "move" && payload.creation_id) {
+        windowOpenings.get(payload.creation_id)?.abort(new Error("workspace_window_creation_failed"));
+      }
+    }, ownWindow),
     listen<DockDiagnostics & { token: string; sender: string }>(PROGRESS, ({ payload }) => {
       const trace = dockTraces.get(payload.token);
       if (trace && (payload.sender === trace.source || payload.sender === trace.receiver)) updateDockTrace(payload.token, payload);

@@ -1,17 +1,20 @@
 import AgentSelector from "./AgentSelector";
 import type { PaneLaunchSpec } from "../../lib/agentCatalog";
+import type { LaunchAccountListListener } from "../../lib/tabAccounts";
 import { setupStrings } from "./setupStrings";
 
 interface AgentSlotListProps {
-  workspaceInstanceId: number;
+  visible: boolean;
   paneCount: number;
   specs: Record<number, PaneLaunchSpec>;
-  onChange: (specs: Record<number, PaneLaunchSpec>) => void;
+  onChange: (slot: number, spec: PaneLaunchSpec) => void;
+  onAccountRead: LaunchAccountListListener;
+  onOpenAccountManagement: () => void;
 }
 
 const EMPTY_SPEC: PaneLaunchSpec = {};
 
-export default function AgentSlotList({ workspaceInstanceId, paneCount, specs, onChange }: AgentSlotListProps) {
+export default function AgentSlotList({ visible, paneCount, specs, onChange, onAccountRead, onOpenAccountManagement }: AgentSlotListProps) {
   return (
     <div>
       <div
@@ -28,10 +31,12 @@ export default function AgentSlotList({ workspaceInstanceId, paneCount, specs, o
         {Array.from({ length: paneCount }, (_, i) => (
           <AgentSelector
             key={i}
-            workspaceInstanceId={workspaceInstanceId}
+            visible={visible}
             slotIndex={i}
             value={specs[i] ?? EMPTY_SPEC}
-            onChange={(spec) => onChange({ ...specs, [i]: spec })}
+            onChange={spec => onChange(i, spec)}
+            onAccountRead={onAccountRead}
+            onOpenAccountManagement={onOpenAccountManagement}
           />
         ))}
       </div>

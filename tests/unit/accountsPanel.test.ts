@@ -130,7 +130,7 @@ describe("panel layout", () => {
   });
 
   it("links to the detail tab and leaves capture to the backend watcher", () => {
-    expect(panelSource).toContain("⚙ 詳細");
+    expect(panelSource).toContain("アカウント管理");
     expect(panelSource).toContain("onOpenUsageSettings");
     // Outside logins are auto-registered by live_sync, so the footer has no
     // manual capture button (the settings panel keeps its update variant).
@@ -181,7 +181,7 @@ describe("add account entry points", () => {
 
   it("opens the provider choice on left click, never a context menu", () => {
     expect(footerSource).toContain('aria-haspopup="menu"');
-    expect(footerSource).toContain("setAddMenuOpen((open) => !open)");
+    expect(footerSource).toContain("setAddMenuOpen(open => !open)");
     expect(panelSource).not.toContain("onContextMenu");
   });
 

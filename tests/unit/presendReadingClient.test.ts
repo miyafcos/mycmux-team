@@ -24,18 +24,35 @@ const readingFixture = JSON.parse(readFileSync(resolve(import.meta.dirname, "../
   cwd: string;
   batch: LiveSessionEvents;
   brief: LiveSessionBrief;
-  request: { requestId: string; sessionId: string; provider: "claude"; draft: string; conversationExcerpt: string };
+  request: {
+    requestId: string; sessionId: string; provider: "claude"; draft: string; conversationExcerpt: string;
+    replySource: LiveSessionEvents["presendReplySource"]; requireForegroundAgent: boolean; editedAtMs: number;
+    conversationAtEdit: { agentKind: string; agentSessionId: string };
+  };
   workdirCases: Array<{ cwd: string; workdirName: string }>;
 };
 
+function sharedEditEvidence() {
+  const { generation, request } = readingFixture;
+  return Object.assign(() => true, {
+    generationAtEdit: generation, requireForegroundAgent: request.requireForegroundAgent,
+    editedAtMs: request.editedAtMs, conversationAtEdit: request.conversationAtEdit,
+  });
+}
+
+it("keeps the public conversation owner query at kind and conversation ID", () => {
+  const source = readFileSync(resolve(import.meta.dirname, "../../src-tauri/src/commands/terminal.rs"), "utf8");
+  const signature = /pub async fn get_agent_conversation_owner\(([^)]*)\)/.exec(source)?.[1];
+  expect(signature?.match(/\b\w+(?=:\s)/g)).toEqual(["state", "kind", "agent_session_id"]);
+});
+
 const contextSteps = [
-  "get_codex_restore_epoch", "get_live_events", "get_live_briefs",
-  "get_agent_conversation_owner", "get_codex_restore_epoch",
+  "get_codex_restore_epoch", "get_live_events", "get_codex_restore_epoch",
 ];
 
 function mockContextSteps(onLookup: (step: number, value: unknown) => unknown) {
-  const { generation, batch, brief, request } = readingFixture;
-  const results = [generation, [batch], [brief], request.sessionId, generation];
+  const { generation, batch, request } = readingFixture;
+  const results = [generation, [{ ...batch, presendReplySource: request.replySource }], generation];
   let step = 0;
   mocks.invoke.mockImplementation(async (name: string) => {
     if (name === contextSteps[step]) {
@@ -57,7 +74,7 @@ const replyBatch = {
   events: [
     { occurredAt: 8_000, kind: { type: "agentMessage", text: "old reply" } },
     { occurredAt: 9_000, kind: { type: "userMessage", text: "ignored user text" } },
-    { occurredAt: 10_000, kind: { type: "agentMessage", text: `token=reply-secret ${"x".repeat(1600)} ${["sk-ant-", "final-secret"].join("")}` } },
+    { occurredAt: 10_000, kind: { type: "agentMessage", text: `token=reply-secret\n${"x".repeat(1600)} ${["sk-ant-", "final-secret"].join("")}` } },
   ],
 };
 const replyBrief = {
@@ -71,19 +88,29 @@ const replyBrief = {
 };
 
 function mockReplyContext({
-  epochs = [7, 7], batch = replyBatch, brief = replyBrief, owner = "tab-a",
+  epochs = [7, 7], batch = replyBatch, brief = replyBrief,
 }: {
   epochs?: readonly (number | null)[];
-  batch?: typeof replyBatch;
+  batch?: typeof replyBatch & { presendReplySource?: LiveSessionEvents["presendReplySource"] | null };
   brief?: typeof replyBrief;
-  owner?: string | null;
 } = {}) {
   let observation = 0;
+  const events = batch.events.map((event, index) => ({
+    ...event, eventId: "toy-event-" + index, sourceRevision: index + 1,
+    sourceByteStart: index * 100, sourceByteEnd: (index + 1) * 100,
+  }));
+  const last = [...events].reverse().find(event => event.kind.type === "agentMessage");
+  const presendReplySource = "presendReplySource" in batch ? batch.presendReplySource
+    : last && brief.operationalState !== "ended" && batch.briefRevision === brief.briefRevision
+      ? { ptyGeneration: brief.ptyGeneration, agentKind: brief.agentKind,
+          agentSessionId: brief.agentSessionId, occurredAt: last.occurredAt,
+          eventId: last.eventId, sourceRevision: last.sourceRevision,
+          sourceByteStart: last.sourceByteStart, sourceByteEnd: last.sourceByteEnd,
+          fileGeneration: 1, contentDigest: "synthetic" }
+      : undefined;
   mocks.invoke.mockImplementation(async (command: string) => {
     if (command === "get_codex_restore_epoch") return epochs[observation++] ?? null;
-    if (command === "get_live_events") return [batch];
-    if (command === "get_live_briefs") return [brief];
-    if (command === "get_agent_conversation_owner") return owner;
+    if (command === "get_live_events") return [{ ...batch, events, presendReplySource }];
     return null;
   });
 }
@@ -98,6 +125,109 @@ beforeEach(async () => {
   requestPresendReading = (await import("../../src/lib/presendReadingClient")).requestPresendReading;
 });
 describe("presend provider input", () => {
+
+  it.each([
+    [99_982, false, false], [99_983, false, false], [99_995, false, false],
+    [100_000, false, false], [100_001, false, false],
+    [100_000, true, false], [100_001, true, false],
+    [100_000, false, true], [100_001, false, true],
+  ] as const)("checks %i original UTF-16 units before IPC (shrinking=%s, astral=%s)", async (size, shrinking, astral) => {
+    const names = shrinking ? ["0915-L5-110-yaml-plain-continuation"]
+      : ["0915-L5-119-ordinary-token-counter", "0915-L5-111-yaml"];
+    const rows = names.map(name => credentialFixture.cases.find(row => row.name === name)!);
+    const suffix = "\n" + rows.map(row => row.inputParts.join("")).join("\n");
+    const padding = size - suffix.length;
+    const prefix = astral ? "\u{1f600}".repeat(Math.floor(padding / 2)) + "x".repeat(padding % 2) : "x".repeat(padding);
+    const draft = prefix + suffix;
+    const expected = prefix + "\n" + rows.map(row => row.expectedParts.join("")).join("\n");
+    expect(draft.length).toBe(size);
+    expect(expected.length - size).toBe(shrinking ? -2 : 24);
+    await requestPresendReading("draft-size", "tab-a", draft, "claude", () => true);
+    const runs = mocks.invoke.mock.calls.filter(([cmd]) => cmd === "run_presend_reading");
+    expect(runs.length).toBe(size <= 100_000 ? 1 : 0);
+    if (size <= 100_000) expect(runs[0][1].draft === expected).toBe(true);
+  });
+
+  it("ignores context completed past the deadline before timer delivery", async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      mockContextSteps((step, value) => {
+        if (step === 1) now = 3_001;
+        return value;
+      });
+      await requestPresendReading("late-clock", "tab-a", "Synthetic draft", "claude", () => true);
+      expect(contextCalls()).toEqual(contextSteps.slice(0, 2));
+      expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", expect.objectContaining({
+        ptyGeneration: 7, conversationExcerpt: "",
+      }));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+
+  it("omits an old reply replayed with an inferred timestamp", async () => {
+    const batch = { ...replyBatch, presendReplySource: null };
+    mockReplyContext({ batch });
+    await requestPresendReading("replayed", "tab-a", "Synthetic new draft", "claude", () => true);
+    expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", expect.objectContaining({
+      draft: "Synthetic new draft", conversationExcerpt: "",
+    }));
+  });
+
+  it("sends the shared native command example with all edit evidence", async () => {
+    const { batch, cwd, generation, request } = readingFixture;
+    expect(request).toMatchObject({
+      requireForegroundAgent: true, editedAtMs: expect.any(Number),
+      conversationAtEdit: { agentKind: readingFixture.brief.agentKind, agentSessionId: readingFixture.brief.agentSessionId },
+    });
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_codex_restore_epoch") return generation;
+      if (command === "get_live_events") return [{ ...batch, presendReplySource: request.replySource }];
+      if (command === "get_agent_conversation_owner") return request.sessionId;
+      return null;
+    });
+    const metadata = mocks.metadata["tab-a"];
+    mocks.metadata["tab-a"] = { cwd };
+    try {
+      await requestPresendReading(request.requestId, request.sessionId, request.draft, request.provider, sharedEditEvidence());
+      expect(mocks.invoke.mock.calls.some(([name]) => name === "get_agent_conversation_owner")).toBe(false);
+      expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", request);
+    } finally {
+      mocks.metadata["tab-a"] = metadata;
+    }
+  });
+
+  it("discards a newer event with the same timestamp as the reply source", async () => {
+    const { batch, generation, request } = readingFixture;
+    const prior = batch.events[1];
+    const stale = {
+      ...request.replySource, eventId: prior.eventId, sourceRevision: prior.sourceRevision,
+      sourceByteStart: prior.sourceByteStart, sourceByteEnd: prior.sourceByteEnd,
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "get_codex_restore_epoch") return generation;
+      if (command === "get_live_events") return [{
+        ...batch, presendReplySource: stale,
+        events: [...batch.events, { ...prior, eventId: "toy-other-event", sourceByteStart: 123, sourceByteEnd: 155 }],
+      }];
+      if (command === "get_agent_conversation_owner") return request.sessionId;
+      return null;
+    });
+    await requestPresendReading("replaced-event", request.sessionId, request.draft, request.provider, () => true);
+    expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", expect.objectContaining({
+      conversationExcerpt: "", replySource: undefined,
+    }));
+  });
+
+  it("uses the draft alone when native telemetry cannot attribute the shared reply", async () => {
+    mockReplyContext({ batch: { ...replyBatch, presendReplySource: null } });
+    await requestPresendReading("shared", "tab-a", "Synthetic new draft", "claude", () => true);
+    expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", expect.objectContaining({
+      draft: "Synthetic new draft", conversationExcerpt: "",
+    }));
+  });
   it("does not automatically retry failed configuration but permits a new draft", async () => {
     let attempts = 0;
     mocks.invoke.mockImplementation(async (command: string) => {
@@ -146,7 +276,7 @@ describe("presend provider input", () => {
     ["an unavailable generation", { epochs: [null] }],
     ["the generation changing during acquisition", { epochs: [7, 8] }],
     ["a brief from a different event batch", { brief: { ...replyBrief, briefRevision: 32, agentSessionId: "agent-b" } }],
-    ["an unconfirmed conversation owner", { owner: null }],
+    ["an unconfirmed conversation owner", { batch: { ...replyBatch, presendReplySource: null } }],
   ] as const)("continues with the draft alone for %s", async (_case, context) => {
     mockReplyContext(context);
     await requestPresendReading("unbound", "tab-a", "draft waiting to be read", "claude", () => true);
@@ -173,7 +303,7 @@ describe("presend provider input", () => {
     const { cwd, request } = readingFixture;
     mocks.metadata["tab-a"].cwd = cwd;
     mockContextSteps((_step, value) => value);
-    await requestPresendReading(request.requestId, request.sessionId, request.draft, request.provider, () => true);
+    await requestPresendReading(request.requestId, request.sessionId, request.draft, request.provider, sharedEditEvidence());
     expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", request);
     expect(contextCalls()).toEqual(contextSteps);
   });
@@ -182,7 +312,7 @@ describe("presend provider input", () => {
     const { request } = readingFixture;
     mocks.metadata["tab-a"].cwd = cwd;
     mockContextSteps((_step, value) => value);
-    await requestPresendReading(request.requestId, request.sessionId, request.draft, request.provider, () => true);
+    await requestPresendReading(request.requestId, request.sessionId, request.draft, request.provider, sharedEditEvidence());
     expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", { ...request, workdirName });
   });
 
@@ -219,7 +349,7 @@ describe("presend provider input", () => {
     }));
   });
 
-  it.each([0, 1, 2, 3])("stops subsequent context IPCs after cancellation at step %s", async stop => {
+  it.each([0, 1, 2])("stops subsequent context IPCs after cancellation at step %s", async stop => {
     let current = true;
     mockContextSteps((step, value) => {
       if (step === stop) current = false;
@@ -230,7 +360,7 @@ describe("presend provider input", () => {
     expect(mocks.invoke.mock.calls.some(([name]) => name === "run_presend_reading")).toBe(false);
   });
 
-  it.each([0, 1, 2, 3, 4])("uses one context deadline and ignores late results from step %s", async stalled => {
+  it.each([0, 1, 2])("uses one context deadline and ignores late results from step %s", async stalled => {
     vi.useFakeTimers();
     let release: () => void = () => undefined;
     try {
@@ -255,7 +385,8 @@ describe("presend provider input", () => {
       expect(mocks.invoke.mock.calls.filter(([name]) => name === "run_presend_reading")).toHaveLength(1);
 
       mockContextSteps((step, value) => step === 1
-        ? [{ ...readingFixture.batch, events: [{ ...readingFixture.batch.events[1], kind: { type: "agentMessage", text: "Fresh synthetic reply" } }] }]
+        ? [{ ...readingFixture.batch, presendReplySource: readingFixture.request.replySource,
+            events: [{ ...readingFixture.batch.events[1], kind: { type: "agentMessage", text: "Fresh synthetic reply" } }] }]
         : value);
       await requestPresendReading("toy-next", "tab-a", "Next draft", "claude", () => true);
       expect(mocks.invoke).toHaveBeenCalledWith("run_presend_reading", expect.objectContaining({

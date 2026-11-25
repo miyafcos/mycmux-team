@@ -46,6 +46,8 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
     "原因: 起動に指定した登録アカウントが見つかりません。次にすること: 設定のアカウントの画面を確認し、選び直してください。",
   "cli_account.error.launch_token_owner_mismatch":
     "原因: 長期トークンは選択したアカウントのものではありません。次にすること: 対象のアカウントで発行したトークンを登録してください。",
+  "cli_account.error.launch_token_replacement_unverified":
+    "新しいトークンの持ち主を確認できなかったため、登録済みのトークンを残しました。",
   "cli_account.error.launch_token_record_mismatch":
     "原因: 登録した長期トークンと、持ち主の確認の記録が合いません。次にすること: 設定のアカウントの画面で、トークンを登録し直してください。",
   "cli_account.error.launch_token_missing":

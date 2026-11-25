@@ -1221,7 +1221,7 @@ export const THEMES: ThemeDefinition[] = THEME_DRAFTS
     return orderA - orderB;
   });
 
-// Curated subset shown before the full 30-theme list. Two calm darks and one
+// Curated subset shown before the full theme list. Two calm darks and one
 // light, so the quick-settings row stays a single three-card line.
 export const RECOMMENDED_THEMES: Array<{ id: string; reason: string }> = [
   { id: "graphite", reason: "迷ったらこれ。補助文字まで読みやすい" },

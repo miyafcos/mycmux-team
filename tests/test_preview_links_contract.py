@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +40,10 @@ def test_preview_recording_is_profile_only_and_fail_closed():
     assert "crate::test_profile::is_active()" in recorder
     assert "crate::test_profile::runtime_dir()?" in recorder
     native = read("src-tauri/src/commands/webpane_preview_links.rs")
-    assert 'super::record_preview_link(kind, &canonical.to_string_lossy())?' in native
+    reveal = native[native.index("fn reveal_preview_target(") : native.index("pub(super) async fn open(")]
+    gate = "if record(kind, &canonical.to_string_lossy())? {\n        return Ok(());\n    }"
+    assert reveal.index(gate) < reveal.index("reveal(&canonical, path)")
+    assert re.search(r"PreviewTarget::Reveal\(path\) => reveal_preview_target\(\s*&path,\s*super::record_preview_link,", native)
     assert 'super::record_preview_link("browser", url.as_str())?' in native
     assert "open_path_with_default_app" not in native
 

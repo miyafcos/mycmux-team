@@ -13,12 +13,15 @@ import {
 } from "../../lib/agentCatalog";
 import { useLaunchModels } from "../../lib/claudeCodexModels";
 import { LaunchAccountRow, useLaunchAccounts } from "../workspace/LaunchAccountRow";
+import type { LaunchAccountListListener } from "../../lib/tabAccounts";
 
 interface AgentSelectorProps {
-  workspaceInstanceId: number;
+  visible?: boolean;
   slotIndex: number;
   value: PaneLaunchSpec;
   onChange: (spec: PaneLaunchSpec) => void;
+  onAccountRead?: LaunchAccountListListener;
+  onOpenAccountManagement?: () => void;
 }
 
 const controlStyle: CSSProperties = {
@@ -46,11 +49,11 @@ const optionStyle: CSSProperties = {
  * picking one here is the same thing as picking it from the launcher — the
  * choice travels as MYCMUX_LAUNCH_TARGET and the launcher does the spawning.
  */
-export default function AgentSelector({ workspaceInstanceId, slotIndex, value, onChange }: AgentSelectorProps) {
+export default function AgentSelector({ visible, slotIndex, value, onChange, onAccountRead, onOpenAccountManagement }: AgentSelectorProps) {
   const serviceVisible = useAgentServiceVisibility();
   const modelListId = useId();
   const entry = getCatalogEntry(value.target);
-  const launchAccounts = useLaunchAccounts(value.target);
+  const launchAccounts = useLaunchAccounts(value.target, visible, undefined, onAccountRead, slotIndex);
   const models = useLaunchModels(entry);
   const model = value.model ?? "";
   const efforts = getLaunchEfforts(entry, model, models);
@@ -64,7 +67,10 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
   const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
 
   return (
-    <div style={{ display: "flex", gap: 8, padding: "4px 0" }}>
+    <div
+      onFocus={event => { if (!event.currentTarget.contains(event.relatedTarget)) launchAccounts.refresh(); }}
+      style={{ display: "flex", gap: 8, padding: "4px 0" }}
+    >
       <span
         style={{
           fontSize: 11,
@@ -95,7 +101,8 @@ export default function AgentSelector({ workspaceInstanceId, slotIndex, value, o
           ))}
         </select>
 
-        <LaunchAccountRow accounts={launchAccounts} surface="new-workspace" ownerKey={`new-workspace:${workspaceInstanceId}:${slotIndex}`} value={value.account ?? ""} onChange={account => onChange({ ...value, account })} />
+        <LaunchAccountRow accounts={launchAccounts} value={value.account ?? ""}
+          onChange={account => onChange({ ...value, account })} onOpenManagement={onOpenAccountManagement} />
 
         {entry && (
           <div style={{ display: "flex", gap: 4 }}>

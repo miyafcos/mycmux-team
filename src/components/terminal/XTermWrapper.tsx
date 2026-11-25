@@ -293,7 +293,6 @@ export function createPtyExitReporter(write: (notice: string) => void, onExit?: 
   };
 }
 
-const terminalsWithConfirmedStart = new WeakSet<Terminal>();
 
 interface XTermWrapperProps {
   // Workspace terminals derive this from pane visibility and tab selection.
@@ -1489,12 +1488,19 @@ export default memo(function XTermWrapper({
     let pumpGeneration = 0;
     let ownedChannelId: number | undefined;
     const streamHealth = new TerminalStreamHealth();
-    resetPaintVisibilityRef.current = () => streamHealth.resetPaintVisibility();
+    let cancelPaintCheck: (() => void) | undefined;
+    const resetPaintVisibility = (): void => {
+      streamHealth.resetPaintVisibility();
+      cancelPaintCheck?.();
+    };
+    resetPaintVisibilityRef.current = resetPaintVisibility;
     const stopPaintReadChanges = subscribePtyReads(id => {
-      if (id === sessionId) streamHealth.resetPaintVisibility();
+      if (id !== sessionId) return;
+      streamHealth.resetReadProgress();
+      resetPaintVisibility();
     });
     const stopPaintDashboardChanges = useDashboardViewStore.subscribe((state, previous) => {
-      if (state.open !== previous.open) streamHealth.resetPaintVisibility();
+      if (state.open !== previous.open) resetPaintVisibility();
     });
     let channelAttempts = 0;
     let stopStreamHealth: (() => void) | null = null;
@@ -1502,6 +1508,7 @@ export default memo(function XTermWrapper({
     let writingBatch = false;
     let currentPendingBatch: PendingFrontendBatch | null = null;
     let frontendChannelReady = false;
+    let attachedInThisMount = false;
     let replayActive = false;
     let scrollbackSyncInFlight: Promise<boolean> | null = null;
     let lastSynchronizedScrollbackEnd = 0;
@@ -1856,12 +1863,14 @@ export default memo(function XTermWrapper({
 
     let awaitingInputPaint = false;
     let firstTerminalPaint = true;
+    let lastDomRender = 0;
     const registerRenderListener = (currentTerm: Terminal): void => {
       renderDisposable?.dispose();
       renderDisposable = currentTerm.onRender(({ start, end }) => {
         webglRendererBudget.touch(currentTerm);
         streamHealth.rendered();
         if (awaitingDomRender.delete(currentTerm) && actualTerminalRenderer(currentTerm) === "dom") {
+          lastDomRender = streamHealth.renderCount;
           rendererDiagnostic("fallback-ready", sessionId, currentTerm, { dom_ready: 1 });
         }
         recordTerminalFlowRender(sessionId);
@@ -2459,7 +2468,7 @@ export default memo(function XTermWrapper({
       const visible = Boolean(term && !termDisposed && isContainerWritable());
       if (terminalPaintedVisible === visible) return false;
       terminalPaintedVisible = visible;
-      streamHealth.resetPaintVisibility();
+      resetPaintVisibility();
       if (visible && term) webglRendererBudget.touch(term);
       return true;
     };
@@ -2567,11 +2576,10 @@ export default memo(function XTermWrapper({
           writeTerm.write(rewrittenOutput, () => {
             // A timeout or thrown write is not proof that xterm parsed the bytes.
             if (completeParse(true)) markTerminalBufferReady(writeTerm, sourceGeneration);
-            if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term) {
-              // Only the first real callback contributes paint evidence.
-              if (!callbackObserved) streamHealth.observeCurrentParse(sessionId, sourceGeneration, progressGeneration, progressEnd);
-              streamHealth.applied();
-              terminalProgressDiagnostics.finishWrite(sessionId, progressWrite);
+            if (generation === pumpGeneration && !disposed && !termDisposed && writeTerm === term && !callbackObserved) {
+              if (streamHealth.observeCurrentParse(sessionId, sourceGeneration, progressGeneration, progressEnd)) {
+                terminalProgressDiagnostics.finishWrite(sessionId, progressWrite);
+              }
             }
             finish();
           });
@@ -2940,7 +2948,7 @@ export default memo(function XTermWrapper({
       if (disposed || termDisposed) { ackBatch(batch); return; }
       const source = ptyReadGeneration(sessionId);
       if (currentPtyRead(sessionId, source)) streamHealth.observeReceipt(source, batch.generation, batch.scrollbackEnd);
-      streamHealth.received();
+      else streamHealth.received(false);
       recordTerminalFlowReceive(sessionId, batch.bytes, batch.resync);
       terminalProgressDiagnostics.receive(sessionId, batch.generation, batch.scrollbackEnd);
       if (replayActive) {
@@ -3033,10 +3041,8 @@ export default memo(function XTermWrapper({
       streamHealth.attached();
       if (launch.env?.MYCMUX_HANDOFF?.trim()) consumeHandoffLaunchEnv(sessionId);
       frontendChannelReady = true;
-      if (term) {
-        terminalsWithConfirmedStart.add(term);
-        registerReadAuthority(term);
-      }
+      attachedInThisMount = true;
+      if (term) registerReadAuthority(term);
       markTearoutSessionAttached(sessionId, attached);
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
@@ -3229,14 +3235,13 @@ export default memo(function XTermWrapper({
       invalidateContainerVisibilityMemo();
       const observation = usePaneMetadataStore.getState().volatileMetadata[sessionId];
       const observedStopped = observation?.ptyAlive === false && observation.liveAgentObservationKnown !== false;
-      if (!term || liveTerms.get(sessionId) !== term || disposed || termDisposed || !terminalsWithConfirmedStart.has(term)
+      if (!term || liveTerms.get(sessionId) !== term || disposed || termDisposed || !attachedInThisMount
         || sessionExitPending || observedStopped || ptyExitConfirmed(sessionId, ptyReadGeneration(sessionId).epoch)
         || !paintSurfaceVisible()) return;
       const target = term;
       return { term: target, repaint: () => repaintTerminalDisplay(sessionId, target) };
     });
 
-    let cancelPaintCheck: (() => void) | undefined;
     const repairPaint = (): void => {
       if (!term || disposed || termDisposed || !paintSurfaceVisible()) return;
       const target = term;
@@ -3257,10 +3262,12 @@ export default memo(function XTermWrapper({
       }
       const timer = setTimeout(() => {
         cancelPaintCheck = undefined;
-        if (disposed || termDisposed || target !== term || !paintSurfaceVisible() || actualTerminalRenderer(target) !== "dom") report("aborted");
-        else report(streamHealth.renderCount > before ? "end" : "failed");
+        const domPainted = lastDomRender > before;
+        if (disposed || termDisposed || target !== term || !paintSurfaceVisible()
+          || (!domPainted && actualTerminalRenderer(target) !== "dom")) report("aborted");
+        else report(domPainted ? "end" : "failed");
       }, 2000);
-      cancelPaintCheck = () => { clearTimeout(timer); report("aborted"); };
+      cancelPaintCheck = () => { clearTimeout(timer); cancelPaintCheck = undefined; report("aborted"); };
     };
 
     stopStreamHealth = terminalHealthMonitor.watch({
@@ -3268,7 +3275,9 @@ export default memo(function XTermWrapper({
       paint: { sized: () => Boolean(paintSurfaceExposed() && term && term.cols > 0 && term.rows > 0), repair: repairPaint },
       visible: () => {
         invalidateContainerVisibilityMemo();
-        return !disposed && !termDisposed && !replayActive && Boolean(term) && isContainerWritable();
+        const visible = !disposed && !termDisposed && !replayActive && Boolean(term) && isContainerWritable();
+        if (!visible) resetPaintVisibility();
+        return visible;
       },
     });
 

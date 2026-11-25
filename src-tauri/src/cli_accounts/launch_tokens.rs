@@ -9,6 +9,8 @@ use super::{atomic::write_atomic, registry, snapshot, token_owner::{LaunchOwnerC
     ERR_SNAPSHOT_UNAVAILABLE};
 
 const FILE: &str = "cli_account_launch_tokens.json";
+pub(super) const ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED: &str =
+    "cli_account.error.launch_token_replacement_unverified";
 #[cfg(not(windows))]
 const SERVICE: &str = "com.miyazaki.mycmux.cli-launch-token";
 
@@ -56,6 +58,29 @@ pub struct LaunchTokenStatus {
     pub owner_method: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct StoredRegistration {
+    #[serde(flatten)]
+    status: LaunchTokenStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    personally_verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_digest: Option<String>,
+}
+
+impl StoredRegistration {
+    fn matches_digest(&self, digest: &str) -> bool {
+        match self.token_digest.as_deref() {
+            Some(saved) => saved == digest,
+            None => self.status.fingerprint == digest[..10],
+        }
+    }
+
+    fn personally_verified(&self) -> bool {
+        self.personally_verified.unwrap_or(self.status.owner_check == OwnerCheckStatus::Verified)
+    }
+}
+
 #[derive(Debug)]
 pub enum SaveOutcome { Saved(LaunchTokenStatus), MismatchRecorded(LaunchTokenStatus) }
 
@@ -83,6 +108,10 @@ fn normalized_token(token: &str) -> Result<&str, String> {
 }
 
 pub fn status_all(base: &Path) -> Result<Vec<LaunchTokenStatus>, String> {
+    Ok(load_registrations(base)?.into_iter().map(|record| record.status).collect())
+}
+
+fn load_registrations(base: &Path) -> Result<Vec<StoredRegistration>, String> {
     let text = match fs::read_to_string(base.join(FILE)) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -91,7 +120,7 @@ pub fn status_all(base: &Path) -> Result<Vec<LaunchTokenStatus>, String> {
     serde_json::from_str(&text).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.into())
 }
 
-fn save_status(base: &Path, records: &[LaunchTokenStatus]) -> Result<(), String> {
+fn save_status<T: Serialize>(base: &Path, records: &[T]) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(records).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
     write_atomic(&base.join(FILE), &bytes).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())
 }
@@ -124,9 +153,15 @@ fn check(
 }
 
 fn update_owner_check(
-    record: &mut LaunchTokenStatus,
+    registration: &mut StoredRegistration,
     (owner_check, owner_check_status, owner_method): (OwnerCheckStatus, Option<u16>, Option<String>),
 ) {
+    registration.personally_verified = Some(match (&owner_check, owner_method.as_deref()) {
+        (OwnerCheckStatus::Verified, _) => true,
+        (OwnerCheckStatus::Mismatch, Some("profile")) => false,
+        _ => registration.personally_verified(),
+    });
+    let record = &mut registration.status;
     // A failed or weaker lookup cannot erase a known mismatch for this token.
     let clears_mismatch = match record.owner_method.as_deref() {
         Some("profile") => owner_check == OwnerCheckStatus::Verified,
@@ -147,8 +182,13 @@ fn update_owner_check(
     record.owner_checked_at = Some(Utc::now().to_rfc3339());
 }
 
+fn token_digest(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+#[cfg(test)]
 fn token_fingerprint(token: &str) -> String {
-    hex::encode(Sha256::digest(token.as_bytes()))[..10].into()
+    token_digest(token)[..10].into()
 }
 
 /// The caller supplies the owner lookup; tests never contact the provider.
@@ -168,13 +208,26 @@ pub fn save_with_outcome(
     base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str, token: &str,
     check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,
 ) -> Result<SaveOutcome, String> {
-    save_with_status_writer(base, secrets, profile_id, token, check_owner, save_status)
+    save_with_registration_writer(base, secrets, profile_id, token, check_owner, save_status)
 }
 
+#[cfg(test)]
 fn save_with_status_writer(
     base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str, token: &str,
     check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,
     persist_status: impl FnOnce(&Path, &[LaunchTokenStatus]) -> Result<(), String>,
+) -> Result<SaveOutcome, String> {
+    // Keep the existing failure injection at the status-write boundary.
+    save_with_registration_writer(base, secrets, profile_id, token, check_owner, |base, registrations| {
+        let statuses: Vec<_> = registrations.iter().map(|record| record.status.clone()).collect();
+        persist_status(base, &statuses)
+    })
+}
+
+fn save_with_registration_writer(
+    base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str, token: &str,
+    check_owner: impl FnOnce(&str) -> LaunchOwnerCheck,
+    persist_status: impl FnOnce(&Path, &[StoredRegistration]) -> Result<(), String>,
 ) -> Result<SaveOutcome, String> {
     let _guard = super::mutation_guard()?;
     validate_profile_id(profile_id)?;
@@ -183,13 +236,34 @@ fn save_with_status_writer(
         .find(|profile| profile.id == profile_id && profile.provider == CliProvider::Claude)
         .ok_or_else(|| ERR_LAUNCH_ACCOUNT_NOT_FOUND.to_string())?;
     let token = normalized_token(token)?;
-    let mut records = status_all(base)?;
+    let mut records = load_registrations(base)?;
     let previous_token = secrets.read(profile_id).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
-    let fingerprint = token_fingerprint(token);
-    let same_token = records.iter().any(|record| record.profile_id == profile_id && record.fingerprint == fingerprint);
+    let digest = token_digest(token);
     let needs_write = previous_token.as_deref() != Some(token);
     let checked = check(base, &registry.profiles, profile, check_owner(token));
-    let persist_registration = |records: &[LaunchTokenStatus], write_secret: bool| {
+    let same_token = records.iter().position(|record| {
+        // Same-value updates retain the dates. A legacy fingerprint alone can
+        // preserve them for a recovery with a fresh personal match.
+        let legacy_mismatch = record.status.owner_check == OwnerCheckStatus::Mismatch
+            && !record.personally_verified()
+            && (previous_token.is_none() || record.status.owner_method.as_deref() == Some("profile"));
+        record.status.profile_id == profile_id && record.matches_digest(&digest)
+            && (record.token_digest.is_some() || !needs_write || checked.0 == OwnerCheckStatus::Verified
+                || legacy_mismatch)
+    });
+    let restores_verified_secret = previous_token.is_none() && same_token.is_some_and(|index| {
+        let record = &records[index];
+        record.personally_verified() && record.token_digest.as_deref() == Some(digest.as_str())
+    });
+    // A weaker lookup may register a first value, recheck the same value, or
+    // restore the exact verified value when the OS store has no secret.
+    if matches!(checked.0, OwnerCheckStatus::Unverified | OwnerCheckStatus::OrgMatched | OwnerCheckStatus::OrgShared)
+        && !restores_verified_secret && (needs_write || same_token.is_none())
+        && records.iter().any(|record| record.status.profile_id == profile_id && record.personally_verified())
+    {
+        return Err(ERR_LAUNCH_TOKEN_REPLACEMENT_UNVERIFIED.into());
+    }
+    let persist_registration = |records: &[StoredRegistration], write_secret: bool| {
         if write_secret { secrets.write(profile_id, token).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?; }
         if let Err(error) = persist_status(base, records) {
             if write_secret {
@@ -203,16 +277,26 @@ fn save_with_status_writer(
         }
         Ok(())
     };
-    if same_token {
-        if let Some(record) = records.iter_mut().find(|record| record.profile_id == profile_id && record.fingerprint == fingerprint) {
-            update_owner_check(record, checked);
-            let result = record.clone();
-            let mismatch = result.owner_check == OwnerCheckStatus::Mismatch;
-            persist_registration(&records, needs_write && !mismatch)?;
-            return if mismatch {
-                Ok(SaveOutcome::MismatchRecorded(result))
-            } else { Ok(SaveOutcome::Saved(result)) };
+    if let Some(index) = same_token {
+        let record = &mut records[index];
+        let retains_profile_mismatch = record.status.owner_check == OwnerCheckStatus::Mismatch
+            && record.status.owner_method.as_deref() == Some("profile")
+            && checked.0 != OwnerCheckStatus::Verified;
+        if needs_write && ((previous_token.is_some() && retains_profile_mismatch)
+            || (checked.0 == OwnerCheckStatus::Mismatch && (previous_token.is_some() || record.personally_verified())))
+        {
+            return Err(ERR_LAUNCH_TOKEN_OWNER_MISMATCH.into());
         }
+        if checked.0 == OwnerCheckStatus::Verified {
+            record.token_digest = Some(digest);
+        }
+        update_owner_check(record, checked);
+        let result = record.status.clone();
+        let mismatch = result.owner_check == OwnerCheckStatus::Mismatch;
+        persist_registration(&records, needs_write && !mismatch)?;
+        return if mismatch {
+            Ok(SaveOutcome::MismatchRecorded(result))
+        } else { Ok(SaveOutcome::Saved(result)) };
     }
     let (owner_check, owner_check_status, owner_method) = checked;
     if owner_check == OwnerCheckStatus::Mismatch { return Err(ERR_LAUNCH_TOKEN_OWNER_MISMATCH.into()); }
@@ -221,10 +305,14 @@ fn save_with_status_writer(
         profile_id: profile_id.into(), registered_at: registered_at.to_rfc3339(),
         expires_at: (registered_at + Duration::days(365)).to_rfc3339(),
         owner_check, owner_check_status, owner_method, owner_checked_at: Some(registered_at.to_rfc3339()),
-        fingerprint,
+        fingerprint: digest[..10].into(),
     };
-    records.retain(|record| record.profile_id != profile_id);
-    records.push(record.clone());
+    records.retain(|record| record.status.profile_id != profile_id);
+    records.push(StoredRegistration {
+        personally_verified: Some(record.owner_check == OwnerCheckStatus::Verified),
+        token_digest: Some(digest),
+        status: record.clone(),
+    });
     persist_registration(&records, needs_write)?;
     Ok(SaveOutcome::Saved(record))
 }
@@ -239,13 +327,18 @@ pub fn recheck(
     let profile = registry.profiles.iter()
         .find(|profile| profile.id == profile_id && profile.provider == CliProvider::Claude)
         .ok_or_else(|| ERR_LAUNCH_ACCOUNT_NOT_FOUND.to_string())?;
-    let mut records = status_all(base)?;
-    let record = records.iter_mut().find(|record| record.profile_id == profile_id)
+    let mut records = load_registrations(base)?;
+    let record = records.iter_mut().find(|record| record.status.profile_id == profile_id)
         .ok_or_else(|| super::ERR_LAUNCH_TOKEN_MISSING.to_string())?;
     let token = load_token(secrets, profile_id)?.ok_or_else(|| super::ERR_LAUNCH_TOKEN_MISSING.to_string())?;
-    if token_fingerprint(&token) != record.fingerprint { return Err(ERR_LAUNCH_TOKEN_RECORD_MISMATCH.into()); }
-    update_owner_check(record, check(base, &registry.profiles, profile, check_owner(&token)));
-    let result = record.clone();
+    let digest = token_digest(&token);
+    if !record.matches_digest(&digest) { return Err(ERR_LAUNCH_TOKEN_RECORD_MISMATCH.into()); }
+    let checked = check(base, &registry.profiles, profile, check_owner(&token));
+    if checked.0 == OwnerCheckStatus::Verified {
+        record.token_digest = Some(digest);
+    }
+    update_owner_check(record, checked);
+    let result = record.status.clone();
     save_status(base, &records)?;
     Ok(result)
 }
@@ -262,11 +355,12 @@ pub(crate) fn load_for_launch(base: &Path, profile_id: &str) -> Result<Option<La
 fn load_for_launch_with_store(base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str) -> Result<Option<LaunchToken>, String> {
     let _guard = super::mutation_guard()?;
     validate_profile_id(profile_id)?;
-    let Some(record) = status_all(base)?.into_iter().find(|record| record.profile_id == profile_id) else { return Ok(None) };
+    let Some(record) = load_registrations(base)?.into_iter().find(|record| record.status.profile_id == profile_id) else { return Ok(None) };
     let token = load_token(secrets, profile_id)?;
-    if token.as_deref().is_some_and(|token| token_fingerprint(token) != record.fingerprint) {
+    if token.as_deref().is_some_and(|token| !record.matches_digest(&token_digest(token))) {
         return Err(ERR_LAUNCH_TOKEN_RECORD_MISMATCH.into());
     }
+    let record = record.status;
     if record.owner_check == OwnerCheckStatus::Mismatch { return Err(ERR_LAUNCH_TOKEN_OWNER_MISMATCH.into()); }
     let expires_at = DateTime::parse_from_rfc3339(&record.expires_at)
         .map_err(|_| ERR_SNAPSHOT_UNAVAILABLE.to_string())?.with_timezone(&Utc);
@@ -281,10 +375,10 @@ pub fn remove(base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str) -> 
 /// Also used by remove_resolved while it already owns mutation_guard.
 pub(super) fn remove_locked(base: &Path, secrets: &dyn LaunchTokenStore, profile_id: &str) -> Result<(), String> {
     validate_profile_id(profile_id)?;
-    let mut records = status_all(base)?;
+    let mut records = load_registrations(base)?;
     secrets.delete(profile_id).map_err(|_| ERR_REMOVE_FAILED.to_string())?;
     let before = records.len();
-    records.retain(|record| record.profile_id != profile_id);
+    records.retain(|record| record.status.profile_id != profile_id);
     if records.len() != before { save_status(base, &records)?; }
     Ok(())
 }

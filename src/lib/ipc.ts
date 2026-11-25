@@ -84,7 +84,7 @@ interface CrsmCreateHandoffArgs {
   recentTurns: number;
 }
 interface SessionIdsArgs { sessionIds: string[] }
-interface SavePersistentDataArgs { data: PersistentData }
+interface SavePersistentDataArgs { data: PersistentData; selectionChanged?: true }
 interface SocketResponseArgs { id: number; result: any; error: string | null }
 interface CandidatesArgs { candidates: string[] }
 interface UriArgs { uri: string }
@@ -1218,7 +1218,11 @@ export async function openMainDashboard(target: OpenDashboardTarget = {}): Promi
   });
 }
 
-export async function focusWindow(label: string, options?: { focusPrimary?: boolean }): Promise<void> {
+export async function focusWindow(label: string, options?: {
+  focusPrimary?: boolean;
+  expiresAt?: number;
+  accountManagementSubscription?: WindowAccountManagementSubscription;
+}): Promise<void> {
   return invoke<void>("focus_window", { label, ...options });
 }
 
@@ -1249,18 +1253,34 @@ export interface WindowTabIndexTab {
   live_agent_kind?: string | null;
 }
 
+export interface WindowAccountManagementSubscription {
+  publication_id: string;
+  subscription_id: string;
+}
+
 export interface WindowTabIndex {
   window_label: string;
   pending: boolean;
+  account_management_ready?: boolean;
+  account_management_subscription?: WindowAccountManagementSubscription | null;
   workspaces: Array<{ id: string; name: string; panes: Array<{ id: string; tabs: WindowTabIndexTab[] }> }>;
 }
 
-export async function getWindowTabIndex(): Promise<WindowTabIndex[]> {
-  return invoke<WindowTabIndex[]>("get_window_tab_index");
+interface WindowTabIndexSnapshot {
+  windows: WindowTabIndex[];
+  quitting?: boolean;
+}
+
+export function getWindowTabIndex(): Promise<WindowTabIndex[]>;
+export function getWindowTabIndex(options: { includeQuitState: true }): Promise<WindowTabIndexSnapshot | WindowTabIndex[]>;
+export async function getWindowTabIndex(options?: { includeQuitState: true }): Promise<WindowTabIndexSnapshot | WindowTabIndex[]> {
+  if (options) return invoke("get_window_tab_index", options);
+  const index = await invoke<WindowTabIndexSnapshot | WindowTabIndex[]>("get_window_tab_index");
+  return Array.isArray(index) ? index : index.windows;
 }
 
 export async function setWindowCloseIntent(closing: boolean): Promise<void> {
-  return invoke<void>("set_window_close_intent", { closing });
+  return invoke<void>("set_window_close_intent", { closing, publicationId: layoutPublicationId() });
 }
 
 export async function quitApp(): Promise<void> {
@@ -1325,6 +1345,7 @@ export interface OpenWorkspaceWindowOptions extends OpenChildWindowOptions {
   workspaces: WorkspaceConfig[];
   /** The source retains ownership until an addressed receiver acknowledges. */
   deferredAdoption?: boolean;
+  creationId?: string;
 }
 
 /**
@@ -1339,6 +1360,7 @@ export async function openWorkspaceWindow(
     fromLabel: options.fromLabel,
     workspaces: options.workspaces,
     ...(options.deferredAdoption ? { deferredAdoption: true } : {}),
+    ...(options.creationId ? { creationId: options.creationId } : {}),
     label: options.label ?? null,
     x: options.x ?? null,
     y: options.y ?? null,
@@ -1351,14 +1373,22 @@ export async function openWorkspaceWindow(
  * Every window publishes its own workspaces here. Main merges the non-main
  * fragments into `data.json`; children never call `savePersistentData`.
  */
+export const WINDOW_OPEN_FAILED_EVENT = "mycmux://window-open-failed";
+export interface WindowOpenFailure {
+  label: string;
+  creation_id?: string | null;
+  kind: "move" | "restore";
+  moved_count: number;
+}
+
 /** Sent to every window when the app is quitting: publish, then answer. */
 export const QUIT_PREPARE_EVENT = "mycmux://prepare-quit";
 /** Sent to the window that owns data.json once its peers have published. */
 export const QUIT_SAVE_EVENT = "mycmux://save-and-quit";
 
 /** This window has published everything it holds; the quit may proceed. */
-export async function quitPrepared(fragmentPublished: boolean): Promise<void> {
-  return invoke<void>("quit_prepared", { fragmentPublished });
+export async function quitPrepared(fragmentPublished: boolean, sealed?: true): Promise<void> {
+  return invoke<void>("quit_prepared", { fragmentPublished, ...(sealed ? { sealed } : {}) });
 }
 
 /** data.json is written; the app may exit. */
@@ -1366,8 +1396,33 @@ export async function quitSaved(): Promise<void> {
   return invoke<void>("quit_saved");
 }
 
+export function layoutPublicationId(): string | undefined {
+  return (globalThis as typeof globalThis & { __MYCMUX_LAYOUT_PUBLICATION_ID__?: string }).__MYCMUX_LAYOUT_PUBLICATION_ID__;
+}
+
 export async function publishWindowFragment(fragment: WindowFragment, requirePublished?: true): Promise<void> {
-  return invoke<void>("publish_window_fragment", { fragment, requirePublished });
+  const publicationId = layoutPublicationId();
+  return invoke<void>("publish_window_fragment", { fragment, requirePublished, publicationId });
+}
+
+export const WINDOW_PUBLISHER_REPLACED_ERROR = "window publisher has been replaced or destroyed";
+
+/** Read the reload generation before this document starts advertising its listener. */
+export function readWindowAccountManagementDocument(publicationId: string | undefined): Promise<number> {
+  return invoke<number>("publish_window_fragment", { publicationId, readAccountManagementDocument: true });
+}
+
+/** Publish the window's listener status independently of its workspace data. */
+export function publishWindowAccountManagementReady(
+  publicationId: string | undefined,
+  accountManagementDocument: number,
+  accountManagementSequence: number,
+  accountManagementSubscriptionId: string | undefined,
+): Promise<void> {
+  return invoke<void>("publish_window_fragment", {
+    publicationId, accountManagementDocument, accountManagementSequence, accountManagementSubscriptionId,
+    accountManagementReady: accountManagementSubscriptionId !== undefined,
+  });
 }
 
 /** Drain (and thereby claim) the workspaces queued for a window. */
@@ -1469,6 +1524,8 @@ export interface DetachedPaneOrigin {
 }
 
 export interface WorkspaceConfig {
+  /** Keeps the saved ID until the receiver publishes a rescued startup row. */
+  preserve_workspace_identity?: boolean;
   detached?: boolean | null;
   detached_from?: DetachedPaneOrigin | null;
   /**
@@ -1606,8 +1663,10 @@ export async function loadPersistentData(): Promise<PersistentDataEnvelope> {
   return invoke<PersistentDataEnvelope>("load_persistent_data");
 }
 
-export async function savePersistentData(data: PersistentData): Promise<void> {
-  return invoke<void>("save_persistent_data", { data } satisfies SavePersistentDataArgs);
+export async function savePersistentData(data: PersistentData, selectionChanged?: true): Promise<void> {
+  return invoke<void>("save_persistent_data", {
+    data, ...(selectionChanged ? { selectionChanged } : {}),
+  } satisfies SavePersistentDataArgs);
 }
 
 import type { ListedPet } from "./pets";
@@ -1770,6 +1829,13 @@ export async function getAccountUsage(
     : invoke<AccountUsageReport>("get_account_usage");
 }
 
+export async function getGeminiUsage(refreshMetadata = false): Promise<AccountUsageReport> {
+  return invoke<AccountUsageReport>("get_account_usage", {
+    geminiOnly: true,
+    ...(refreshMetadata ? { refreshMetadata: true } : {}),
+  });
+}
+
 export async function claimResetTicket(profileId: string, requestId: string, expectedEmail: string | null): Promise<ResetTicketOutcome> {
   return invoke<ResetTicketOutcome>("use_reset_ticket", { profileId, requestId, expectedEmail });
 }
@@ -1907,12 +1973,14 @@ export async function getCliLaunchTokens(): Promise<CliLaunchTokenStatus[]> {
   return invoke<CliLaunchTokenStatus[]>("get_cli_launch_tokens");
 }
 
-export async function setCliLaunchToken(profileId: string, token: string): Promise<CliLaunchTokenStatus> {
-  return invoke<CliLaunchTokenStatus>("set_cli_launch_token", { profileId, token });
+type LaunchTokenUpdate = CliLaunchTokenStatus & { notification_sent?: boolean };
+
+export async function setCliLaunchToken(profileId: string, token: string, writeId?: string): Promise<LaunchTokenUpdate> {
+  return invoke<LaunchTokenUpdate>("set_cli_launch_token", writeId ? { profileId, token, writeId } : { profileId, token });
 }
 
-export async function recheckCliLaunchToken(profileId: string): Promise<CliLaunchTokenStatus> {
-  return invoke<CliLaunchTokenStatus>("recheck_cli_launch_token", { profileId });
+export async function recheckCliLaunchToken(profileId: string, writeId?: string): Promise<LaunchTokenUpdate> {
+  return invoke<LaunchTokenUpdate>("recheck_cli_launch_token", writeId ? { profileId, writeId } : { profileId });
 }
 
 export async function removeCliLaunchToken(profileId: string): Promise<void> {

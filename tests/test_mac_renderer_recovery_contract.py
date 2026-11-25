@@ -50,9 +50,9 @@ def test_both_platforms_heartbeat_identity_comes_from_the_caller_and_prunes_clos
         assert all(not gate.startswith('#[cfg(') for gate in gates(source,item)),item
     command=body(source,'report_renderer_heartbeat')
     assert 'caller: tauri::Webview' in source
-    assert 'heartbeat(caller.label(), &heartbeat, clock_ms())' in command
+    assert 'heartbeat(caller.label(), &heartbeat, renderer_clock_ms())' in command
     assert 'renderers().lock()' in command
-    assert '.poll(now_ms, |label| app.get_webview(label).is_some())' in source
+    assert '.poll(renderer_clock_ms(), |label| app.get_webview(label).is_some())' in source
     assert 'self.views.retain(|label, _| exists(label))' in source
     assert '[renderer] heap_used_mib={heap}' in source
     assert 'webview={label}' in body(source,'heartbeat') or 'format!("{line} webview={label}")' in source

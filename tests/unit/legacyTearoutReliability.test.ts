@@ -115,7 +115,11 @@ describe("legacy tear-out confirmation and rollback", () => {
     mocks.send.mockReturnValue(new Promise<void>(resolve => { received = resolve; }));
     const before = useWorkspaceListStore.getState().workspaces;
     const pending = tearOutWorkspaceToNewWindow("source");
-    await vi.waitFor(() => expect(mocks.ready).toHaveBeenCalledWith("child"), { timeout: 2000 });
+    await vi.waitFor(() => {
+      const creationId = mocks.open.mock.calls[0][0].creationId;
+      expect(creationId).toEqual(expect.any(String));
+      expect(mocks.ready).toHaveBeenCalledWith("child", creationId, expect.any(AbortSignal));
+    }, { timeout: 2000 });
     try {
       expect(useWorkspaceListStore.getState().workspaces).toEqual(before);
       expect(mocks.open.mock.calls[0][0].deferredAdoption).toBe(true);
@@ -177,9 +181,121 @@ describe("ordinary transport common move result", () => {
   it("reports a rejected receipt as rolled back and keeps the original display", async () => {
     const original = useWorkspaceListStore.getState().workspaces;
     mocks.send.mockRejectedValueOnce(new Error("receipt_rejected"));
-    const result = await executePaneMove(createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" }));
+    const request = createPaneMoveRequest({ kind: "workspace", workspaceId: "source", label: "Source" }, { kind: "window" });
+    const result = await executePaneMove(request);
     expect(result).toMatchObject({ status: "failed", phase: "rolled_back", receipt: "pending", reason: "receipt_rejected" });
     expect(useWorkspaceListStore.getState().workspaces).toEqual(original);
-    expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", { label: "child" });
+    expect(mocks.invoke).toHaveBeenCalledWith("tearout_retire", { label: "child", creationId: request.operationId });
   });
+});
+
+it("keeps reading off in the receiving window and after returning until the tab is explicitly enabled", async () => {
+  const sessionId = "pty-two";
+  const draft = "A draft waiting in the original window";
+  const remainder = { ...source(), id: "remainder", panes: [], splitColumns: [] };
+  useWorkspaceListStore.setState({ workspaces: [source(), remainder] });
+  setPresendTabEnabled(sessionId, false);
+  ensurePresendTab(sessionId).attempted.add("earlier-attempt");
+  useComposerStore.getState().setDraft(sessionId, draft);
+  let sharedEnabled = false;
+  let releasePreference: (() => void) | undefined;
+  mocks.invoke.mockImplementation(async (command: string, input?: { sessionId?: string; tabEnabled?: boolean }) => {
+    if (command !== "configure_presend_reading" || input?.sessionId !== sessionId) return undefined;
+    if (typeof input.tabEnabled === "boolean") {
+      sharedEnabled = input.tabEnabled;
+      return sharedEnabled;
+    }
+    return new Promise(resolve => { releasePreference = () => resolve(sharedEnabled); });
+  });
+  mocks.reading.mockResolvedValue(null);
+  const root = createRoot(document.createElement("div"));
+
+  async function arrive(configs: Parameters<typeof restoreWorkspaceConfigs>[0]) {
+    vi.resetModules();
+    const [
+      { usePresendReading: readInWindow }, { presendTab: tabInWindow },
+      { restoreWorkspaceConfigs: restoreInWindow }, { useWorkspaceListStore: workspacesInWindow },
+      { useSettingsStore: settingsInWindow }, { useAiSettingsStore: aiInWindow },
+      { useComposerStore: composerInWindow }, { publishCodexRestoreNoticeEpoch },
+      { tearOutWorkspaceToNewWindow: transferInWindow }, ipcInWindow,
+    ] = await Promise.all([
+      import("../../src/components/composer/usePresendReading"), import("../../src/lib/presendReading"),
+      import("../../src/lib/workspaceRestore"), import("../../src/stores/workspaceListStore"),
+      import("../../src/stores/settingsStore"), import("../../src/stores/aiSettingsStore"),
+      import("../../src/stores/composerStore"), import("../../src/lib/codexRestoreLifecycle"),
+      import("../../src/lib/workspaceTearOut"), import("../../src/lib/ipc"),
+    ]);
+    expect(tabInWindow(sessionId)).toBeUndefined();
+    workspacesInWindow.setState({ workspaces: [] });
+    restoreInWindow(configs);
+    expect(workspacesInWindow.getState().getWorkspace("source")?.panes[0].tabs[1].sessionId).toBe(sessionId);
+    settingsInWindow.setState({ presendReadingEnabled: true, paneComposerEnabled: true, presendReadingProvider: "claude" });
+    aiInWindow.setState({ aiEnabled: true });
+    publishCodexRestoreNoticeEpoch(sessionId, 7);
+    let reading!: ReturnType<typeof readInWindow>;
+    function ArrivedTab() {
+      const text = composerInWindow(state => state.draftBySession[sessionId] ?? "");
+      reading = readInWindow(sessionId, text, "claude", true);
+      return null;
+    }
+    await act(async () => root.render(createElement(ArrivedTab)));
+    return {
+      edit: (text: string) => act(() => {
+        reading.recordEdit(text);
+        composerInWindow.getState().setDraft(sessionId, text);
+      }),
+      isEnabled: () => reading.tabEnabled,
+      toggle: () => act(async () => reading.toggle()),
+      returnToParent: async () => {
+        const open = vi.spyOn(ipcInWindow, "openWorkspaceWindow").mockResolvedValue("parent");
+        const alive = vi.spyOn(ipcInWindow, "isSessionAlive").mockResolvedValue(true);
+        try {
+          expect(await transferInWindow("source")).toBe("parent");
+          return mocks.send.mock.calls[mocks.send.mock.calls.length - 1]![1];
+        } finally {
+          open.mockRestore();
+          alive.mockRestore();
+        }
+      },
+    };
+  }
+  const wait = () => act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  try {
+    expect(await tearOutWorkspaceToNewWindow("source")).toBe("child");
+    expect(useWorkspaceListStore.getState().workspaces).toEqual([remainder]);
+    expect(presendTab(sessionId)?.attempted.size).toBe(0);
+    const payload = mocks.send.mock.calls[0][1];
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const child = await arrive(payload);
+    child.edit("synthetic edit before the receiving window reads the preference");
+    await wait();
+    expect(mocks.reading).not.toHaveBeenCalled();
+    await act(async () => releasePreference?.());
+    child.edit("synthetic edit with the tab off in the receiving window");
+    await wait();
+    expect(child.isEnabled()).toBe(false);
+    expect(mocks.reading).not.toHaveBeenCalled();
+    act(() => root.render(null));
+    const returned = await child.returnToParent();
+    expect(mocks.send.mock.calls.map(([window]) => window)).toEqual(["child", "parent"]);
+    const parent = await arrive(returned);
+    await act(async () => releasePreference?.());
+    parent.edit("synthetic edit after returning to the original window");
+    await wait();
+    expect(parent.isEnabled()).toBe(false);
+    expect(mocks.reading).not.toHaveBeenCalled();
+    await parent.toggle();
+    await wait();
+    expect(mocks.reading).not.toHaveBeenCalled();
+    parent.edit("synthetic edit after explicitly enabling the tab");
+    await wait();
+    expect(mocks.reading).toHaveBeenCalledOnce();
+  } finally {
+    act(() => root.unmount());
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    forgetPresendTab(sessionId);
+    useComposerStore.getState().clearDraft(sessionId);
+  }
 });

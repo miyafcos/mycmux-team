@@ -14,12 +14,14 @@ import {
   switchWarningText,
 } from "../../lib/cliAccounts";
 import {
+  GEMINI_ACCOUNT_LIMIT,
   PROVIDER_SHORT,
   SHARED_RESET_TITLE,
   displayWindows,
   formatPct,
   formatResetShort,
   formatUpdatedAt,
+  geminiNeedsLogin,
   rowMessage,
   sharedResetAt,
   staleWindowsNote,
@@ -31,7 +33,7 @@ import { AccountSubscriptionDetails } from "../common/AccountSubscriptionDetails
 import { subscriptionTitle } from "../../lib/accountSubscription";
 import { accountLimitLabel, groupAccountRows, type AccountPanelGroup } from "../../lib/accountAvailability";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
-import { useCliLoginStore } from "../../stores/cliLoginStore";
+import { openGeminiLogin, useCliLoginStore } from "../../stores/cliLoginStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useUsageStore } from "../../stores/usageStore";
@@ -564,6 +566,12 @@ function AccountRow({
         </span>
       )}
     </RowContent>
+      {usageOnly && geminiNeedsLogin(row) && (
+        <div style={{ padding: "0 var(--cmux-space-5) var(--cmux-space-3)" }}>
+          <button type="button" style={panelButtonStyle}
+            onClick={async () => { if (await openGeminiLogin()) onClose(); }}>ログイン</button>
+        </div>
+      )}
       {!usageOnly && (
         <div style={{ padding: "0 var(--cmux-space-5) var(--cmux-space-3)" }}>
           <AccountSubscriptionDetails row={row} />
@@ -716,6 +724,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   const fetchAccounts = useCliAccountStore((state) => state.fetch);
   const refreshing = usageLoading || cliLoading;
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [showGeminiLimit, setShowGeminiLimit] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Logins made outside the app are picked up by the backend live-sync watcher
@@ -764,7 +773,7 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
         >
           <button
             type="button"
-            onClick={() => setAddMenuOpen((open) => !open)}
+            onClick={() => { setShowGeminiLimit(false); setAddMenuOpen(open => !open); }}
             disabled={loginInProgress}
             aria-haspopup="menu"
             aria-expanded={addMenuOpen}
@@ -823,6 +832,12 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
                   {addAccountLabel(provider)}
                 </button>
               ))}
+              <button type="button" role="menuitem" onClick={() => {
+                setAddMenuOpen(false);
+                setShowGeminiLimit(true);
+              }} style={{ ...panelButtonStyle, border: 0, background: "none", textAlign: "left" }}>
+                Gemini のアカウントを追加
+              </button>
             </div>
           )}
         </div>
@@ -841,10 +856,11 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
           onClick={onOpenUsageSettings}
           style={panelButtonStyle}
         >
-          ⚙ 詳細
+          アカウント管理
         </button>
         </div>
       </div>
+      {showGeminiLimit && <div role="status" style={{ fontSize: "var(--cmux-font-size-xs)" }}>{GEMINI_ACCOUNT_LIMIT}</div>}
     </footer>
   );
 }

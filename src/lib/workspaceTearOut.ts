@@ -9,6 +9,7 @@ import { usePaneMetadataStore, useWorkspaceListStore } from "../stores/workspace
 import { evictTerminalCache } from "../components/terminal/terminalCache";
 import { waitForTearoutReceiver, sendTearoutWorkspaces, visitTearoutLocation, isPreOwnershipTearoutRefusal } from "./tearout/runtime";
 import { LocalTearoutRefusal, localTearoutRefusal, beginTearoutOperation, restoringTearoutOperation, endTearoutOperation } from "./tearout/operation";
+import { watchTearoutWindowOpening } from "./tearout/runtime";
 import { liveTransferSessions, terminalTransferSessions } from "./tearout/transferSessions";
 import { expectTearoutAttachments, rememberTearoutDormantSessions } from "./tearout/sessionAttachment";
 import { TearoutRecord } from "./tearout/record";
@@ -118,15 +119,18 @@ export async function performWorkspaceWindowMove(
       await publishWindowFragment(buildWindowFragment("transfer"));
     } finally { attachments.dispose(); }
   };
+  const opening = watchTearoutWindowOpening(id);
   try {
     liveSessions = await liveTransferSessions([config]);
     recordPerf("detach.request", workspaceId);
-    label = await openWorkspaceWindow({ fromLabel: windowLabel(), workspaces: [config], x: placement.x, y: placement.y,
-      deferredAdoption: true, ...(config.detached ? { width: 720, height: 520 } : {}) });
-    await waitForTearoutReceiver(label);
-    const refused = await invoke("tearout_prepare", { id, receiver: label, configs: [config], deliveryToken });
+    const source = windowLabel();
+    await opening.ready;
+    label = await openWorkspaceWindow({ fromLabel: source, workspaces: [config], x: placement.x, y: placement.y,
+      deferredAdoption: true, creationId: id, ...(config.detached ? { width: 720, height: 520 } : {}) });
+    await waitForTearoutReceiver(label, id, opening.signal);
+    const refused = await invoke("tearout_prepare", { id, receiver: label, configs: [config], deliveryToken, receiverCreationId: id });
     if (isPreOwnershipTearoutRefusal(refused, windowLabel(), id)) {
-      await invoke("tearout_retire", { label }); label = undefined;
+      await invoke("tearout_retire", { label, creationId: id }); label = undefined;
       return rejectTearoutStart(options.record ?? new TearoutRecord(id, request.expected.owners[0]?.tabId ?? workspaceId,
         windowLabel(), Date.now()), new LocalTearoutRefusal("moving", "reservation", "backend_transfer", refused.owner_id));
     }
@@ -141,7 +145,7 @@ export async function performWorkspaceWindowMove(
     removed = true; flushSync(() => useWorkspaceListStore.getState().removeWorkspace(workspaceId));
     execution.mark("committed", label);
     await publishWindowFragment(buildWindowFragment("transfer"));
-    const token = await sendTearoutWorkspaces(label, [config], liveSessions, selection.session, deliveryToken);
+    const token = await sendTearoutWorkspaces(label, [config], liveSessions, selection.session, deliveryToken, id);
     await invoke("tearout_phase", { id, phase: "received" });
     execution.mark("received", label);
     await invoke("tearout_phase", { id, phase: "cleaned" });
@@ -152,11 +156,15 @@ export async function performWorkspaceWindowMove(
     return execution.result("moved");
   } catch (error) {
     if (error instanceof LocalTearoutRefusal && error.phase === "moving" && !prepared && !removed) throw error;
+    if (opening.signal.aborted && !prepared && !removed) {
+      await confirm();
+      throw Object.assign(opening.signal.reason as Error, { notified: true });
+    }
     restoringTearoutOperation();
     const progress = recoveryProgress(name, location);
     const reason = error instanceof Error ? error.message : String(error);
     const recover = async () => {
-      if (label) await invoke("tearout_retire", { label });
+      if (label) await invoke("tearout_retire", { label, creationId: id });
       if (prepared && !retrying) await invoke("tearout_phase", { id, phase: "rolled_back" });
       await confirm();
       execution.mark("rolled_back");
@@ -178,6 +186,7 @@ export async function performWorkspaceWindowMove(
     finally { useToastStore.getState().dismissToast(progress); }
     throw Object.assign(error instanceof Error ? error : new Error(reason), { notified: true });
   } finally {
+    opening.dispose();
     endTearoutOperation();
     if (prepared) await invoke("tearout_forget", { id }).catch(() => {});
   }

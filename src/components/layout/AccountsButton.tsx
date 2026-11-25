@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   OVERLAY_EXIT_MS,
   useDeferredUnmount,
@@ -28,7 +28,10 @@ import { AccountsPanel } from "./AccountsPanel";
 
 type AccountsButtonMode = "full" | "medium" | "compact" | "extreme";
 
-export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
+export function AccountsButton({ onOpenUsageSettings, onOpenChange }: {
+  onOpenUsageSettings: () => void;
+  onOpenChange?: (open: boolean) => void;
+}) {
   const accounts = useUsageStore((state) => state.accounts);
   const lastError = useUsageStore((state) => state.lastError);
   const [isOpen, setIsOpen] = useState(false);
@@ -36,6 +39,9 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
     isOpen,
     OVERLAY_EXIT_MS,
   );
+  useLayoutEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 

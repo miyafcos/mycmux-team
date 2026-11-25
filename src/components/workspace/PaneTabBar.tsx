@@ -1146,6 +1146,10 @@ export default memo(function PaneTabBar({
     activeTab ? resolveTabMark(activeTab)?.kind : undefined);
   const canSwitchContent = agentTabContent === "conversation" && canSearchTerminal && isAgentConversationKind(contentAgentKind);
   const tabContent = activeTab && conversationTabs[activeTab.id] ? "conversation" : "terminal";
+  const searchLabel = tabContent === "conversation" ? agentTabStrings.search : terminalPaneStrings.searchTerminal;
+  const searchTitle = canSearchTerminal
+    ? tabContent === "conversation" ? terminalPaneStrings.searchConversationTitle(searchShortcut) : terminalPaneStrings.searchTerminalTitle(searchShortcut)
+    : terminalPaneStrings.searchUnavailable;
   const contentSwitchLabel = tabContent === "conversation" ? agentTabStrings.toTerminal : agentTabStrings.toConversation;
   const contentSwitchDisabled = tabContent === "terminal" && selectedTabContent === "conversation";
   const switchContent = () => {
@@ -1513,8 +1517,8 @@ export default memo(function PaneTabBar({
     { id: "repaint-display", label: terminalPaneStrings.repaintDisplay, disabled: !displayActionAvailable(activeTab),
       title: !displayActionAvailable(activeTab) ? terminalPaneStrings.displayRestoreUnavailable : undefined,
       run: () => { if (activeTab) onRepaintDisplay?.(activeTab); } },
-    { id: "search", label: terminalPaneStrings.searchTerminal, disabled: !canSearchTerminal,
-      title: canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable,
+    { id: "search", label: searchLabel, disabled: !canSearchTerminal,
+      title: searchTitle,
       run: handleSearchTerminal },
     { id: "publish", label: published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew,
       show: showPublishButton, title: !agentSessionId ? onlineStrings.publishNoSession : undefined,
@@ -1754,7 +1758,7 @@ export default memo(function PaneTabBar({
           </button>
         )}
         {showHeaderMagnifier && <TerminalHistoryEntry sessionId={canSearchTerminal ? activeTab!.sessionId : null}
-          visible={isVisible} searchTitle={canSearchTerminal ? terminalPaneStrings.searchTerminalTitle(searchShortcut) : terminalPaneStrings.searchUnavailable} />}
+          visible={isVisible} searchTitle={searchTitle} />}
         {!activeHeading && headerCloseButton}
         {/* With no hidden tabs the name's × already closes the place; a second × would only look different. */}
         {activeHeading && hiddenTabs.length > 0 && visibleActions.includes("close") && (

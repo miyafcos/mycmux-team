@@ -168,12 +168,22 @@ async fn gemini_expiry_is_checked_after_the_inventory_finishes() {
         *source.clock.lock().unwrap() = Some(expiry);
         drop(hold_inventory);
         let mut report = report.await.unwrap();
-        let row = report.accounts.pop().unwrap();
         assert_eq!(source.calls(), (1, 2), "expiry at report time must not read or post again");
-        assert_eq!(report.gemini_revision, Some(live_revision + 1));
         assert_eq!(report.generated_at, expiry.to_rfc3339());
-        assert_eq!(row.fetched_at, report.generated_at);
-        results.push((cache_only, row));
+        if cache_only {
+            assert!(report.accounts.iter().all(|row| row.provider != UsageProvider::Gemini));
+            assert_eq!(report.gemini_revision, None);
+            let failed = get_account_usage_command(empty_inventory(base.path()), &state, Some(true),
+                None, source.request()).await.unwrap();
+            let gemini = failed.accounts.last().unwrap();
+            assert_eq!(gemini.error_code.as_deref(), Some("usage.error.gemini_expired"));
+            assert_eq!(source.calls(), (2, 2));
+        } else {
+            let row = report.accounts.pop().unwrap();
+            assert_eq!(report.gemini_revision, Some(live_revision + 1));
+            assert_eq!(row.fetched_at, report.generated_at);
+            results.push((cache_only, row));
+        }
     }
     for (cache_only, row) in results {
         assert_eq!(row.error_code.as_deref(), Some("usage.error.gemini_expired"), "cache_only={cache_only}");

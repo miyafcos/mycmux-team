@@ -21,6 +21,7 @@ const reactRuntime = vi.hoisted(() => {
 
 vi.mock("react", () => ({
   useEffect: reactRuntime.useEffect,
+  useLayoutEffect: reactRuntime.useEffect,
   useRef: reactRuntime.useRef,
 }));
 vi.mock("react-dom", () => ({

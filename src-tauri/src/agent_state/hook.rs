@@ -787,6 +787,9 @@ impl Worker {
         }
         let mapping_session_id = parsed.provider_session_id.clone();
         let mapping_event_id = parsed.source_event_id.clone();
+        // Only a provider event from the verified root can identify its own reply.
+        let reply_event = (parsed.agent_id.is_none() && parsed.event_kind == NormalizedState::TurnEnded
+            && !mapping_event_id.starts_with("hook:")).then_some(mapping_event_id.as_str());
 
         let identity = IdentityKey::new(
             record.launch.clone(),
@@ -876,7 +879,7 @@ impl Worker {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
                 if is_current_session {
-                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch);
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch, reply_event);
                 }
                 self.metrics.accepted.fetch_add(1, Ordering::Relaxed);
                 HookWireResponse::success(
@@ -895,7 +898,7 @@ impl Worker {
                     return self.reject(id, reason, reason == "queue_dropped");
                 }
                 if self.capabilities.get(hook_cap).is_some_and(|record| record.last_mapping_session.as_deref() == Some(mapping_session_id.as_str())) {
-                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch);
+                    self.remember_verified_identity(hook_cap, &mapping_session_id, source_pid, source_started_at, source_epoch, None);
                 }
                 HookWireResponse::success(id, json!({ "deduplicated": true }))
             },
@@ -915,7 +918,7 @@ impl Worker {
         }
     }
 
-    fn remember_verified_identity(&self, cap: &str, session_id: &str, pid: u32, started_at: u64, source_epoch: Option<u64>) {
+    fn remember_verified_identity(&self, cap: &str, session_id: &str, pid: u32, started_at: u64, source_epoch: Option<u64>, reply_event: Option<&str>) {
         let Some(manager) = &self.session_manager else { return; };
         let Some(record) = self.capabilities.get(cap) else { return; };
         if record.state != CapabilityState::Active { return; }
@@ -928,10 +931,10 @@ impl Worker {
         let kind = hook_identity::verified_identity_kind(provider, requested.as_ref().map(|value| value.0.as_str()), session_id,
             mapping.and_then(|value| value.agent_kind.as_deref().map(|kind| (kind, value.session_id.as_str())))).to_string();
         let Some(session_epoch) = source_epoch else { return; };
-        manager.remember_agent_identity(pty, crate::pty::manager::TrustedAgentIdentity {
+        manager.remember_hook_identity(pty, crate::pty::manager::TrustedAgentIdentity {
             session_epoch,
             kind, session_id: session_id.to_string(), agent_pid: pid, agent_started_at: started_at, from_hook: true,
-        });
+        }, reply_event);
     }
 
     fn sync_mapping(&mut self, cap: &str, session_id: &str, event_id: &str, state: NormalizedState, accepted: bool) -> Result<(), &'static str> {

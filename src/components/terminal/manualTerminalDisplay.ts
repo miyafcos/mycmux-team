@@ -20,15 +20,15 @@ export function repaintDisplayFromMenu(id: string, selected: boolean): void {
     pushToast(terminalPaneStrings.displayRestoreUnavailable, "warning");
     return;
   }
-  const now = Date.now();
+  const now = performance.now();
   const previous = lastAttempt.get(id);
-  if (previous !== undefined && now >= previous && now - previous < MANUAL_REPAINT_COOLDOWN_MS) return;
+  if (previous !== undefined && now - previous < MANUAL_REPAINT_COOLDOWN_MS) return;
   lastAttempt.set(id, now);
   setTimeout(() => {
     if (lastAttempt.get(id) === now) lastAttempt.delete(id);
   }, MANUAL_REPAINT_COOLDOWN_MS);
   const report = (event: "end" | "failed", error?: unknown) =>
-    reportTerminalDiagnostic("recovery", event, id, target.term, { reused: 1, observed_at_ms: now },
+    reportTerminalDiagnostic("recovery", event, id, target.term, { reused: 1, observed_at_ms: Date.now() },
       { reason: "manual", exception: event === "failed" ? diagnosticException(error) : "none" });
   try { target.repaint(); }
   catch (error) {

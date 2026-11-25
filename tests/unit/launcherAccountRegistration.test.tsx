@@ -2,249 +2,561 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WindowTabIndex } from "../../src/lib/ipc";
+import { DELEGATION_QUERY_TIMEOUT_MS } from "../../src/components/dashboard/delegationModel";
 
 const mocks = vi.hoisted(() => ({
-  list: vi.fn(), tokens: vi.fn(), homes: vi.fn(), begin: vi.fn(), cancel: vi.fn(), home: vi.fn(),
-  accountState: { profiles: [], loading: false, fetch: vi.fn(async () => {}) },
+  list: vi.fn(), tokens: vi.fn(), homes: vi.fn(), begin: vi.fn(), home: vi.fn(),
+  window: "main", emitTo: vi.fn(), focusWindow: vi.fn(),
+  getAllWindows: vi.fn(), getWindowFragments: vi.fn(), getWindowTabIndex: vi.fn<() => Promise<WindowTabIndex[]>>(),
+  listeners: new Set<() => void>(),
+  replies: new Set<(event: { payload: unknown }) => void>(),
+  reply: "opened" as string | null,
   settings: { launcherHiddenIds: [], crsmShowClaude: true, crsmShowCodex: true, crsmShowClaudeCodex: true, hideSessionsWithoutUserMessages: true },
   dirs: { view: null, load: async () => {} },
   layout: { addTabToPaneWithOptions: vi.fn(), addWebTabToPane: vi.fn(), removeTabFromPane: vi.fn() },
   ui: { setActivePaneId: vi.fn(), requestSettingsTab: vi.fn() },
 }));
 vi.mock("../../src/lib/ipc", () => ({
-  CLI_LOGIN_TIMEOUT_MS: 600000, crsmListSessions: async () => [], launcherRecordDirMru: async () => {},
+  crsmListSessions: async () => [], launcherRecordDirMru: async () => {},
   listCliAccounts: mocks.list, getCliLaunchTokens: mocks.tokens, listCliAccountHomes: mocks.homes,
-  startClaudeSetupToken: mocks.begin, getClaudeSetupTokenState: async () => null,
-  onClaudeSetupToken: async () => () => {}, cancelClaudeSetupToken: mocks.cancel, submitClaudeSetupCode: async () => {},
+  startClaudeSetupToken: mocks.begin, focusWindow: mocks.focusWindow, OPEN_DASHBOARD_EVENT: "mycmux://open-dashboard",
+  getWindowFragments: mocks.getWindowFragments, getWindowTabIndex: mocks.getWindowTabIndex,
 }));
-vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/api/window", async importOriginal => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
+  getAllWindows: mocks.getAllWindows,
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  emitTo: mocks.emitTo,
+  listen: vi.fn(async (name: string, notify: (event: { payload: unknown }) => void) => {
+    if (name === "mycmux://account-management-result") {
+      mocks.replies.add(notify);
+      return () => { mocks.replies.delete(notify); };
+    }
+    const change = () => notify({ payload: undefined });
+    if (name === "tab-account-evidence-updated") mocks.listeners.add(change);
+    return () => { mocks.listeners.delete(change); };
+  }),
+}));
+vi.mock("../../src/lib/windowContext", async importOriginal => ({
+  ...await importOriginal<typeof import("../../src/lib/windowContext")>(),
+  windowLabel: () => mocks.window,
+}));
 vi.mock("../../src/stores/settingsStore", () => ({ useSettingsStore: (select: (s: typeof mocks.settings) => unknown) => select(mocks.settings) }));
 vi.mock("../../src/stores/launcherDirsStore", () => ({ useLauncherDirsStore: (select: (s: typeof mocks.dirs) => unknown) => select(mocks.dirs) }));
 vi.mock("../../src/stores/workspaceLayoutStore", () => ({ useWorkspaceLayoutStore: (select: (s: typeof mocks.layout) => unknown) => select(mocks.layout) }));
 vi.mock("../../src/stores/uiStore", () => ({ useUiStore: Object.assign((select: (s: typeof mocks.ui) => unknown) => select(mocks.ui), { getState: () => mocks.ui, subscribe: () => () => {} }) }));
-vi.mock("../../src/stores/cliAccountStore", () => ({ useCliAccountStore: Object.assign((select: (s: typeof mocks.accountState) => unknown) => select(mocks.accountState), { getState: () => mocks.accountState }) }));
-vi.mock("../../src/stores/cliLoginStore", async () => {
-  const { create } = await import("zustand");
-  return { useCliLoginStore: create(() => ({ byProvider: { claude: null, codex: null, grok: null }, startAccountHome: mocks.home })) };
-});
-
+vi.mock("../../src/stores/cliLoginStore", () => ({
+  useCliLoginStore: { getState: () => ({ startAccountHome: mocks.home }) },
+}));
 vi.mock("../../src/lib/claudeCodexModels", () => ({ useLaunchModels: () => [] }));
 
 import LauncherPane from "../../src/components/workspace/LauncherPane";
-import { useCliLoginStore } from "../../src/stores/cliLoginStore";
-import type { ClaudeSetupTokenEvent } from "../../src/lib/ipc";
-import type { CliLoginEntry } from "../../src/stores/cliLoginStore";
-import { useClaudeSetupTokenStore } from "../../src/stores/claudeSetupTokenStore";
-import { launcherStrings as L } from "../../src/components/workspace/launcherStrings";
-import { setupTokenStrings as S } from "../../src/components/layout/tabAccountStrings";
+import { launcherStrings as S } from "../../src/components/workspace/launcherStrings";
 import { getCatalogEntry } from "../../src/lib/agentCatalog";
+import { ACCOUNT_MANAGEMENT_TIMEOUT_MS, registerAccountManagementSettings } from "../../src/lib/mainDashboardRequests";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView = () => {};
-let host: HTMLDivElement, root: Root;
+let host: HTMLDivElement;
+let root: Root;
+let stopSettings: () => void;
+const claude = { id: "claude-fixture", provider: "claude", label: "Claude fixture" };
+const token = { profile_id: claude.id, expires_at: "2099-01-01T00:00:00Z", owner_check: "verified" };
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.list.mockResolvedValue({ profiles: ["claude", "codex", "grok"].map(provider => ({ id: provider + "-missing", provider, label: provider + " fixture" })) });
-  mocks.tokens.mockResolvedValue([]); mocks.homes.mockResolvedValue([]);
-  mocks.begin.mockResolvedValue({ login_id: "fixture-login", profile_id: "claude-missing", state: "starting" });
-  mocks.home.mockResolvedValue(undefined); mocks.cancel.mockResolvedValue(undefined);
-  useCliLoginStore.setState({ byProvider: { claude: null, codex: null, grok: null } });
-  useClaudeSetupTokenStore.setState({ registrationOrigins: { claude: null, codex: null, grok: null }, completionOrigin: null, resultFocus: null, homeStartPending: { claude: false, codex: false, grok: false }, completedLoginIds: [] });
-  useClaudeSetupTokenStore.setState({ event: null, endedEvents: [], retiredLoginIds: [], pendingProfileId: null, failure: null, failureProfileId: null });
-  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
+  mocks.window = "main";
+  stopSettings = registerAccountManagementSettings();
+  mocks.replies.clear();
+  mocks.reply = "opened";
+  mocks.list.mockResolvedValue({ profiles: [claude, ...["codex", "grok"].map(provider => ({
+    id: provider + "-fixture", provider, label: provider + " fixture",
+  }))] });
+  mocks.tokens.mockResolvedValue([]);
+  mocks.homes.mockResolvedValue([]);
+  mocks.focusWindow.mockResolvedValue(undefined);
+  mocks.emitTo.mockImplementation(async (target: { label: string }, event: string, payload: { requestId: string }) => {
+    if (event !== "mycmux://open-dashboard" || mocks.reply === null) return;
+    for (const notify of mocks.replies) {
+      notify({ payload: { requestId: payload.requestId, fromWindow: target.label, reason: mocks.reply } });
+    }
+  });
+  mocks.getAllWindows.mockResolvedValue([{ label: "main" }, { label: "mycmux-w-fixture" }]);
+  mocks.getWindowFragments.mockResolvedValue([]);
+  mocks.getWindowTabIndex.mockResolvedValue([windowIndex("main", true)]);
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); });
-const buttons = () => [...host.querySelectorAll<HTMLButtonElement>("button")];
-const button = (label: string) => buttons().find(b => b.textContent === label || b.getAttribute("aria-label") === label)!;
-async function key(value: string, shiftKey = false, target: EventTarget = document.activeElement ?? document) {
-  await act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true })); });
+afterEach(() => { act(() => root.unmount()); stopSettings(); host.remove(); vi.useRealTimers(); });
+
+const fixtureSubscription = { publication_id: "fixture-generation", subscription_id: "fixture-listener" };
+
+function windowIndex(window_label: string, account_management_ready: boolean, pending = false): WindowTabIndex {
+  return {
+    window_label, pending, workspaces: [], account_management_ready,
+    account_management_subscription: account_management_ready
+      ? fixtureSubscription : undefined,
+  };
 }
-async function openByKeyboard(provider: string) {
-  await act(async () => root.render(<LauncherPane workspaceId="ws" paneId="pane" tabId="tab" sessionId="session" isActive />));
-  const label = getCatalogEntry(provider)!.label;
-  for (let attempt = 0; attempt < 20; attempt++) {
-    await key("Enter", true);
-    const spec = host.querySelector("[data-launcher-spec]");
-    if (spec?.firstElementChild?.textContent === label) return;
-    await key("Escape"); await key("ArrowDown");
-  }
-  throw new Error("could not open provider with keys");
+
+function button(label: string) {
+  const found = [...host.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === label || node.getAttribute("aria-label") === label);
+  expect(found, label).toBeDefined();
+  return found!;
 }
-describe("launcher account registration keyboard and focus boundary", () => {
-  it("opens Claude registration with only keys, focuses Begin, and blocks launcher Enter while focus is outside the flow", async () => {
-    await openByKeyboard("claude");
+async function click(label: string) { await act(async () => button(label).click()); }
+async function key(value: string) {
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
+}
+async function render(tabId = "tab", paneId = "pane", focused = true) {
+  await act(async () => root.render(<LauncherPane workspaceId="ws" paneId={paneId} tabId={tabId} sessionId={tabId} isActive={focused} />));
+}
+async function show(provider: string) {
+  await click(S.specTooltip(getCatalogEntry(provider)!.label));
+}
+async function changed() {
+  await act(async () => { for (const notify of mocks.listeners) notify(); });
+}
+
+describe("launcher management navigation", () => {
+  it.each(["claude", "codex", "grok"])("opens the %s section by keyboard without starting registration or a tab", async provider => {
+    await render();
+    await show(provider);
     await key("ArrowRight");
-    expect(button("claude fixture").getAttribute("aria-pressed")).toBe("false");
+    expect(button(S.accountManagement).getAttribute("aria-current")).toBe("true");
     await key("Enter");
-    expect(button(S.begin)).toBeDefined();
-    expect(document.activeElement).toBe(button(S.begin));
+    expect(mocks.ui.requestSettingsTab).toHaveBeenCalledExactlyOnceWith("usage", provider);
     expect(mocks.begin).not.toHaveBeenCalled();
+    expect(mocks.home).not.toHaveBeenCalled();
     expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-    document.body.focus(); button(S.begin).blur();
-    await key("Enter", false, document.body);
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-    await act(async () => button(S.begin).click());
-    await key("Enter", false, document.body);
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-    expect(mocks.begin).toHaveBeenCalledExactlyOnceWith("claude-missing");
+    expect(host.querySelector("[data-claude-setup-token]")).toBeNull();
   });
-  it.each(["codex", "grok"])("opens unavailable %s registration with keys without launching the default account", async provider => {
-    await openByKeyboard(provider);
-    await key("ArrowRight"); await key("Enter");
-    expect(mocks.home).toHaveBeenCalledExactlyOnceWith(provider, provider + "-missing");
-    await key("Enter", false, document.body);
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
+
+  it.each([false, true])("uses a one-way detached navigation even when focusing fails (%s)", async noFocus => {
+    mocks.window = "mycmux-w-fixture";
+    if (noFocus) mocks.focusWindow.mockRejectedValue("window_focus_refused");
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith({ kind: "Webview", label: "main" }, "mycmux://open-dashboard", {
+      accountProvider: "claude", sourceWindow: mocks.window, targetWindow: "main",
+      publicationId: "fixture-generation", subscriptionId: "fixture-listener",
+      requestId: expect.any(String), expiresAt: expect.any(Number),
+    });
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    mocks.tokens.mockResolvedValue([token]);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(button(claude.label).getAttribute("aria-pressed")).toBe("false");
+    expect(button(S.specDefault).getAttribute("aria-pressed")).toBe("true");
+    await click(claude.label);
+    await click(S.launchButton);
+    expect(mocks.layout.addTabToPaneWithOptions.mock.calls[0][2].launchEnv).toEqual({
+      MYCMUX_LAUNCH_TARGET: "claude", MYCMUX_LAUNCH_ACCOUNT: claude.id,
+    });
   });
-  it("moves mouse-triggered Claude confirmation focus to Begin and guards Enter after focus is lost", async () => {
-    await openByKeyboard("claude");
-    await act(async () => { button(S.useInTab).focus(); button(S.useInTab).click(); });
-    expect(document.activeElement).toBe(button(S.begin));
-    button(S.begin).blur(); await key("Enter", false, document.body);
+
+  it("routes a detached launcher to one live window with settings after main closes", async () => {
+    mocks.window = "mycmux-w1";
+    mocks.getAllWindows.mockResolvedValue(["mycmux-w1", "mycmux-w2", "mycmux-w3", "mycmux-w5", "mycmux-w6"]
+      .map(label => ({ label })));
+    mocks.getWindowTabIndex.mockResolvedValue([
+      windowIndex("mycmux-w1", false), windowIndex("mycmux-w2", false), windowIndex("mycmux-w3", true, true),
+      windowIndex("mycmux-w4", true), windowIndex("mycmux-w5", true), windowIndex("mycmux-w6", true),
+    ]);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith(
+      { kind: "Webview", label: "mycmux-w5" }, "mycmux://open-dashboard", {
+      accountProvider: "claude", sourceWindow: mocks.window, targetWindow: "mycmux-w5",
+      publicationId: "fixture-generation", subscriptionId: "fixture-listener",
+      requestId: expect.any(String), expiresAt: expect.any(Number),
+    },
+    );
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("mycmux-w5", { accountManagementSubscription: fixtureSubscription });
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(mocks.begin).not.toHaveBeenCalled();
+    expect(mocks.home).not.toHaveBeenCalled();
     expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("shows a management error in the detached launcher when no live window has settings", async () => {
+    mocks.window = "mycmux-w1";
+    mocks.getAllWindows.mockResolvedValue([{ label: "mycmux-w1" }, { label: "mycmux-w2" }]);
+    mocks.getWindowTabIndex.mockResolvedValue([
+      { window_label: "mycmux-w2", pending: false, workspaces: [] },
+      windowIndex("mycmux-w3", true),
+    ]);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.focusWindow).not.toHaveBeenCalled();
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+  });
+
+  it("reports that the management window closed during delivery", async () => {
+    mocks.window = "mycmux-w1";
+    const peer = "mycmux-w2";
+    mocks.getAllWindows.mockResolvedValueOnce(["main", mocks.window, peer].map(label => ({ label })))
+      .mockResolvedValue([mocks.window, peer].map(label => ({ label })));
+    mocks.getWindowTabIndex.mockResolvedValue([windowIndex("main", true), windowIndex(peer, true)]);
+    mocks.focusWindow.mockRejectedValueOnce(new Error("window closed"));
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+  });
+
+  it("chooses the next ready window once when main disappears before delivery from a detached launcher", async () => {
+    mocks.window = "mycmux-w1";
+    const peer = "mycmux-w2";
+    mocks.getAllWindows.mockResolvedValueOnce(["main", mocks.window, peer].map(label => ({ label })))
+      .mockResolvedValue([mocks.window, peer].map(label => ({ label })));
+    mocks.getWindowTabIndex.mockResolvedValueOnce([windowIndex("main", true), windowIndex(peer, true)])
+      .mockResolvedValue([windowIndex(peer, true)]);
+    mocks.emitTo.mockRejectedValueOnce(new Error("fixture main disappeared"));
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+
+    expect(mocks.emitTo.mock.calls.map(([target]) => target.label)).toEqual(["main", peer]);
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith(peer, { accountManagementSubscription: fixtureSubscription });
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledTimes(2);
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("uses the first index response when it arrives before the deadline", async () => {
+    mocks.window = "mycmux-w1";
+    await render();
+    await show("claude");
+    vi.useFakeTimers();
+    let resolveIndex!: (rows: WindowTabIndex[]) => void;
+    mocks.getWindowTabIndex.mockReturnValueOnce(new Promise(resolve => { resolveIndex = resolve; }));
+    await click(S.accountManagement);
+    await act(async () => vi.advanceTimersByTimeAsync(DELEGATION_QUERY_TIMEOUT_MS - 1));
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    await act(async () => resolveIndex([windowIndex("main", true)]));
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledOnce();
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("retries a hung window enumeration once and ignores its late result", async () => {
+    mocks.window = "mycmux-w1";
+    await render();
+    await show("claude");
+    vi.useFakeTimers();
+    let resolveList!: (rows: { label: string }[]) => void;
+    mocks.getAllWindows.mockReturnValueOnce(new Promise(resolve => { resolveList = resolve; }))
+      .mockResolvedValueOnce([{ label: "main" }]);
+    await click(S.accountManagement);
+    expect(mocks.getWindowTabIndex).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(DELEGATION_QUERY_TIMEOUT_MS));
+    await act(async () => resolveList([]));
+    expect(mocks.getAllWindows).toHaveBeenCalledTimes(2);
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledOnce();
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("discards hung index reads and their late results across three registration presses", async () => {
+    mocks.window = "mycmux-w1";
+    await render();
+    await show("claude");
+    vi.useFakeTimers();
+    let resolveLate!: (rows: WindowTabIndex[]) => void;
+    mocks.getWindowTabIndex.mockReturnValue(new Promise(resolve => { resolveLate = resolve; }));
+
+    await click(S.accountManagement);
+    await click(S.accountManagement);
+    await click(S.accountManagement);
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledTimes(3);
+    await act(async () => vi.advanceTimersByTimeAsync(2 * DELEGATION_QUERY_TIMEOUT_MS));
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledTimes(6);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+
+    await act(async () => resolveLate([windowIndex("main", true)]));
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.focusWindow).not.toHaveBeenCalled();
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  });
+
+  it("shows an error when a hidden main cannot be shown after management opens", async () => {
+    stopSettings();
+    mocks.window = "mycmux-w-fixture";
+    stopSettings = registerAccountManagementSettings();
+    mocks.focusWindow.mockRejectedValueOnce("window_restore_failed");
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  });
+
+  it("shows an error when the live windows cannot be re-read after focus fails", async () => {
+    stopSettings();
+    mocks.window = "mycmux-w-fixture";
+    stopSettings = registerAccountManagementSettings();
+    mocks.getAllWindows.mockResolvedValueOnce([{ label: "main" }, { label: mocks.window }])
+      .mockRejectedValue(new Error("fixture window list unavailable"));
+    mocks.focusWindow.mockRejectedValueOnce(new Error("fixture main closed"));
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.getAllWindows).toHaveBeenCalledTimes(3);
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith("main", { accountManagementSubscription: fixtureSubscription });
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  });
+
+  it.each([null, "invalid-result"])("does not retry delivery when the reply is uncertain (%s)", async reply => {
+    mocks.window = "mycmux-w1";
+    mocks.reply = reply;
+    mocks.getAllWindows.mockResolvedValue(["main", mocks.window, "mycmux-w2"].map(label => ({ label })));
+    mocks.getWindowTabIndex.mockResolvedValue([windowIndex("main", true), windowIndex("mycmux-w2", true)]);
+    await render();
+    await show("claude");
+    vi.useFakeTimers();
+    await click(S.accountManagement);
+    await act(async () => vi.advanceTimersByTimeAsync(ACCOUNT_MANAGEMENT_TIMEOUT_MS));
+    expect(mocks.emitTo).toHaveBeenCalledOnce();
+    expect(mocks.getAllWindows).toHaveBeenCalledOnce();
+    expect(mocks.focusWindow).not.toHaveBeenCalled();
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  });
+
+  it("never selects a legacy ready row missing its subscription mark", async () => {
+    mocks.window = "mycmux-w1";
+    mocks.getWindowTabIndex.mockResolvedValue([{ ...windowIndex("main", true), account_management_subscription: undefined }]);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.focusWindow).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  });
+
+  it("reads a single display index and never fetches workspace fragments to choose a recipient", async () => {
+    mocks.window = "mycmux-w1";
+    mocks.getAllWindows.mockResolvedValue([{ label: mocks.window }, { label: "mycmux-w2" }]);
+    mocks.getWindowFragments.mockResolvedValue([{ window_label: "mycmux-w2", workspaces: [], settings_available: true }]);
+    mocks.getWindowTabIndex.mockResolvedValue([windowIndex("mycmux-w2", true)]);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.getWindowFragments).not.toHaveBeenCalled();
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledOnce();
+    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith(
+      { kind: "Webview", label: "mycmux-w2" }, "mycmux://open-dashboard", {
+      accountProvider: "claude", sourceWindow: mocks.window, targetWindow: "mycmux-w2",
+      publicationId: "fixture-generation", subscriptionId: "fixture-listener",
+      requestId: expect.any(String), expiresAt: expect.any(Number),
+    },
+    );
+  });
+
+  it("retries a failed window index once and sends to exactly one ready window", async () => {
+    mocks.window = "mycmux-w1";
+    mocks.getAllWindows.mockResolvedValue([{ label: mocks.window }, { label: "mycmux-w2" }]);
+    mocks.getWindowTabIndex.mockRejectedValueOnce(new Error("fixture index unavailable"))
+      .mockResolvedValue([windowIndex("mycmux-w2", true)]);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(mocks.getWindowTabIndex).toHaveBeenCalledTimes(2);
+    expect(mocks.getAllWindows).toHaveBeenCalledOnce();
+    expect(mocks.emitTo).toHaveBeenCalledExactlyOnceWith(
+      { kind: "Webview", label: "mycmux-w2" }, "mycmux://open-dashboard", {
+      accountProvider: "claude", sourceWindow: mocks.window, targetWindow: "mycmux-w2",
+      publicationId: "fixture-generation", subscriptionId: "fixture-listener",
+      requestId: expect.any(String), expiresAt: expect.any(Number),
+    },
+    );
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each(["windows", "index"] as const)("shows an error after two failures reading %s", async list => {
+    mocks.window = "mycmux-w1";
+    const read = list === "windows" ? mocks.getAllWindows : mocks.getWindowTabIndex;
+    const error = new Error("fixture list unavailable");
+    read.mockRejectedValueOnce(error).mockRejectedValueOnce(error);
+    await render();
+    await show("claude");
+    await click(S.accountManagement);
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(mocks.emitTo).not.toHaveBeenCalled();
+    expect(mocks.focusWindow).not.toHaveBeenCalled();
+    expect(mocks.ui.requestSettingsTab).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit choice through management visits and another account's save", async () => {
+    mocks.list.mockResolvedValue({ profiles: [claude, { ...claude, id: "other", label: "Other fixture" }] });
+    mocks.tokens.mockResolvedValue([token]);
+    await render();
+    await show("claude");
+    await click(claude.label);
+    await click(S.accountManagement);
+    await click(S.accountManagement);
+    mocks.tokens.mockResolvedValue([token, { ...token, profile_id: "other" }]);
+    await changed();
+    expect(button(claude.label).getAttribute("aria-pressed")).toBe("true");
+    expect(button("Other fixture").getAttribute("aria-pressed")).toBe("false");
+    await click(S.launchButton);
+    expect(mocks.layout.addTabToPaneWithOptions.mock.calls[0][2].launchEnv.MYCMUX_LAUNCH_ACCOUNT).toBe(claude.id);
+  });
+
+  it("reads saved choices after a tab switch and move without delivering a selection", async () => {
+    await render("A");
+    await show("claude");
+    await click(S.accountManagement);
+    await render("B");
+    await show("claude");
+    mocks.tokens.mockResolvedValue([token]);
+    await changed();
+    expect(button(claude.label).getAttribute("aria-pressed")).toBe("false");
+    await render("A", "right");
+    await show("claude");
+    expect(button(claude.label).getAttribute("aria-pressed")).toBe("false");
+    expect(button(S.specDefault).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("rereads a visible account list even when another tab owns focus", async () => {
+    await render("visible", "left", false);
+    await show("claude");
+    expect(button(S.accountManagement)).toBeDefined();
+    mocks.tokens.mockResolvedValue([token]);
+    await changed();
+    expect(button(claude.label).getAttribute("aria-pressed")).toBe("false");
+    await render("visible", "left", true);
+    expect(button(claude.label).disabled).toBe(false);
+  });
+
+  it("disables an open Claude chip at expiry and refuses the previous selection", async () => {
+    vi.useFakeTimers();
+    mocks.tokens.mockResolvedValue([{ ...token, expires_at: new Date(Date.now() + 1000).toISOString() }]);
+    await render();
+    await show("claude");
+    await click(claude.label);
+    await act(async () => vi.advanceTimersByTimeAsync(1001));
+    expect(button(claude.label).disabled).toBe(true);
+    await click(S.launchButton);
+    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("期限切れ");
   });
 });
 
-const search = () => host.querySelector<HTMLInputElement>("input[aria-label='" + L.searchPlaceholder + "']")!;
-const loginEntry = (mode: "add" | "reauth", profileId?: string): CliLoginEntry => ({
-  stage: "waiting", loginId: "global-fixture", mode, startedAt: 1, sessionId: "login-session", tabId: "login-tab",
-  ...(profileId ? { purpose: { kind: "account_home" as const, profile_id: profileId } } : {}),
+it("shows a saved Claude choice in two visible launchers without moving focus or selecting it", async () => {
+  const added = { ...claude, id: "claude-new", label: "New account" };
+  mocks.list.mockResolvedValue({ profiles: [claude, added] });
+  mocks.tokens.mockResolvedValue([token]);
+  await act(async () => root.render(<>
+    <div data-fixture-pane="first"><LauncherPane workspaceId="ws" paneId="first" tabId="one" sessionId="one" isActive /></div>
+    <div data-fixture-pane="second"><LauncherPane workspaceId="ws" paneId="second" tabId="two" sessionId="two" isActive={false} /></div>
+  </>));
+  const first = host.querySelector('[data-fixture-pane="first"]')!;
+  const second = host.querySelector('[data-fixture-pane="second"]')!;
+  const scoped = (pane: Element, label: string) => [...pane.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.getAttribute("aria-label") === label || node.textContent === label)!;
+
+  for (const pane of [first, second]) await act(async () => scoped(pane, S.specTooltip("Claude Code")).click());
+  const firstChoice = scoped(first, claude.label);
+  await act(async () => { firstChoice.click(); firstChoice.focus(); });
+  mocks.tokens.mockResolvedValue([token, { ...token, profile_id: added.id }]);
+  await changed();
+  expect(document.activeElement).toBe(firstChoice);
+  expect(firstChoice.getAttribute("aria-pressed")).toBe("true");
+  expect(scoped(second, S.specDefault).getAttribute("aria-pressed")).toBe("true");
+  for (const pane of [first, second]) expect(scoped(pane, added.label).getAttribute("aria-pressed")).toBe("false");
 });
-async function emitSetup(state: ClaudeSetupTokenEvent["state"]) {
-  await act(async () => useClaudeSetupTokenStore.getState().handleEvent({
-    login_id: "fixture-login", profile_id: "claude-missing", state,
-  }));
-}
-async function activateFocused() {
-  const node = document.activeElement as HTMLElement;
-  await key("Enter", false, node);
-  // jsdom does not supply a browser's default keyboard activation.
-  if (node instanceof HTMLButtonElement) await act(async () => node.click());
-}
-describe("registration completion and unrelated global logins", () => {
-  it.each(["claude", "codex", "grok"] as const)("keeps every %s launch control working during global add and reauth", async provider => {
-    await openByKeyboard(provider);
-    for (const mode of ["add", "reauth"] as const) {
-      await act(async () => useCliLoginStore.setState({ byProvider: {
-        claude: null, codex: null, grok: null, [provider]: loginEntry(mode),
-      } }));
-      expect(button(S.useInTab).disabled).toBe(true);
-      const modelInput = host.querySelector<HTMLInputElement>("input[aria-label='" + L.modelLabel + "']")!;
-      for (const method of ["details", "model", "button"]) {
-        mocks.layout.addTabToPaneWithOptions.mockClear();
-        if (method === "button") await act(async () => button(L.launchButton).click());
-        else {
-          const input = method === "model" ? modelInput : search();
-          await act(async () => input.focus()); await key("Enter", false, input);
-        }
-        expect(mocks.layout.addTabToPaneWithOptions, mode + "/" + method).toHaveBeenCalledTimes(1);
-      }
+
+it.each(["opened", "refused"])("F3-09 ignores a matching %s response at the deadline before its timer runs", async reason => {
+  mocks.window = "mycmux-w1";
+  mocks.reply = null;
+  mocks.getAllWindows.mockResolvedValue(["main", mocks.window, "mycmux-w2"].map(label => ({ label })));
+  mocks.getWindowTabIndex.mockResolvedValue([windowIndex("main", true), windowIndex("mycmux-w2", true)]);
+  await render();
+  await show("claude");
+  vi.useFakeTimers();
+  const start = Date.now();
+  await click(S.accountManagement);
+  expect(mocks.emitTo).toHaveBeenCalledOnce();
+  const request = mocks.emitTo.mock.calls[0][2];
+  expect(request.expiresAt).toBe(start + ACCOUNT_MANAGEMENT_TIMEOUT_MS);
+
+  vi.setSystemTime(request.expiresAt);
+  await act(async () => {
+    for (const notify of mocks.replies) {
+      notify({ payload: { requestId: request.requestId, fromWindow: "main", reason } });
     }
   });
-  it.each(["dismissed", "failed", "cancelled", "timeout"] as const)("restores the registration button after %s and allows Enter and Launch", async outcome => {
-    await openByKeyboard("claude"); await key("ArrowRight"); await key("Enter");
-    if (outcome !== "dismissed") {
-      await act(async () => button(S.begin).click()); await emitSetup(outcome);
-    }
-    await act(async () => button(S.dismiss).click());
-    expect(document.activeElement).toBe(button(S.useInTab));
-    mocks.layout.addTabToPaneWithOptions.mockClear();
-    await act(async () => button(L.launchButton).click());
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledTimes(1);
-    mocks.layout.addTabToPaneWithOptions.mockClear();
-    await act(async () => search().focus()); await key("Tab"); await key("Enter");
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledTimes(1);
-  });
-  it("selects the saved account, restores the launcher input, and launches that account with Enter and Launch", async () => {
-    await openByKeyboard("claude"); await key("ArrowRight"); await key("Enter");
-    await act(async () => button(S.begin).click());
-    mocks.tokens.mockResolvedValue([{ profile_id: "claude-missing", expires_at: "2099-01-01", owner_check: "verified" }]);
-    await emitSetup("saved");
-    expect(button("claude fixture").getAttribute("aria-pressed")).toBe("true");
-    expect(document.activeElement).toBe(search());
-    await key("Enter");
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledWith("ws", "pane",
-      expect.objectContaining({ launchEnv: expect.objectContaining({ MYCMUX_LAUNCH_ACCOUNT: "claude-missing" }) }));
-    mocks.layout.addTabToPaneWithOptions.mockClear();
-    await act(async () => button(L.launchButton).click());
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledWith("ws", "pane",
-      expect.objectContaining({ launchEnv: expect.objectContaining({ MYCMUX_LAUNCH_ACCOUNT: "claude-missing" }) }));
-  });
-  it.each(["codex", "grok"] as const)("blocks launching while this row's %s home login is still running", async provider => {
-    mocks.home.mockImplementation(async () => useCliLoginStore.setState({ byProvider: {
-      claude: null, codex: null, grok: null, [provider]: loginEntry("reauth", provider + "-missing"),
-    } }));
-    await openByKeyboard(provider); await key("ArrowRight"); await key("Enter");
-    await act(async () => button(L.launchButton).click());
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-    await act(async () => useCliLoginStore.setState({ byProvider: { claude: null, codex: null, grok: null } }));
-    await act(async () => button(L.launchButton).click());
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledTimes(1);
-  });
-  it("moves back to and selects the default account after visiting an unavailable account", async () => {
-    mocks.list.mockResolvedValue({ profiles: [
-      { id: "claude-ready", provider: "claude", label: "Ready fixture" },
-      { id: "claude-missing", provider: "claude", label: "Missing fixture" },
-    ] });
-    mocks.tokens.mockResolvedValue([{ profile_id: "claude-ready", expires_at: "2099-01-01", owner_check: "verified" }]);
-    await openByKeyboard("claude"); await key("ArrowRight");
-    expect(button("Ready fixture").getAttribute("aria-pressed")).toBe("true");
-    await key("ArrowRight");
-    expect(button("Missing fixture").getAttribute("aria-current")).toBe("true");
-    await key("ArrowRight");
-    const defaults = buttons().filter(b => b.textContent === L.specDefault);
-    expect(defaults[0].getAttribute("aria-pressed")).toBe("true");
-    expect(button("Ready fixture").getAttribute("aria-pressed")).toBe("false");
-    await key("Enter");
-    expect(mocks.layout.addTabToPaneWithOptions).toHaveBeenCalledWith("ws", "pane",
-      expect.objectContaining({ launchEnv: expect.not.objectContaining({ MYCMUX_LAUNCH_ACCOUNT: "claude-ready" }) }));
-  });
-  it("keeps keyboard focus inside the launcher flow from Begin through code to Cancel", async () => {
-    await openByKeyboard("claude"); await key("ArrowRight"); await key("Enter"); await activateFocused();
-    const flow = host.querySelector<HTMLElement>("[data-claude-setup-token]")!;
-    expect(flow.tabIndex).toBe(-1); expect(document.activeElement).toBe(flow);
-    await emitSetup("code_available");
-    const code = host.querySelector<HTMLInputElement>("input[aria-label='" + S.codeLabel + "']")!;
-    expect(document.activeElement).toBe(code);
-    await key("Tab"); expect(document.activeElement).toBe(button(S.sendCode));
-    await key("Tab"); expect(document.activeElement).toBe(button(S.cancel));
-    await activateFocused();
-    expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("fixture-login");
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-  });
+  expect(mocks.focusWindow).not.toHaveBeenCalled();
+  expect(mocks.getAllWindows).toHaveBeenCalledOnce();
+  expect(mocks.emitTo).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+
+  await act(async () => vi.advanceTimersByTimeAsync(ACCOUNT_MANAGEMENT_TIMEOUT_MS));
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(S.accountManagementFailed);
+  expect(mocks.focusWindow).not.toHaveBeenCalled();
+  expect(mocks.emitTo).toHaveBeenCalledOnce();
 });
 
-import * as setupIpc from "../../src/lib/ipc";
+it("F3-11 keeps the latest successful press clear when the first press times out", async () => {
+  mocks.window = "mycmux-w1";
+  await render();
+  await show("claude");
+  vi.useFakeTimers();
 
-describe("launcher setup-token retry and result focus", () => {
-  it("shows the launcher's code field and URL when the same account retries after timeout", async () => {
-    await openByKeyboard("claude"); await key("ArrowRight"); await key("Enter");
-    await activateFocused(); await emitSetup("timeout");
-    await act(async () => button(S.dismiss).click());
-    const previous: ClaudeSetupTokenEvent = { login_id: "fixture-login", profile_id: "claude-missing", state: "timeout" };
-    const current = vi.spyOn(setupIpc, "getClaudeSetupTokenState").mockResolvedValue(previous);
-    try {
-      mocks.begin.mockResolvedValue({ ...previous, login_id: "retry-login", state: "starting" });
-      await act(async () => button(S.useInTab).click());
-      await activateFocused();
-      const url = "https://example.test/oauth/authorize?state=launcher-retry";
-      await act(async () => useClaudeSetupTokenStore.getState().handleEvent({
-        login_id: "retry-login", profile_id: "claude-missing", state: "code_available", url,
-      }));
-      const code = host.querySelector<HTMLInputElement>("input[aria-label='" + S.codeLabel + "']");
-      expect(code).not.toBeNull();
-      expect(document.activeElement).toBe(code);
-      expect(host.textContent).toContain(url);
-      expect(mocks.begin).toHaveBeenCalledTimes(2);
-      expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
-    } finally { current.mockRestore(); }
-  });
+  mocks.reply = null;
+  await click(S.accountManagement);
+  expect(mocks.emitTo).toHaveBeenCalledOnce();
+  expect(mocks.focusWindow).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
 
-  it("focuses the launcher's result dismissal when its code field times out", async () => {
-    await openByKeyboard("claude"); await key("ArrowRight"); await key("Enter");
-    await activateFocused(); await emitSetup("code_available");
-    expect(document.activeElement).toBe(host.querySelector("input[aria-label='" + S.codeLabel + "']"));
-    await emitSetup("timeout");
-    expect(document.activeElement).toBe(button(S.dismiss));
-    expect(mocks.layout.addTabToPaneWithOptions).not.toHaveBeenCalled();
+  mocks.reply = "opened";
+  await click(S.accountManagement);
+  expect(mocks.emitTo).toHaveBeenCalledTimes(2);
+  expect(mocks.focusWindow).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => vi.advanceTimersByTimeAsync(ACCOUNT_MANAGEMENT_TIMEOUT_MS - 1));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(mocks.focusWindow).toHaveBeenCalledOnce();
+});
+
+it("F3-02 opens locally once if settings become available before focus rejects a replaced destination", async () => {
+  mocks.window = "mycmux-w1";
+  const child = "mycmux-w2";
+  mocks.getAllWindows.mockResolvedValue([mocks.window, child].map(label => ({ label })));
+  mocks.getWindowTabIndex.mockResolvedValue([windowIndex(child, true)]);
+  mocks.focusWindow.mockImplementationOnce(async () => {
+    stopSettings();
+    stopSettings = registerAccountManagementSettings();
+    throw "window_generation_mismatch";
   });
+  await render();
+  await show("claude");
+  await click(S.accountManagement);
+  expect(mocks.ui.requestSettingsTab).toHaveBeenCalledExactlyOnceWith("usage", "claude");
+  expect(mocks.focusWindow).toHaveBeenCalledExactlyOnceWith(child, { accountManagementSubscription: fixtureSubscription });
+  expect(mocks.emitTo).toHaveBeenCalledOnce();
+  expect(mocks.getAllWindows).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });

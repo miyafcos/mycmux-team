@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,15 +84,6 @@ pub enum UserMessageKind {
     Ack,
 }
 
-// Acceptance receipts stay internal: enqueue is not a conversation event.
-#[derive(Clone, Debug)]
-struct QueuedInputReceipt {
-    event_id: String,
-    source_revision: u64,
-    source_byte_start: u64,
-    text: String,
-}
-
 #[derive(Clone, Debug)]
 pub struct AgentAdapter {
     kind: String,
@@ -104,7 +95,6 @@ pub struct AgentAdapter {
     seen_native_ids: HashSet<String>,
     replayed_autonomy_ids: Option<HashSet<String>>,
     seen_operator_message: bool,
-    queued_inputs: VecDeque<QueuedInputReceipt>,
     claude_billed: HashMap<String, BillableTokens>,
     codex_turn_id: Option<String>,
     codex_unpaired_users: Vec<(bool, String)>,
@@ -112,6 +102,7 @@ pub struct AgentAdapter {
     codex_effort: Option<String>,
     last_codex_total: Option<CodexTotals>,
     last_telemetry_delta: Option<TelemetryDelta>,
+    presend_reply_time: Option<(u64, i64)>,
 }
 
 impl AgentAdapter {
@@ -135,7 +126,6 @@ impl AgentAdapter {
             seen_native_ids: HashSet::new(),
             replayed_autonomy_ids: None,
             seen_operator_message: false,
-            queued_inputs: VecDeque::new(),
             claude_billed: HashMap::new(),
             codex_turn_id: None,
             codex_unpaired_users: Vec::new(),
@@ -143,12 +133,21 @@ impl AgentAdapter {
             codex_effort: None,
             last_codex_total: None,
             last_telemetry_delta: None,
+            presend_reply_time: None,
         })
     }
 
     /// The transcript format may be normalized; the product capability identity stays distinct.
     pub fn capabilities(&self) -> crate::agent_adapters::AdapterCapabilities {
         crate::agent_adapters::legacy_capabilities(&self.provider_kind).expect("registered transcript adapter")
+    }
+
+    // The display clock can be synthesized on replay. Only the original
+    // transcript time can prove a reply followed the current process's start.
+    pub(super) fn presend_reply_time(&self, event: &SemanticEventEnvelope) -> Option<u64> {
+        let (offset, at) = self.presend_reply_time?;
+        (offset == event.source_byte_start && at == event.occurred_at && at > 0)
+            .then_some(at as u64)
     }
 
     pub fn take_telemetry_delta(&mut self) -> Option<TelemetryDelta> {
@@ -178,31 +177,22 @@ impl AgentAdapter {
             self.last_telemetry_delta = None;
             return Ok(Vec::new());
         }
-        if self.kind == "claude" {
-            if let Some(text) = claude_queued_input(&value) {
-                self.queued_inputs.push_back(QueuedInputReceipt {
-                    event_id: format!("{native_id}:queue"), source_revision,
-                    source_byte_start: byte_range.start, text: text.to_string(),
-                });
-                if self.queued_inputs.len() > super::RING_CAPACITY { self.queued_inputs.pop_front(); }
-            }
-        }
         self.last_telemetry_delta = self.extract_telemetry(&value);
-        let occurred_at = if self.kind == "grok" {
-            grok_timestamp(&value).unwrap_or_else(unix_ms)
+        let recorded_at = if self.kind == "grok" {
+            grok_timestamp(&value)
         } else {
-            value
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_timestamp)
-                .unwrap_or_else(unix_ms)
+            value.get("timestamp").and_then(Value::as_str).and_then(parse_timestamp)
         };
+        let occurred_at = recorded_at.unwrap_or_else(unix_ms);
         if !already_observed { self.autonomy.observe(&self.kind, &value, occurred_at); }
         let mut kinds = match self.kind.as_str() {
             "codex" => self.decode_codex(&value),
             "grok" => self.decode_grok(&value),
             _ => self.decode_claude(&value),
         };
+        if kinds.iter().any(|kind| matches!(kind, SemanticEventKind::AgentMessage { .. })) {
+            self.presend_reply_time = recorded_at.map(|at| (byte_range.start, at));
+        }
         if !already_observed && !kinds.is_empty() { self.autonomy.record_activity(occurred_at); }
         for kind in &kinds {
             match kind {
@@ -228,12 +218,6 @@ impl AgentAdapter {
                 kind,
             })
             .collect())
-    }
-
-    pub(super) fn matching_queued_input(&self, revision: u64, offset: u64, text: &str) -> Option<String> {
-        self.queued_inputs.iter().find(|receipt| receipt.source_revision > revision
-            && receipt.source_byte_start >= offset && receipt.text.trim() == text.trim())
-            .map(|receipt| receipt.event_id.clone())
     }
 
     pub fn autonomy_at(&self, now: i64, process_started_at: Option<i64>) -> SessionAutonomy {
@@ -762,17 +746,6 @@ pub(super) fn claude_human_queued_command(value: &Value) -> Option<&str> {
 
 /// Human enqueues omit mode/origin in Claude's transcript. Explicit machine
 /// modes, origins, meta flags and notification envelopes are never receipts.
-fn claude_queued_input(value: &Value) -> Option<&str> {
-    if value["type"] != "queue-operation" || value["operation"] != "enqueue"
-        || value["isSidechain"] == true || value["isMeta"] == true
-        || value.get("commandMode").is_some_and(|mode| mode != "prompt")
-        || value.get("origin").is_some_and(|origin| origin["kind"] != "human")
-        || value.get("reminderId").is_some() { return None; }
-    value["content"].as_str().filter(|text| !text.trim().is_empty() && !is_injected_user_text(text)
-        && !["<task-notification", "<agent-message", "<peer-message", "<teammate-message",
-            "<stop-hook-feedback", "Stop hook feedback:"].iter().any(|prefix| text.trim_start().starts_with(prefix)))
-}
-
 pub fn classify_user_message(
     text: &str,
     has_unresolved_question: bool,

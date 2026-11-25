@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -13,7 +13,7 @@ import {
   OCCLUDER_SELECTOR,
   OPERATOR_FOCUS_ACCEPTED_EVENT,
   OPERATOR_FOCUS_EVENT,
-  OPERATOR_FOCUS_WINDOW_EVENT,
+  requestOperatorFocusInWindow,
   findOperatorFocusWindow,
   isOperatorFocusBlocked,
   jumpToOperatorFocusTab,
@@ -356,8 +356,12 @@ export default function WebPaneController() {
             return;
           }
           showNotice(request.tabId, null);
-          void emitTo(otherWindow, OPERATOR_FOCUS_WINDOW_EVENT, { targetTabId: request.targetTabId })
-            .catch(() => undefined);
+          windowLookups.set(request.tabId, request);
+          void requestOperatorFocusInWindow(otherWindow, request.targetTabId, request.requestId).then(result => {
+            if (cancelled || windowLookups.get(request.tabId) !== request) return;
+            windowLookups.delete(request.tabId);
+            showNotice(request.tabId, result);
+          });
           return;
         }
       }

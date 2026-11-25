@@ -168,7 +168,7 @@ describe("Codex cache in the launchers", () => {
     // The Rust reader returns [] when every malformed row is discarded.
     mocks.codexChoices.mockResolvedValueOnce([]);
     await openCodex();
-    const choices = [...host.querySelectorAll<HTMLButtonElement>("[data-launcher-spec] button[title]")];
+    const choices = [...host.querySelectorAll<HTMLButtonElement>("[data-launcher-spec] button[title]:not([data-launch-account-management])")];
     expect(choices.map((choice) => choice.title)).toEqual(getCatalogEntry("codex")!.models.map(({ value }) => value));
     expect(choices).toHaveLength(10);
   });
@@ -220,7 +220,7 @@ describe("Codex cache in the launchers", () => {
     const value = { target: "codex", model: "gpt-future-test", effort: "max" };
     const onChange = vi.fn();
     await act(async () => root.render(
-      <AgentSelector workspaceInstanceId={1} slotIndex={0} value={value} onChange={onChange} />,
+      <AgentSelector slotIndex={0} value={value} onChange={onChange} />,
     ));
     expect(host.querySelector("datalist option")?.getAttribute("value")).toBe("gpt-future-test");
     expect(host.querySelector("input")?.value).toBe(value.model);
@@ -416,7 +416,7 @@ describe("workspace setup Codex choices", () => {
     function Setup() {
       const [spec, setSpec] = useState<PaneLaunchSpec>({ target: "codex", model: "gpt-6-sol", effort: "ultra" });
       current = spec;
-      return <AgentSelector workspaceInstanceId={1} slotIndex={0} value={spec} onChange={setSpec} />;
+      return <AgentSelector slotIndex={0} value={spec} onChange={setSpec} />;
     }
     await act(async () => root.render(<Setup />));
     const ids = [...host.querySelectorAll("datalist option")].map((option) => option.getAttribute("value"));
@@ -447,7 +447,7 @@ describe("saved Antigravity launch choices", () => {
     const value = { target: "agy", model, effort: "high" };
     const onChange = vi.fn();
     await act(async () => root.render(
-      <AgentSelector workspaceInstanceId={1} slotIndex={0} value={value} onChange={onChange} />,
+      <AgentSelector slotIndex={0} value={value} onChange={onChange} />,
     ));
     const ids = [...host.querySelectorAll("datalist option")].map((option) => option.getAttribute("value"));
     expect(ids).not.toContain(model);
@@ -459,4 +459,20 @@ describe("saved Antigravity launch choices", () => {
       MYCMUX_LAUNCH_EFFORT: "high",
     });
   });
+});
+
+
+it("L6 keeps an IME Enter with keyCode 229 in the model input", async () => {
+  await renderLauncher();
+  await click(S.specTooltip("Cursor"));
+  await click(S.modelManual);
+  const input = modelInput();
+  await typeModel(input, "model-fixture");
+  const composingEnter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: false });
+  Object.defineProperty(composingEnter, "keyCode", { value: 229 });
+  await act(async () => { input.dispatchEvent(composingEnter); });
+  expect(composingEnter.defaultPrevented).toBe(false);
+  expect(launchedEnv()).toBeUndefined();
+  await pressKey("Enter", input);
+  expect(launchedEnv()?.MYCMUX_LAUNCH_MODEL).toBe("model-fixture");
 });

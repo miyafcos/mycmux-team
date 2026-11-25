@@ -64,6 +64,8 @@ def test_ai_command_building_is_centralized() -> None:
             # reuses the shared Windows executable resolver and passes no model, so it
             # is not an internal AI call. Limit this exception to this file and this token.
             is_setup_token_launch = relative == "cli_accounts/setup_token.rs" and token == 'prepare_spawn_command("claude"'
+            if is_setup_token_launch:
+                assert source.count(token) <= 1, f"{path}: multiple setup-token command entry points"
             assert token not in source or is_ai_module or is_saved_pty_model or is_provider_argv_parse or is_codex_restore_argv_parse or is_setup_token_launch, f"{path}: centralized AI command token {token}"
 
 

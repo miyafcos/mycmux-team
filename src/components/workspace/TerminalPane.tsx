@@ -41,7 +41,7 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
 import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
-import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
+import { isArtifactPreviewUri, isDirectoryLikeUri, WINDOWS_ABSOLUTE_PATH_REGEX } from "../terminal/terminalLinkProvider";
 import { captureTemporaryFocusReturn, focusController, type FocusSource } from "../../lib/focusController";
 import { usePaneHoverFocus } from "../../hooks/usePaneHoverFocus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
@@ -129,7 +129,7 @@ function isLocalArtifactLink(uri: string): boolean {
   const trimmed = uri.trim();
   return (
     /^file:\/\//i.test(trimmed)
-    || /^[A-Za-z]:[\\/]/.test(trimmed)
+    || WINDOWS_ABSOLUTE_PATH_REGEX.test(trimmed)
     // MSYS / Git-Bash absolute form: `/c/Users/...` (single-letter drive).
     || /^\/[A-Za-z]\//.test(trimmed)
   );
@@ -1018,6 +1018,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         <ErrorBoundary>
           <PaneComposer
             sessionId={activeTab.sessionId}
+            presendVisible={isPaneVisible}
             target={{
               command: launchCommand,
               args: launchArgs,

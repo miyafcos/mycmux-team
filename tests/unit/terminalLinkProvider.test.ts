@@ -332,6 +332,21 @@ describe("terminal local file path links", () => {
     await expect(resolveTextLocalPathLinks("C:\\missing\\not-real.pdf")).resolves.toEqual([]);
   });
 
+
+  it.each(["\\\\?\\X:\\fixture\\report.txt", "\\\\?\\X:\\fixture\\folder"])(
+    "L6 resolves a verbatim drive path as one absolute terminal link", async path => {
+      mockedResolveLocalPathLinks.mockImplementation(async candidates =>
+        candidates.map(candidate => candidate === path ? { existingPrefix: path, isDir: !path.endsWith(".txt") } : null),
+      );
+      const line = 'open "' + path + '"';
+      const activationUri = path.endsWith(".txt") ? path : `${path}\\`;
+      await expect(resolveTextLocalPathLinks(line)).resolves.toEqual([
+        { text: path, index: line.indexOf(path), endIndex: line.indexOf(path) + path.length, activationUri },
+      ]);
+      expect(mockedResolveLocalPathLinks).toHaveBeenCalledWith([path]);
+    },
+  );
+
   it("extracts bare extension-less candidates with original spans", () => {
     const text = String.raw`open C:\Users\miyaz\3_一次原稿 を参照`;
     const candidates = findBareLocalPathCandidates(text);

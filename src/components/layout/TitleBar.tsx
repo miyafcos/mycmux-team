@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceListStore, useUiStore } from "../../stores/workspaceStore";
+import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { formatShortcutLabel, IS_MAC } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
@@ -18,11 +19,15 @@ import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
+import type { AccountManagementSection } from "../../lib/tabAccounts";
+import { registerAccountManagementSettings } from "../../lib/mainDashboardRequests";
 
 interface TitleBarProps {
   onNewWorkspace?: () => void;
   /** Opens the dialog that picks the layout, folder, agents and models. */
   onOpenWorkspaceSetup?: () => void;
+  onAccountsPanelOpenChange?: (open: boolean) => void;
+  onSettingsMountChange?: (mounted: boolean) => void;
   onOpenOnlinePanel: () => void;
   onOpenCrsmPalette?: () => void;
 }
@@ -63,6 +68,8 @@ const SettingsIcon = () => (
 export default function TitleBar({
   onNewWorkspace,
   onOpenWorkspaceSetup,
+  onAccountsPanelOpenChange,
+  onSettingsMountChange,
   onOpenOnlinePanel,
   onOpenCrsmPalette,
 }: TitleBarProps) {
@@ -80,18 +87,35 @@ export default function TitleBar({
   const advancedWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new.advanced"]));
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTabId>("appearance");
+  const [accountSection, setAccountSection] = useState<AccountManagementSection>();
   const requestedSettingsTab = useUiStore((state) => state.requestedSettingsTab);
+  const requestedAccountProvider = useUiStore(state => state.requestedAccountProvider);
+  const requestedProfileId = useUiStore(state => state.requestedAccountProfileId);
+  const managementRequestId = useUiStore(state => state.requestedAccountManagementId);
   const clearRequestedSettingsTab = useUiStore((state) => state.clearRequestedSettingsTab);
   useEffect(() => {
     if (!requestedSettingsTab) return;
     setSettingsTab(requestedSettingsTab);
+    setAccountSection(requestedAccountProvider
+      ? {
+        provider: requestedAccountProvider,
+        profileId: requestedProfileId ?? undefined,
+        recentProfileIdAtOpen: requestedProfileId
+          ? useCliAccountStore.getState().recentlyAdded?.[requestedAccountProvider]
+          : undefined,
+      }
+      : undefined);
     setIsSettingsOpen(true);
     clearRequestedSettingsTab();
-  }, [requestedSettingsTab, clearRequestedSettingsTab]);
+  }, [requestedSettingsTab, requestedAccountProvider, requestedProfileId, managementRequestId, clearRequestedSettingsTab]);
   const { mounted: settingsMounted, closing: settingsClosing } = useDeferredUnmount(
     isSettingsOpen,
     OVERLAY_EXIT_MS,
   );
+  useLayoutEffect(registerAccountManagementSettings, []);
+  useLayoutEffect(() => {
+    onSettingsMountChange?.(settingsMounted);
+  }, [onSettingsMountChange, settingsMounted]);
   // Manual double-click detection for drag region compatibility
   const lastClickRef = useRef(0);
   const handleTitleBarClick = () => {
@@ -278,7 +302,9 @@ export default function TitleBar({
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
         <AccountsButton
+          onOpenChange={onAccountsPanelOpenChange}
           onOpenUsageSettings={() => {
+            setAccountSection(undefined);
             setSettingsTab("usage");
             setIsSettingsOpen(true);
           }}
@@ -290,6 +316,7 @@ export default function TitleBar({
         <div style={{ position: "relative" }}>
           <button
             onClick={() => {
+              setAccountSection(undefined);
               setSettingsTab("appearance");
               setIsSettingsOpen((v) => !v);
             }}
@@ -312,6 +339,7 @@ export default function TitleBar({
               closing={settingsClosing}
               onClose={() => setIsSettingsOpen(false)}
               initialTab={settingsTab}
+              accountSection={accountSection}
               onOpenCrsmPalette={onOpenCrsmPalette}
               onOpenOnlinePanel={onOpenOnlinePanel}
             />

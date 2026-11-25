@@ -513,6 +513,77 @@ describe("ChatTranscript scroll work", () => {
     vi.unstubAllGlobals();
   });
 
+
+  it.each([true, false])("forgets the oldest tool disclosure at the cap while retaining its conversation (separate first update: %s)", async separateFirst => {
+    const events = Array.from({ length: 257 }, (_, index) => {
+      const call_id = "disclosure-" + index;
+      return [
+        userMessage("request-" + index),
+        envelope({ type: "toolStart", call_id, tool: "Read", target: call_id }),
+        envelope({ type: "toolEnd", call_id, tool: "Read", target: call_id, ok: true, summary: null }),
+      ];
+    }).flat();
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    await act(async () => root.render(<ChatTranscript events={events} />));
+    const groups = [...host.querySelectorAll<HTMLDetailsElement>(".cmux-dashboard-toolfold")];
+    expect(groups).toHaveLength(257);
+    const open = (group: HTMLDetailsElement) => {
+      group.open = true;
+      group.dispatchEvent(new Event("toggle"));
+    };
+    if (separateFirst) await act(async () => open(groups[0]));
+    await act(async () => { for (const group of groups.slice(separateFirst ? 1 : 0)) open(group); });
+    expect(groups[0].open).toBe(false);
+    expect(groups.slice(1).every(group => group.open)).toBe(true);
+    expect(host.textContent).toContain("request-0");
+    expect(groups[0].textContent).toContain("disclosure-0");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke.mock.calls[0].slice(0, 2)).toEqual(["report_renderer_heartbeat", {
+      diagnostic: expect.objectContaining({ event: "coalesced", numbers: { count_tool_disclosure_evicted: 1 } }),
+    }]);
+  });
+
+  it("keeps both new tool groups open when their native toggle events arrive separately", async () => {
+    const events = Array.from({ length: 258 }, (_, index) => {
+      const call_id = "native-disclosure-" + index;
+      return [
+        userMessage("request-" + index),
+        envelope({ type: "toolStart", call_id, tool: "Read", target: call_id }),
+        envelope({ type: "toolEnd", call_id, tool: "Read", target: call_id, ok: true, summary: null }),
+      ];
+    }).flat();
+    const invoke = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    await act(async () => root.render(<ChatTranscript events={events} />));
+    const groups = [...host.querySelectorAll<HTMLDetailsElement>(".cmux-dashboard-toolfold")];
+    expect(groups).toHaveLength(258);
+    const click = (group: HTMLDetailsElement) => group.querySelector("summary")!.click();
+    const toggled = (group: HTMLDetailsElement) =>
+      new Promise<void>(resolve => group.addEventListener("toggle", () => resolve(), { once: true }));
+    await act(async () => {
+      for (const group of groups.slice(0, 256)) {
+        group.open = true;
+        group.dispatchEvent(new Event("toggle"));
+      }
+    });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const firstToggle = toggled(groups[256]);
+    const secondToggle = toggled(groups[257]);
+    await act(async () => {
+      click(groups[256]);
+      click(groups[257]);
+      await firstToggle;
+    });
+    await act(async () => { await secondToggle; });
+    expect(groups.slice(0, 2).map(group => group.open)).toEqual([false, false]);
+    expect(groups.slice(2).every(group => group.open)).toBe(true);
+    expect(host.textContent).toContain("request-0");
+    expect(host.textContent).toContain("native-disclosure-0");
+    const evictions = invoke.mock.calls.map(([, args]) => args.diagnostic.numbers.count_tool_disclosure_evicted);
+    expect(evictions.reduce((total, count) => total + count, 0)).toBe(2);
+  });
+
   it("bounds lookups and row renders during settled wheel scrolling", () => {
     const linkedText = vi.spyOn(linkedTextModule, "DashboardLinkedText").mockImplementation(({ text }) => <>{text}</>);
     const events = transcriptEvents();

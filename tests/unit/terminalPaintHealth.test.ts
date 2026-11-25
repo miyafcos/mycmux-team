@@ -52,3 +52,43 @@ it("paintRepair_budgetSurvivesRemountAndClearsOnClose", () => {
     useWorkspaceListStore.setState({ workspaces: original });
   }
 });
+
+it("uses the first output sample as a baseline and expires an isolated paint pair", () => {
+  let now = 1_000_000;
+  const health = new TerminalStreamHealth(() => now);
+  const firstOutputAt = now;
+  health.observeReceipt(source, 1, 6);
+  health.observeParse(source, 1, 6);
+  now += 2_000;
+  expect(health.inspectPaint(true, firstOutputAt)).toBe(false);
+
+  now += 2_000;
+  const secondOutputAt = now;
+  health.observeReceipt(source, 1, 12);
+  health.observeParse(source, 1, 12);
+  expect(health.inspectPaint(true, secondOutputAt)).toBe(false);
+  now += 9_999;
+  expect(health.inspectPaint(true, secondOutputAt)).toBe(false);
+  now++;
+  expect(health.inspectPaint(true, secondOutputAt)).toBe(false);
+});
+
+it("does not pair a previous channel's late parse with the current channel's receipt", () => {
+  let now = 1_000_000;
+  const health = new TerminalStreamHealth(() => now);
+  health.inspectPaint(true, now);
+  const outputAt = now + 100;
+  health.observeReceipt(source, 2, 3);
+  health.observeParse(source, 1, 3);
+  expect(health.diagnosticProgress(source)).toEqual({ generation: 2, received_end: 3 });
+  now += 2_000;
+  expect(health.inspectPaint(true, outputAt)).toBe(false);
+  now += 2_000;
+  health.observeReceipt(source, 2, 6);
+  health.observeParse(source, 2, 6);
+  expect(health.inspectPaint(true, outputAt + 200)).toBe(false);
+  now += 8_000;
+  health.observeReceipt(source, 2, 9);
+  health.observeParse(source, 2, 9);
+  expect(health.inspectPaint(true, outputAt + 400)).toBe(false);
+});

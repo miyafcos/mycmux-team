@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { appendPresendLine, normalizePresendProvider, presendDraftFingerprint, presendWorkdirName, samePresendRevision, shouldReadPresend, unicodeTail, type PresendTrigger } from "../../src/lib/presendReading";
-import { PRESEND_CREDENTIAL_KEYS, scrubJevCredentials, scrubPresendCredentials } from "../../src/lib/scrubCredentials";
+import { describe, expect, it, vi } from "vitest";
+import { appendPresendLine, normalizePresendProvider, presendAttemptKey, presendWorkdirName, samePresendRevision, shouldReadPresend, unicodeTail, type PresendTrigger } from "../../src/lib/presendReading";
+import { OMITTED, presendCredentialRanges, PRESEND_CREDENTIAL_KEYS, scrubJevCredentials, scrubPresendCredentials } from "../../src/lib/scrubCredentials";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 
 const input: PresendTrigger = { enabled: true, tabEnabled: true, target: "claude", draft: "abcdefghijkl", composing: false, quietMs: 1500, attempted: new Set() };
@@ -12,7 +12,7 @@ describe("presend trigger and revisions", () => {
   it("allows another draft after an equal-length 32-bit fingerprint collision", () => {
     const first = "synthetic-8385cafbab8c";
     const second = "synthetic-0df01ab227f3";
-    const attempted = new Set([presendDraftFingerprint(first)]);
+    const attempted = new Set([presendAttemptKey(first, "claude")]);
     expect(first.length).toBe(second.length);
     expect(shouldReadPresend({ ...input, draft: second, attempted })).toBe(true);
   });
@@ -20,12 +20,12 @@ describe("presend trigger and revisions", () => {
   it.each([
     { draft: "abcdefghijk" }, { draft: "a b c d e f g h i j k" }, { composing: true },
     { target: "shell" as const }, { enabled: false }, { tabEnabled: false }, { quietMs: 1499 },
-    { attempted: new Set([presendDraftFingerprint(input.draft)]) },
+    { attempted: new Set([presendAttemptKey(input.draft, "claude")]) },
   ])("skips an ineligible draft: %o", change => expect(shouldReadPresend({ ...input, ...change })).toBe(false));
   it("starts once at 1500ms, then refuses exactly the same text", () => {
     const attempted = new Set<string>();
     expect(shouldReadPresend({ ...input, attempted })).toBe(true);
-    attempted.add(presendDraftFingerprint(input.draft));
+    attempted.add(presendAttemptKey(input.draft, "claude"));
     expect(shouldReadPresend({ ...input, attempted, quietMs: 3000 })).toBe(false);
     expect(shouldReadPresend({ ...input, attempted, draft: `${input.draft}!` })).toBe(true);
     expect(shouldReadPresend({ ...input, draft: "\u3042".repeat(12) })).toBe(true);
@@ -93,9 +93,95 @@ it.each(workdirCases)("normalizes the workdir: $name", ({ input, expected }) => 
 });
 
 const credentialCases = credentialFixture.cases as Array<{
-  name: string; inputParts: string[]; expectedParts: string[]; jevParts: string[]; secret?: string;
+  name: string; inputParts: string[]; expectedParts: string[]; jevParts: string[]; rescrubParts?: string[]; secret?: string;
 }>;
 describe("shared renderer and Rust credential examples", () => {
+
+  const counter = credentialCases.find(row => row.name === "0915-L5-fix2-19-counter-numeric")!;
+  const sampleValue = credentialCases.find(row => row.name === "0915-L5-119-nonnumeric-token-counter")!.secret!;
+
+  it("masks the numeric fixture's whole end comment on the second and third pass", () => {
+    const raw = counter.inputParts.join("");
+    const first = scrubPresendCredentials(raw);
+    const second = scrubPresendCredentials(first);
+    const third = scrubPresendCredentials(second);
+    expect([raw, first, second, third].map(text => Buffer.byteLength(text))).toEqual([80, 155, 138, 138]);
+    expect(second === counter.rescrubParts!.join("") && third === second).toBe(true);
+  });
+
+  it("masks the whole numeric end comment containing independent protected values", () => {
+    const prefixed = credentialCases.find(row => row.name.startsWith("prefix-") && row.expectedParts.join("") === OMITTED)!;
+    const field = "token_count: " + OMITTED;
+    const input = field + " \t# ordinary note " + prefixed.inputParts.join("") + " password=" + sampleValue;
+    const second = scrubPresendCredentials(input);
+    expect(second === field && scrubPresendCredentials(second) === field).toBe(true);
+  });
+
+  const contexts: Record<string, string> = JSON.parse(readFileSync(
+    resolve(import.meta.dirname, "../fixtures/presend_comment_contexts.json"), "utf8",
+  ));
+  it.each(Object.entries(contexts))("masks the end comment on later passes in %s", (_name, document) => {
+    const line = counter.inputParts.join("").split("\n").at(-1)!;
+    const [field, note] = line.split("# ");
+    const observed = [note, sampleValue].map(value => {
+      const first = scrubPresendCredentials(document.replace("{counter}", field + "# " + value));
+      const second = scrubPresendCredentials(first);
+      const third = scrubPresendCredentials(second);
+      return [first.includes(value), second.includes(value), third.includes(value), third === second];
+    });
+    expect(observed).toEqual([[true, false, false, true], [true, false, false, true]]);
+  });
+
+  it.each(["v0.90.14", "L5"] as const)("covers all %s mask ranges on the original input", policy => {
+    const history = credentialFixture.historicalByteRanges as Record<string, [number[][], number[][]]>;
+    expect(Object.keys(history)).toHaveLength(credentialCases.length);
+    for (const row of credentialCases) {
+      const input = row.inputParts.join("");
+      const actual = presendCredentialRanges(input).map(({ start, end }) =>
+        [Buffer.byteLength(input.slice(0, start)), Buffer.byteLength(input.slice(0, end))]);
+      for (const [start, end] of history[row.name][policy === "v0.90.14" ? 0 : 1]) {
+        expect(actual.some(([lo, hi]) => lo <= start && end <= hi),
+          row.name + " bytes " + start + ".." + end).toBe(true);
+      }
+    }
+  });
+
+  it("bounds character checks for overlong AWS-like uppercase input", () => {
+    const input = "AKIA".repeat(400) + "Z";
+    const regexTest = RegExp.prototype.test;
+    let uppercaseChecks = 0;
+    const spy = vi.spyOn(RegExp.prototype, "test").mockImplementation(function (this: RegExp, value) {
+      if (this.source === "[A-Z0-9]") uppercaseChecks++;
+      return regexTest.call(this, value);
+    });
+    let output: string;
+    try {
+      output = scrubPresendCredentials(input);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(output).toBe(input);
+    expect(uppercaseChecks).toBeLessThan(input.length * 5);
+  });
+
+  it("bounds line-break checks in a long credential query", () => {
+    const query = "https://example.test/?" + Array.from({ length: 160 }, (_, i) => `token=toy-${i}&mode=demo`).join("&");
+    const regexTest = RegExp.prototype.test;
+    let checks = 0;
+    const spy = vi.spyOn(RegExp.prototype, "test").mockImplementation(function (this: RegExp, value) {
+      if (this.source === String.raw`[\n\r\u2028\u2029]`) checks++;
+      return regexTest.call(this, value);
+    });
+    let output: string;
+    try {
+      output = scrubPresendCredentials(query);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(output).toBe(query.slice(0, query.indexOf("=") + 1) + "[credential omitted]");
+    expect(checks).toBeLessThan(query.length * 5);
+  });
+
   it("fixes five case forms for every credential key in the implementation table", () => {
     expect(credentialFixture.credentialKeys).toEqual(PRESEND_CREDENTIAL_KEYS);
     for (const key of PRESEND_CREDENTIAL_KEYS) {
@@ -140,8 +226,11 @@ describe("shared renderer and Rust credential examples", () => {
   });
   it.each(credentialCases)("$name", row => {
     const input = row.inputParts.join("");
-    expect(scrubPresendCredentials(input)).toBe(row.expectedParts.join(""));
-    expect(scrubJevCredentials(input)).toBe(row.jevParts.join(""));
-    expect(scrubPresendCredentials(row.expectedParts.join(""))).toBe(row.expectedParts.join(""));
+    const expected = row.expectedParts.join("");
+    const second = row.rescrubParts?.join("") ?? expected;
+    expect(scrubPresendCredentials(input) === expected, row.name).toBe(true);
+    expect(scrubJevCredentials(input) === row.jevParts.join(""), row.name).toBe(true);
+    expect(scrubPresendCredentials(expected) === second, row.name).toBe(true);
+    expect(scrubPresendCredentials(second) === second, row.name).toBe(true);
   });
 });

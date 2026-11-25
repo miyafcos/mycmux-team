@@ -22,6 +22,38 @@ fn clock_ms() -> u64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+// Renderer silence measures awake time. Sleep does not consume a heartbeat deadline.
+#[cfg(windows)]
+fn renderer_clock_ms() -> u64 {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn QueryUnbiasedInterruptTime(unbiased_time: *mut u64) -> i32;
+    }
+    let mut ticks = 0;
+    // SAFETY: Windows writes one u64 to this valid out parameter.
+    if unsafe { QueryUnbiasedInterruptTime(&mut ticks) } != 0 {
+        ticks / 10_000
+    } else {
+        clock_ms()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn renderer_clock_ms() -> u64 {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: this writes to the supplied timespec for a supported clock.
+    if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut now) } == 0 {
+        now.tv_sec as u64 * 1_000 + now.tv_nsec as u64 / 1_000_000
+    } else {
+        clock_ms()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn renderer_clock_ms() -> u64 {
+    clock_ms()
+}
+
 fn renderers() -> &'static Mutex<RendererWatches> {
     RENDERERS.get_or_init(|| Mutex::new(RendererWatches::default()))
 }
@@ -110,6 +142,26 @@ impl ReloadBudget {
     }
 }
 
+fn reload_renderer<T>(
+    registry: Option<&crate::window_registry::WindowRegistry>,
+    webview_label: &str,
+    window_label: &str,
+    reload: impl FnOnce() -> T,
+) -> T {
+    if webview_label == window_label {
+        if let Some(registry) = registry {
+            registry.invalidate_account_management_document(window_label);
+        }
+    }
+    reload()
+}
+
+// The owning window is relevant only to readiness at reload time.
+// Recovery budgets use the WebView label.
+fn renderer_window_label(view: &tauri::Webview) -> String {
+    view.window().label().to_owned()
+}
+
 #[cfg(not(target_os = "macos"))]
 fn recover_renderers(
     app: &AppHandle,
@@ -129,7 +181,10 @@ fn recover_renderers(
             Some(RecoveryDecision::Reload { attempt, kind }) => {
                 if let Some(webview) = app.get_webview(label) {
                     // No PTY operation: the reloaded frontend reattaches by ID.
-                    let result = webview.reload();
+                    let state = app.try_state::<crate::AppState>();
+                    let registry = state.as_ref().map(|state| &state.window_registry);
+                    let window_label = renderer_window_label(&webview);
+                    let result = reload_renderer(registry, webview.label(), &window_label, || webview.reload());
                     lines.push(format!(
                         "[webview2] renderer reload webview={label} kind={kind} attempt={attempt}/{MAX_RELOADS} success={} error={:?}",
                         result.is_ok(), result.err().map(|error| error.to_string())
@@ -335,7 +390,9 @@ impl TerminalDiagnostic {
                     | "count_budget_protected" | "count_budget_dispose_failed"
                     | "count_dispose_result" | "count_dispose_failed" | "count_retry" | "count_exhausted"
                     | "count_fallback_ready" | "count_stall" | "count_start" | "count_end" | "count_failed"
-                    | "count_aborted") || ["paint", "manual", "channel"].iter().any(|reason|
+                    | "count_aborted" | "count_window_evicted" | "count_tool_disclosure_evicted"
+                    | "count_exception_error" | "count_exception_type_error"
+                    | "count_exception_range_error" | "count_exception_unknown") || ["paint", "manual", "channel"].iter().any(|reason|
                         ["start", "end", "failed", "aborted", "stall"].iter().any(|event|
                             key == &format!("count_{reason}_{event}")))
                 {
@@ -437,6 +494,7 @@ impl RendererWork {
 
 const VISIBLE_RENDERER_GAP_MS: u64 = 45_000;
 const RENDERER_STALL_SAMPLE_MS: u64 = 1000;
+const RENDERER_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
 
 struct RendererWatch {
     last_seen_ms: u64,
@@ -481,9 +539,16 @@ impl RendererWatch {
                 now_ms.saturating_sub(self.last_seen_ms) / 1000
             ));
         }
+        let mut progress = heartbeat.progress;
+        if let Some(progress) = progress.as_mut() {
+            let awake_delay = self.last_sample_ms.map_or(0, |_| {
+                now_ms.saturating_sub(self.last_seen_ms).saturating_sub(RENDERER_HEARTBEAT_INTERVAL_MS)
+            });
+            progress.timer_delay_ms = progress.timer_delay_ms.min(awake_delay);
+        }
         self.last_seen_ms = now_ms;
-        self.last_visible_progress = heartbeat.progress.filter(|_| heartbeat.visibility == "visible");
-        if let Some(progress) = heartbeat.progress {
+        self.last_visible_progress = progress.filter(|_| heartbeat.visibility == "visible");
+        if let Some(progress) = progress {
             if progress.timer_delay_ms >= RENDERER_STALL_SAMPLE_MS
                 || progress.longest_frame_ms >= RENDERER_STALL_SAMPLE_MS
                 || heartbeat.max_long_task_ms >= RENDERER_STALL_SAMPLE_MS as f64
@@ -570,7 +635,7 @@ pub async fn report_renderer_heartbeat(
             return Err("invalid renderer heartbeat measurements".to_string());
         }
         let lines = renderers().lock().unwrap_or_else(|p| p.into_inner())
-            .heartbeat(caller.label(), &heartbeat, clock_ms());
+            .heartbeat(caller.label(), &heartbeat, renderer_clock_ms());
         for line in lines { log_with_memory(line); }
     }
     if let Some(line) = diagnostic_line { log_with_memory(line); }
@@ -624,7 +689,7 @@ pub(crate) fn start(app: AppHandle) {
     let (failure_queue, failure_receiver) = mpsc::sync_channel(128);
     let _ = FAILURES.set(failure_queue);
     renderers().lock().unwrap_or_else(|p| p.into_inner()).views
-        .entry("main".to_string()).or_insert_with(|| RendererWatch::new(clock_ms()));
+        .entry("main".to_string()).or_insert_with(|| RendererWatch::new(renderer_clock_ms()));
     if let Err(error) = std::thread::Builder::new()
         .name("mycmux-watchdog".to_string())
         .spawn(move || {
@@ -640,7 +705,7 @@ pub(crate) fn start(app: AppHandle) {
                 runtime.poll("tokio", now_ms, &mut lines);
                 blocking.poll("blocking pool", now_ms, &mut lines);
                 lines.extend(renderers().lock().unwrap_or_else(|p| p.into_inner())
-                    .poll(now_ms, |label| app.get_webview(label).is_some()));
+                    .poll(renderer_clock_ms(), |label| app.get_webview(label).is_some()));
                 recover_renderers(&app, &mut recoveries, failure_receiver.try_iter(), now_ms, &mut lines);
                 for (line, dropped) in receiver.try_iter() {
                     lines.push(line);
@@ -877,7 +942,10 @@ fn recover_renderers(
                 if let Some(view) = app.get_webview(&label) {
                     // The dedicated watchdog worker dispatches this reload.
                     // Existing PTYs are reattached by ID, never recreated here.
-                    let result = view.reload();
+                    let state = app.try_state::<crate::AppState>();
+                    let registry = state.as_ref().map(|state| &state.window_registry);
+                    let window_label = renderer_window_label(&view);
+                    let result = reload_renderer(registry, view.label(), &window_label, || view.reload());
                     lines.push(format!(
                         "[webkit] renderer reload webview={label} kind={kind} attempt={attempt}/{MAX_RELOADS} success={} error={:?}",
                         result.is_ok(), result.err().map(|error| error.to_string())
@@ -1056,6 +1124,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_management_is_unavailable_during_watchdog_reload_until_the_child_resubscribes() {
+        let registry = crate::window_registry::WindowRegistry::new();
+        let label = "mycmux-w1";
+        let publisher = registry.register_fragment_publisher(label);
+        let document = registry.account_management_document(label, Some(&publisher)).unwrap();
+        assert!(registry.set_account_management_ready(label, Some(&publisher), document, 4, Some("old-listen".into())));
+        let fragment = crate::window_registry::WindowFragment {
+            window_label: label.into(),
+            workspaces: vec![serde_json::json!({"id": "owned-workspace", "panes": []})],
+            ..Default::default()
+        };
+        assert!(registry.publish_live_fragment(fragment, Some(&publisher)));
+        assert!(registry.tab_index("mycmux-w2")[0].account_management_ready);
+
+        reload_renderer(Some(&registry), "web-pane-embedded", label, || {
+            assert!(registry.tab_index("mycmux-w2")[0].account_management_ready);
+        });
+        let mut budget = ReloadBudget::default();
+        budget.failed(1);
+        assert!(matches!(budget.poll(0), Some(RecoveryDecision::Reload { .. })));
+        reload_renderer(Some(&registry), label, label, || {
+            // The driver may hold the replacement document before it listens.
+            let index = registry.tab_index("mycmux-w2");
+            assert!(!index[0].account_management_ready);
+            assert!(index[0].account_management_subscription.is_none());
+            assert_eq!(index[0].workspaces[0].id, "owned-workspace");
+        });
+
+        assert!(!registry.set_account_management_ready(label, Some(&publisher), document, 5, Some("old-listen".into())));
+        assert!(!registry.tab_index("mycmux-w2")[0].account_management_ready);
+        let replacement = registry.account_management_document(label, Some(&publisher)).unwrap();
+        assert_ne!(document, replacement);
+        assert!(registry.set_account_management_ready(label, Some(&publisher), replacement, 1, Some("new-listen".into())));
+        let index = registry.tab_index("mycmux-w2");
+        assert!(index[0].account_management_ready);
+        let subscription = index[0].account_management_subscription.as_ref().unwrap();
+        assert_eq!(subscription.publication_id, publisher);
+        assert_eq!(subscription.subscription_id, "new-listen");
+    }
+
+    #[test]
+    fn int_fix5_watchdog_reload_withdraws_subscription_before_native_reload() {
+        let registry = crate::window_registry::WindowRegistry::new();
+        let label = "main";
+        let publisher = registry.register_fragment_publisher(label);
+        let document = registry.account_management_document(label, Some(&publisher)).unwrap();
+        assert!(registry.set_account_management_ready(label, Some(&publisher), document, 1, Some("old-listener".into())));
+        let fragment = crate::window_registry::WindowFragment {
+            window_label: label.into(),
+            workspaces: vec![serde_json::json!({"id": "watchdog-workspace", "panes": []})],
+            ..Default::default()
+        };
+        assert!(registry.publish_live_fragment(fragment, Some(&publisher)));
+        let index = || registry.tab_index("mycmux-w2").into_iter().find(|entry| entry.window_label == label).unwrap();
+        assert!(index().account_management_ready);
+        assert!(index().account_management_subscription.is_some());
+
+        let mut reloads = 0;
+        let result = reload_renderer(Some(&registry), label, label, || {
+            let at_reload = index();
+            assert!(!at_reload.account_management_ready);
+            assert!(at_reload.account_management_subscription.is_none());
+            assert_eq!(at_reload.workspaces[0].id, "watchdog-workspace");
+            reloads += 1;
+            Ok::<(), &str>(())
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(reloads, 1);
+    }
+
+    #[test]
     fn reload_budget_keeps_early_failures_and_stops_after_three_attempts() {
         let mut budget = ReloadBudget::default();
         budget.failed(1);
@@ -1107,12 +1246,22 @@ mod tests {
     fn terminal_diagnostic_coalesces_only_named_events() {
         let sample: TerminalDiagnostic = serde_json::from_value(serde_json::json!({
             "kind": "renderer", "event": "coalesced", "session": "abcdef12",
-            "numbers": {"coalesced": 3, "count_context_loss": 2, "count_manual_failed": 1, "count_private": 5}
+            "numbers": {
+                "coalesced": 3, "count_context_loss": 2, "count_manual_failed": 1, "count_private": 5,
+                "count_exception_error": 1, "count_exception_type_error": 2,
+                "count_exception_range_error": 3, "count_exception_unknown": 4,
+                "count_exception_unapproved": 5
+            }
         })).unwrap();
         let line = sample.line("main").unwrap();
         assert!(line.starts_with("[terminal-diagnostic] event=coalesced webview=main session=abcdef12"));
-        assert!(line.contains(" coalesced=3 count_context_loss=2 count_manual_failed=1"));
+        for counter in ["coalesced=3", "count_context_loss=2", "count_manual_failed=1",
+            "count_exception_error=1", "count_exception_type_error=2", "count_exception_range_error=3",
+            "count_exception_unknown=4"] {
+            assert!(line.split_whitespace().any(|field| field == counter), "{counter}");
+        }
         assert!(!line.contains("private"));
+        assert!(!line.contains("unapproved"));
     }
 
     fn heartbeat() -> RendererHeartbeat {
@@ -1268,6 +1417,35 @@ mod tests {
         let stall = lines.iter().find(|line| line.starts_with("[renderer-stall]")).unwrap();
         assert_eq!(format_with_memory(stall, "3726"),
             "[renderer-stall] timer_delay_ms=50429 max_longtask_ms=0.0 longest_frame_ms=50000 work=style-layout work_ms=42000 webview=main free_ram_mib=3726");
+    }
+
+    #[test]
+    fn l3_105_reported_timer_gap_is_bounded_by_host_awake_elapsed_time() {
+        let mut watch = RendererWatch::new(0);
+        let mut sample = heartbeat();
+        sample.visibility = "visible".into();
+        assert!(!watch.heartbeat(&sample, 0).is_empty());
+        sample.progress = Some(RendererProgress {
+            timer_delay_ms: 120_000, longest_frame_ms: 0,
+            work_kind: RendererWork::Unknown, work_ms: 0,
+        });
+        assert!(!watch.heartbeat(&sample, 30_000).iter().any(|line| line.starts_with("[renderer-stall]")));
+        assert!(watch.heartbeat(&sample, 180_000).iter().any(|line| line.starts_with("[renderer-stall]")));
+    }
+
+    #[test]
+    fn l3_fix2_22_initial_renderer_sample_does_not_count_unobserved_sleep_as_a_stall() {
+        let mut watches = RendererWatches::default();
+        let mut sample = heartbeat();
+        sample.visibility = "visible".into();
+        sample.progress = Some(RendererProgress {
+            timer_delay_ms: 120_000, longest_frame_ms: 0,
+            work_kind: RendererWork::Unknown, work_ms: 0,
+        });
+        assert!(!watches.heartbeat("main", &sample, 30_000).iter()
+            .any(|line| line.starts_with("[renderer-stall]")));
+        assert!(watches.heartbeat("main", &sample, 180_000).iter()
+            .any(|line| line.starts_with("[renderer-stall]")));
     }
 
     #[test]

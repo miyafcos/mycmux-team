@@ -87,7 +87,15 @@ beforeEach(async () => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.spyOn(console, "warn").mockImplementation(() => {});
   mocks.check.mockResolvedValue(update());
-  mocks.invoke.mockResolvedValue(null);
+  let pending: { version: string; currentVersion: string } | null = null;
+  mocks.invoke.mockImplementation(async (command, args) => {
+    if (command !== "update_restart_pending") return null;
+    if (!pending && args?.installVersion) {
+      await mocks.downloadAndInstall();
+      pending = { version: args.installVersion, currentVersion: "1.0.0" };
+    }
+    return pending;
+  });
   mocks.downloadAndInstall.mockResolvedValue(undefined);
   mocks.relaunch.mockResolvedValue(undefined);
   mocks.close.mockResolvedValue(undefined);
@@ -199,13 +207,13 @@ describe("update mark and confirmation", () => {
     expect(mocks.relaunch).toHaveBeenCalledOnce();
   });
 
-  it("retains a retryable error when relaunch fails", async () => {
+  it("reports that installation succeeded while the restart can be retried", async () => {
     mocks.relaunch.mockRejectedValueOnce(new Error("restart failed"));
     await discover();
     await mount(createElement(UpdateButton, { testProfile: null }));
     await act(async () => mark()?.click());
     await click("更新して再起動");
-    expect(host.textContent).toContain(failure);
+    expect(host.textContent).toContain("v1.1.0 の更新は完了しました。もう一度押すと再起動します。");
     expect(button("更新して再起動").disabled).toBe(false);
     expect(mark()).not.toBeNull();
   });
@@ -569,7 +577,7 @@ describe("update scheduling and confirmation regressions", () => {
     expect(button("更新して再起動")).toBeDefined();
   });
 
-  it("installs the new handle after a pending check and only closes the old handle", async () => {
+  it("installs the selected version after a pending check and only closes the old handle", async () => {
     const oldUpdate = update();
     mocks.check.mockResolvedValueOnce(oldUpdate);
     await discover();
@@ -581,15 +589,14 @@ describe("update scheduling and confirmation regressions", () => {
     await act(async () => {});
     await click("更新して再起動");
     expect(mocks.downloadAndInstall).not.toHaveBeenCalled();
-    const newDownload = vi.fn(async () => {});
     const newClose = vi.fn(async () => {});
     await act(async () => {
-      checking.resolve({ ...update(), downloadAndInstall: newDownload, close: newClose });
+      checking.resolve({ ...update(), version: "1.2.0", close: newClose });
       await refresh;
     });
-    expect(newDownload).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith("update_restart_pending", { installVersion: "1.2.0" });
     expect(newClose).not.toHaveBeenCalled();
-    expect(mocks.downloadAndInstall).not.toHaveBeenCalled();
+    expect(mocks.downloadAndInstall).toHaveBeenCalledOnce();
     expect(oldUpdate.close).toHaveBeenCalledOnce();
     expect(mocks.relaunch).toHaveBeenCalledOnce();
   });
@@ -609,19 +616,19 @@ describe("update scheduling and confirmation regressions", () => {
     expect(visibleRemove.mock.calls.filter(([name]) => name === "visibilitychange")).toHaveLength(0);
   });
 
-  it("warns with the original error when update discovery fails", async () => {
+  it("logs only the update discovery failure category", async () => {
     const error = new Error("check failed");
     mocks.check.mockRejectedValueOnce(error);
     await updater.runUpdateCheck();
-    expect(console.warn).toHaveBeenCalledWith("[updater] Update check failed", error);
+    expect(console.warn).toHaveBeenCalledWith("[updater] Update check failed");
   });
 
-  it("warns with the original error when installation or relaunch fails", async () => {
+  it("logs only the update restart failure category", async () => {
     const error = new Error("restart failed");
     mocks.relaunch.mockRejectedValueOnce(error);
     await discover();
     await updater.installAvailableUpdate();
-    expect(console.warn).toHaveBeenCalledWith("[updater] Update installation or restart failed", error);
+    expect(console.warn).toHaveBeenCalledWith("[updater] Update restart failed");
   });
 });
 
@@ -655,4 +662,35 @@ describe("settings confirmation", () => {
     await act(async () => context.setWindowRole(false));
     expect([...host.querySelectorAll("button")]).toHaveLength(0);
   });
+});
+
+
+it("L6 fix3 disables the settings check while a restart is pending", async () => {
+  await mount(createElement(AppInfoTab));
+  await click("更新を確認");
+  const restart = deferred<void>();
+  mocks.relaunch.mockReturnValueOnce(restart.promise);
+  try {
+    await click("更新して再起動");
+    expect(host.textContent).toContain("v1.1.0 を再起動しています…");
+    expect(button("更新を確認").disabled).toBe(true);
+  } finally {
+    await act(async () => restart.resolve(undefined));
+  }
+});
+
+it("L6 fix2 reports restarting while a retry is waiting for the process", async () => {
+  mocks.relaunch.mockRejectedValueOnce(new Error("restart failed"));
+  await discover();
+  await mount(createElement(UpdateButton, { testProfile: null }));
+  await act(async () => mark()?.click());
+  await click("更新して再起動");
+
+  const restart = deferred<void>();
+  mocks.relaunch.mockReturnValueOnce(restart.promise);
+  await click("更新して再起動");
+  expect(mocks.relaunch).toHaveBeenCalledTimes(2);
+  expect(mocks.downloadAndInstall).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="status"]')?.textContent).toBe("v1.1.0 を再起動しています…");
+  await act(async () => restart.resolve(undefined));
 });

@@ -1,0 +1,9 @@
+{
+  "anchored literal block": "description: &example |\n  {counter}",
+  "tagged folded block": "description: !!str >\n  {counter}",
+  "multiline quoted value after a plain value containing a quote": "title: plain text with a \" mark\ndescription: \"line\n  {counter}\"",
+  "literal block without an anchor": "description: |\n  {counter}",
+  "multiline quoted value after a plain value": "title: plain text with a mark\ndescription: \"line\n  {counter}\"",
+  "numeric field after a plain value containing a quote": "title: plain text with a \" mark\n{counter}",
+  "numeric field after a plain value": "title: plain text with a mark\n{counter}"
+}

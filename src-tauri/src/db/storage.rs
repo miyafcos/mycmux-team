@@ -6,11 +6,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(any(windows, test))]
+pub(crate) fn normalize_windows_profile_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 /// Windows lock names must distinguish the profile's actual data file. Scope
 /// tags keep the default file distinct from a user profile named "default".
 #[cfg(any(windows, test))]
 fn data_mutex_name(profile: Option<&str>, test_pid: Option<u32>) -> String {
-    let scope = profile.map(|name| format!("profile-{}", name.to_ascii_lowercase()))
+    let scope = profile.map(|name| format!("profile-{}", normalize_windows_profile_name(name)))
         .unwrap_or_else(|| "default".to_string());
     match test_pid {
         Some(pid) => format!("Local\\miyazaki-{}-data-json-test-{scope}-{pid}", env!("CARGO_PKG_NAME")),
@@ -48,7 +53,10 @@ mod interprocess_data_lock {
     }
 
     pub fn acquire_with_timeout(timeout: std::time::Duration) -> Result<DataLockGuard, String> {
-        let name = mutex_name();
+        acquire_named(&mutex_name(), timeout)
+    }
+
+    pub(super) fn acquire_named(name: &str, timeout: std::time::Duration) -> Result<DataLockGuard, String> {
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide_name.as_ptr())) }
             .map_err(|error| format!("Failed to create data-file mutex: {error}"))?;
@@ -76,7 +84,7 @@ mod interprocess_data_lock {
 mod interprocess_data_lock {
     use std::fs::{self, File, OpenOptions};
     use std::os::fd::AsRawFd;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -93,15 +101,16 @@ mod interprocess_data_lock {
         }
     }
 
-    fn lock_path(runtime_dir: &Path) -> PathBuf {
-        runtime_dir.join("data.json.lock")
-    }
 
     fn acquire_at(runtime_dir: &Path) -> Result<DataLockGuard, String> {
         acquire_at_with_timeout(runtime_dir, LOCK_TIMEOUT)
     }
 
     pub(super) fn acquire_at_with_timeout(runtime_dir: &Path, timeout: Duration) -> Result<DataLockGuard, String> {
+        acquire_named_at(runtime_dir, "data.json.lock", timeout)
+    }
+
+    pub(super) fn acquire_named_at(runtime_dir: &Path, file_name: &str, timeout: Duration) -> Result<DataLockGuard, String> {
         fs::create_dir_all(runtime_dir)
             .map_err(|error| format!("Failed to create data-file lock directory: {error}"))?;
         // Nothing is ever written into this file — it exists only to carry
@@ -112,7 +121,7 @@ mod interprocess_data_lock {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(lock_path(runtime_dir))
+            .open(runtime_dir.join(file_name))
             .map_err(|error| format!("Failed to open data-file lock: {error}"))?;
         let started = Instant::now();
 
@@ -827,6 +836,35 @@ impl PersistentDataTarget for tauri::AppHandle {
     }
 }
 
+pub(crate) const APP_LAYOUT_DIR_PREFIX: &str = "com.miyazaki.mycmux";
+
+pub(crate) struct LayoutActivityGuard {
+    _lock: interprocess_data_lock::DataLockGuard,
+}
+
+pub(crate) fn lock_layout_activity(root: &Path, timeout: Duration) -> Result<LayoutActivityGuard, String> {
+    #[cfg(windows)]
+    let lock = {
+        use sha2::{Digest, Sha256};
+        let normalized = root.to_string_lossy().replace('\\', "/").to_lowercase();
+        let name = format!("Local\\mycmux-layout-activity-{:x}", Sha256::digest(normalized.as_bytes()));
+        interprocess_data_lock::acquire_named(&name, timeout)?
+    };
+    #[cfg(unix)]
+    let lock = interprocess_data_lock::acquire_named_at(root, ".mycmux-layout-activity.lock", timeout)?;
+    Ok(LayoutActivityGuard { _lock: lock })
+}
+
+/// The startup sweep can inspect all app variants and profiles under the same
+/// parent. Their data.json and scrollback commits take that same scope lock.
+pub(crate) fn lock_layout_directory(dir: &Path, timeout: Duration) -> Result<Option<LayoutActivityGuard>, String> {
+    let app = dir.parent().filter(|parent| parent.file_name().is_some_and(|name| name == "profiles"))
+        .and_then(Path::parent).unwrap_or(dir);
+    let shared = app.file_name().and_then(|name| name.to_str())
+        .filter(|name| name.starts_with(APP_LAYOUT_DIR_PREFIX)).and_then(|_| app.parent());
+    shared.map(|root| lock_layout_activity(root, timeout)).transpose()
+}
+
 const RUN_IN_PROGRESS: &[u8] = b"running\n";
 const COORDINATED_QUIT: &[u8] = b"coordinated-quit\n";
 
@@ -876,6 +914,14 @@ pub(crate) fn scrollback_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, S
     Ok(parent.join("scrollback"))
 }
 
+// Compare save times on a steady clock during one run. A restarted app can
+// still encounter future-dated backups, which the generation gate handles.
+fn layout_write_time() -> SystemTime {
+    static ORIGIN: std::sync::OnceLock<(SystemTime, Instant)> = std::sync::OnceLock::new();
+    let (wall, anchor) = ORIGIN.get_or_init(|| (SystemTime::now(), Instant::now()));
+    *wall + anchor.elapsed()
+}
+
 fn timestamp_nanos(now: SystemTime) -> u128 {
     now.duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -883,16 +929,20 @@ fn timestamp_nanos(now: SystemTime) -> u128 {
 }
 
 fn backup_path_for(path: &Path, reason: &str) -> PathBuf {
-    let timestamp = timestamp_nanos(SystemTime::now());
+    let mut timestamp = timestamp_nanos(layout_write_time());
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("data.json");
 
-    path.with_file_name(format!(
-        "{file_name}.{reason}-{timestamp}-{}.bak",
-        std::process::id()
-    ))
+    let pid = std::process::id();
+    loop {
+        let candidate = path.with_file_name(format!("{file_name}.{reason}-{timestamp}-{pid}.bak"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        timestamp += 1;
+    }
 }
 
 fn pre_replace_backup_stamp<'a>(path: &Path, candidate: &'a Path) -> Option<&'a str> {
@@ -910,32 +960,31 @@ fn deferred_shrink_backup_timestamp(path: &Path, backup: &Path) -> Option<u128> 
     parse_backup_timestamp(stamp)
 }
 
-fn pre_replace_backups(path: &Path) -> Vec<PathBuf> {
+fn backup_entries(dir: &Path) -> std::io::Result<Vec<fs::DirEntry>> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries.collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
+fn pre_replace_backup_list(path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let Some(parent) = path.parent() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let Ok(entries) = fs::read_dir(parent) else {
-        return Vec::new();
-    };
-    let mut backups = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|candidate| pre_replace_backup_stamp(path, candidate).is_some())
-        .collect::<Vec<_>>();
-    backups.sort_by(|left, right| {
-        let left_modified = left
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        let right_modified = right
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        right_modified
-            .cmp(&left_modified)
-            .then_with(|| right.file_name().cmp(&left.file_name()))
-    });
-    backups
+    let mut backups = Vec::new();
+    for entry in backup_entries(parent)? {
+        let candidate = entry.path();
+        if pre_replace_backup_stamp(path, &candidate).is_some() && entry.file_type()?.is_file() {
+            backups.push(candidate);
+        }
+    }
+    backups.sort_by_key(|backup| std::cmp::Reverse((pre_replace_stamp(path, backup), backup.clone())));
+    Ok(backups)
+}
+
+fn pre_replace_backups(path: &Path) -> Vec<PathBuf> {
+    pre_replace_backup_list(path).unwrap_or_default()
 }
 
 fn cleanup_old_pre_replace_backups(path: &Path, keep: &Path, archive_available: bool) {
@@ -945,7 +994,9 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: &Path, archive_available: 
         .filter(|backup| backup != keep)
         .map(|backup| (deferred_shrink_backup_timestamp(path, &backup), backup))
         .collect();
-    backups.sort_unstable_by(|left, right| right.cmp(left));
+    backups.sort_unstable_by_key(|(stamp, backup)| {
+        std::cmp::Reverse((stamp.is_some(), pre_replace_stamp(path, backup), backup.clone()))
+    });
     // The just-written copy is protected even if the system clock moved back.
     let mut deferred_count = usize::from(deferred_shrink_backup_timestamp(path, keep).is_some());
     for (deferred_timestamp, backup) in backups {
@@ -954,8 +1005,8 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: &Path, archive_available: 
             // original bytes before releasing protection for this copy.
             let archived = archive_available
                 && archive_layout_from(&backup, path, BackupKind::Shrink, timestamp)
-                    .inspect_err(|error| {
-                        crate::diag_warn!("persist", "could not archive the protected pre-replace backup: {error}");
+                    .inspect_err(|_| {
+                        crate::diag_warn!("persist", "could not archive the protected pre-replace backup");
                     })
                     .is_ok();
             if !archived && deferred_count < MAX_DEFERRED_SHRINK_BACKUPS {
@@ -966,8 +1017,8 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: &Path, archive_available: 
         if let Err(error) = fs::remove_file(&backup) {
             crate::diag_warn!(
                 "storage",
-                "failed to remove old data backup {}: {error}",
-                backup.display()
+                "failed to remove old pre-replace backup: {:?}",
+                error.kind()
             );
         }
     }
@@ -985,6 +1036,7 @@ fn quarantine_data_file(path: &Path, reason: &str) -> Result<PathBuf, String> {
     Ok(backup_path)
 }
 
+#[cfg(test)]
 fn read_data_file(path: &Path) -> std::io::Result<String> {
     let mut contents = fs::read_to_string(path)?;
     if contents.starts_with('\u{feff}') {
@@ -1041,6 +1093,7 @@ fn ensure_existing_schema_supported(path: &Path) -> Result<(), PersistentStorage
 #[cfg(test)]
 thread_local! {
     static FAIL_NEXT_LAYOUT_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static BLOCK_LAYOUT_ARCHIVE_FOR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -1054,6 +1107,7 @@ fn fail_layout_copy_partway(source: &Path, file: &mut File) -> Result<(), String
 fn copy_layout_file(source: &Path, target: &Path) -> Result<(), String> {
     crate::util::atomic_write::AtomicWrite::new("layout backup", "Failed to install layout backup")
         .create_parents()
+        .temp_prefix(".mycmux-layout-copy-")
         .write_with(target, |file| {
             #[cfg(test)]
             if FAIL_NEXT_LAYOUT_COPY.with(|failure| failure.replace(false)) {
@@ -1082,10 +1136,28 @@ impl BackupKind {
     }
 }
 
+#[derive(Clone, Copy, Default, Ord, PartialOrd, Eq, PartialEq)]
+struct BackupStamp {
+    order: u128,
+    timestamp: u128,
+}
+
 struct LayoutBackup {
     path: PathBuf,
     timestamp: u128,
+    order: u128,
     kind: BackupKind,
+}
+
+fn next_backup_order(path: &Path) -> Result<u128, String> {
+    let generations = layout_backup_list(path)
+        .map_err(|error| format!("cannot determine layout backup order: {:?}", error.kind()))?;
+    let pre_replace = pre_replace_backup_list(path)
+        .map_err(|error| format!("cannot determine pre-replace backup order: {:?}", error.kind()))?;
+    generations.into_iter().map(|backup| backup.order)
+        .chain(pre_replace.iter().map(|backup| pre_replace_stamp(path, backup).order))
+        .max().unwrap_or_default().checked_add(1)
+        .ok_or_else(|| "layout backup order is exhausted".into())
 }
 
 fn archive_layout(path: &Path, kind: BackupKind, now: SystemTime) -> Result<PathBuf, String> {
@@ -1095,125 +1167,211 @@ fn archive_layout(path: &Path, kind: BackupKind, now: SystemTime) -> Result<Path
 fn archive_layout_from(
     source: &Path, path: &Path, kind: BackupKind, mut timestamp: u128,
 ) -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.borrow().as_deref() == Some(path)) {
+        return Err("injected archive publication failure".into());
+    }
     let directory = path.with_file_name("data-backups");
     let kind = kind.prefix();
     let pid = std::process::id();
-    let mut target = directory.join(format!("{kind}-{timestamp}-{pid}.json"));
+    let order = if source == path { next_backup_order(path)? } else { pre_replace_stamp(path, source).order };
+    let mut target = directory.join(format!("{kind}-{timestamp}-{pid}-{order}.json"));
     while target.exists() {
         timestamp += 1;
-        target = directory.join(format!("{kind}-{timestamp}-{pid}.json"));
+        target = directory.join(format!("{kind}-{timestamp}-{pid}-{order}.json"));
     }
     copy_layout_file(source, &target)?;
     Ok(target)
 }
 
-fn parse_backup_timestamp(name: &str) -> Option<u128> {
-    let (time, pid) = name.split_once('-')?;
-    pid.parse::<u32>().ok()?;
-    time.parse().ok()
+fn parse_backup_stamp(name: &str) -> Option<BackupStamp> {
+    let mut parts = name.split('-');
+    let timestamp = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    let order = parts.next().map(str::parse).transpose().ok()?.unwrap_or_default();
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(BackupStamp { order, timestamp })
 }
 
-fn layout_backups(path: &Path) -> Vec<LayoutBackup> {
+fn parse_backup_timestamp(name: &str) -> Option<u128> {
+    parse_backup_stamp(name).map(|stamp| stamp.timestamp)
+}
+
+fn pre_replace_stamp(path: &Path, backup: &Path) -> BackupStamp {
+    pre_replace_backup_stamp(path, backup)
+        .map(|stamp| stamp.strip_prefix("shrink-").unwrap_or(stamp))
+        .and_then(parse_backup_stamp)
+        .unwrap_or_else(|| BackupStamp {
+            order: 0,
+            timestamp: backup.metadata().and_then(|metadata| metadata.modified()).ok()
+                .map(timestamp_nanos).unwrap_or_default(),
+        })
+}
+
+fn layout_backup_list(path: &Path) -> std::io::Result<Vec<LayoutBackup>> {
     let directory = path.with_file_name("data-backups");
-    let Ok(entries) = fs::read_dir(&directory) else {
-        return Vec::new();
-    };
-    let mut backups: Vec<_> = entries.filter_map(|entry| {
-        let entry = entry.ok()?;
-        if !entry.file_type().ok()?.is_file() { return None; }
-        let file_name = entry.file_name();
-        let (prefix, stamp) = file_name.to_str()?.strip_suffix(".json")?.split_once('-')?;
+    let mut backups = Vec::new();
+    for entry in backup_entries(&directory)? {
+        let name = entry.file_name();
+        let Some((prefix, name)) = name.to_str().and_then(|name| name.strip_suffix(".json"))
+            .and_then(|name| name.split_once('-')) else { continue; };
         let kind = match prefix {
             "data" => BackupKind::Generation,
             "shrink" => BackupKind::Shrink,
-            _ => return None,
+            _ => continue,
         };
-        let timestamp = parse_backup_timestamp(stamp)?;
-        Some(LayoutBackup { path: entry.path(), timestamp, kind })
-    }).collect();
-    backups.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.path.cmp(&a.path)));
-    backups
+        let Some(BackupStamp { timestamp, order }) = parse_backup_stamp(name) else { continue; };
+        if entry.file_type()?.is_file() {
+            backups.push(LayoutBackup { path: entry.path(), timestamp, order, kind });
+        }
+    }
+    backups.sort_unstable_by(|a, b| {
+        (b.order, b.timestamp, &b.path).cmp(&(a.order, a.timestamp, &a.path))
+    });
+    Ok(backups)
 }
 
-fn prune_layout_backups(path: &Path, now: SystemTime) {
-    const HOUR: u128 = 3_600_000_000_000;
-    const DAY: u128 = 24 * HOUR;
+fn layout_backups(path: &Path) -> Vec<LayoutBackup> {
+    layout_backup_list(path).unwrap_or_default()
+}
+
+const MIN_RECENT_GENERATIONS: usize = 20;
+const BACKUP_HOUR_NS: u128 = 3_600_000_000_000;
+const BACKUP_DAY_NS: u128 = 24 * BACKUP_HOUR_NS;
+
+#[derive(Default, Deserialize, Serialize)]
+struct BackupClock {
+    previous_save: u128,
+    protected_through: u128,
+    protect_legacy: bool,
+}
+
+impl BackupClock {
+    fn load(path: &Path) -> Self {
+        let read = match fs::read(path.with_file_name("layout-backup-clock.json")) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(_) => return Self::untrusted(),
+        };
+        serde_json::from_slice(&read).unwrap_or_else(|_| Self::untrusted())
+    }
+
+    fn untrusted() -> Self {
+        Self { previous_save: 0, protected_through: u128::MAX, protect_legacy: true }
+    }
+
+    fn before_save(path: &Path) -> Self {
+        let mut clock = Self::load(path);
+        if clock.previous_save == 0 && !clock.protect_legacy {
+            clock.previous_save = layout_backups(path).iter().map(|backup| backup.timestamp)
+                .chain(pre_replace_backups(path).iter().map(|backup| pre_replace_stamp(path, backup).timestamp))
+                .max().unwrap_or_default();
+        }
+        clock
+    }
+
+    fn observe_save(mut self, path: &Path, now: SystemTime, prior_order: u128) -> Self {
+        let stamp = timestamp_nanos(now);
+        if self.previous_save != 0 && (stamp < self.previous_save
+            || stamp - self.previous_save > BACKUP_DAY_NS)
+        {
+            self.protected_through = self.protected_through.max(prior_order);
+            self.protect_legacy = true;
+        }
+        self.previous_save = stamp;
+        let bytes = serde_json::to_vec(&self).expect("backup clock contains only numbers and flags");
+        let written = crate::util::atomic_write::AtomicWrite::new("backup clock", "Failed to install backup clock")
+            .write_bytes(&path.with_file_name("layout-backup-clock.json"), &bytes);
+        if written.is_err() {
+            crate::diag_warn!("storage", "backup clock could not be recorded; preserving backups by age");
+            return Self::untrusted();
+        }
+        self
+    }
+
+    fn protects_age(&self, order: u128) -> bool {
+        if order == 0 { self.protect_legacy } else { order <= self.protected_through }
+    }
+}
+
+fn prune_layout_backups_with_clock(path: &Path, now: SystemTime, clock: &BackupClock) {
     let now = timestamp_nanos(now);
     let mut generations = 0;
     let mut shrinks = 0;
     let mut hours = HashSet::new();
     let mut days = HashSet::new();
-    for backup in layout_backups(path) {
-        let age = now.saturating_sub(backup.timestamp);
+    let backups = layout_backups(path);
+    let future_date_present = backups.iter().any(|backup| backup.timestamp > now);
+    for backup in backups {
+        let Some(age) = now.checked_sub(backup.timestamp) else { continue; };
         let keep = match backup.kind {
             BackupKind::Shrink => {
-                let keep = shrinks < 50 && age <= 30 * DAY;
                 shrinks += 1;
-                keep
+                shrinks <= 50 && (age <= 30 * BACKUP_DAY_NS || clock.protects_age(backup.order))
             }
             BackupKind::Generation => {
-                let latest = generations < 20;
                 generations += 1;
-                let hourly = age <= 48 * HOUR && hours.insert(backup.timestamp / HOUR);
-                let daily = age <= 14 * DAY && days.insert(backup.timestamp / DAY);
-                latest || hourly || daily
+                let hourly = age <= 48 * BACKUP_HOUR_NS && hours.insert(backup.timestamp / BACKUP_HOUR_NS);
+                let daily = age <= 14 * BACKUP_DAY_NS && days.insert(backup.timestamp / BACKUP_DAY_NS);
+                generations <= MIN_RECENT_GENERATIONS || hourly || daily
             }
         };
-        if !keep {
-            if let Err(error) = fs::remove_file(&backup.path) {
-                crate::diag_warn!("storage", "failed to remove old layout backup {}: {error}", backup.path.display());
-            }
+        if keep { continue; }
+        let outcome = if future_date_present {
+            crate::util::atomic_write::preserve_in_old(&backup.path).map(|_| ())
+        } else {
+            fs::remove_file(&backup.path)
+        };
+        if outcome.is_err() {
+            crate::diag_warn!("storage", "could not rotate an old layout backup");
         }
     }
 }
 
-fn recovery_backups(path: &Path) -> Vec<PathBuf> {
-    let legacy = pre_replace_backups(path).into_iter().map(|backup| {
-        let timestamp = pre_replace_backup_stamp(path, &backup)
-            .map(|stamp| stamp.strip_prefix("shrink-").unwrap_or(stamp))
-            .and_then(parse_backup_timestamp)
-            .or_else(|| backup.metadata().ok()?.modified().ok().map(timestamp_nanos))
-            .unwrap_or_default();
-        (timestamp, backup)
-    });
-    let mut backups: Vec<_> = layout_backups(path).into_iter()
-        .map(|backup| (backup.timestamp, backup.path))
+#[cfg(test)]
+fn prune_layout_backups(path: &Path, now: SystemTime) {
+    prune_layout_backups_with_clock(path, now, &BackupClock::load(path));
+}
+
+pub(crate) fn scan_recovery_backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let legacy = pre_replace_backup_list(path)?.into_iter()
+        .map(|backup| (pre_replace_stamp(path, &backup), backup));
+    let mut backups: Vec<_> = layout_backup_list(path)?.into_iter()
+        .map(|backup| (BackupStamp { order: backup.order, timestamp: backup.timestamp }, backup.path))
         .chain(legacy)
         .collect();
     backups.sort_unstable_by(|a, b| b.cmp(a));
-    backups.into_iter().map(|(_, backup)| backup).collect()
+    Ok(backups.into_iter().map(|(_, backup)| backup).collect())
+}
+
+pub(crate) fn parse_layout_bytes(contents: &[u8]) -> Result<PersistentDataEnvelope, String> {
+    let text = std::str::from_utf8(contents).map_err(|_| "invalid UTF-8 layout")?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let schema = schema_version_from_contents(Path::new("layout"), text)?;
+    if schema != CURRENT_SCHEMA_VERSION {
+        return Ok(PersistentDataEnvelope::unsupported(schema));
+    }
+    serde_json::from_str::<PersistentData>(text).map(PersistentDataEnvelope::supported)
+        .map_err(|error| error.to_string())
 }
 
 fn recover_from_pre_replace_backup(
     path: &Path,
     reason: &str,
 ) -> Result<Option<PersistentDataEnvelope>, String> {
-    for backup_path in recovery_backups(path) {
-        let Ok(contents) = read_data_file(&backup_path) else {
-            continue;
-        };
-        let Ok(schema_version) = schema_version_from_contents(&backup_path, &contents) else {
-            continue;
-        };
-        let envelope = if schema_version == CURRENT_SCHEMA_VERSION {
-            let Ok(data) = serde_json::from_str::<PersistentData>(&contents) else {
-                continue;
-            };
-            PersistentDataEnvelope::supported(data)
-        } else {
-            PersistentDataEnvelope::unsupported(schema_version)
-        };
+    let candidates = scan_recovery_backups(path)
+        .map_err(|error| format!("layout recovery deferred: could not list backups ({:?})", error.kind()))?;
+    for backup_path in candidates {
+        let bytes = fs::read(&backup_path)
+            .map_err(|error| format!("layout recovery deferred: could not read a backup ({:?})", error.kind()))?;
+        let Ok(envelope) = parse_layout_bytes(&bytes) else { continue; };
         if path.exists() {
-            let _backup_path = quarantine_data_file(path, reason)?;
+            quarantine_data_file(path, reason)?;
         }
         copy_layout_file(&backup_path, path)?;
-        crate::diag_warn!(
-            "storage",
-            "recovered {} from {} after {}",
-            path.display(),
-            backup_path.display(),
-            reason
-        );
+        crate::diag_warn!("storage", "restored layout from recovery backup ({reason})");
         return Ok(Some(envelope));
     }
     Ok(None)
@@ -1230,34 +1388,19 @@ fn recover_unusable_data(path: &Path, reason: &str) -> Result<PersistentDataEnve
 }
 
 fn load_envelope_from_path(path: &Path) -> Result<PersistentDataEnvelope, String> {
-    let contents = match read_data_file(path) {
+    let contents = match fs::read(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return recover_unusable_data(path, "missing");
         }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-            return recover_unusable_data(path, "corrupt");
-        }
-        Err(error) => return Err(format!("Failed to read {}: {error}", path.display())),
+        Err(error) => return Err(format!("Failed to read layout file: {error}")),
     };
-
-    if contents.trim().is_empty() {
+    let text = std::str::from_utf8(&contents).ok();
+    if text.is_some_and(|text| text.trim_start_matches('\u{feff}').trim().is_empty()) {
         return recover_unusable_data(path, "empty");
     }
-
-    // Probe the schema before deserializing the current struct. A future
-    // schema may be valid JSON while intentionally changing required fields;
-    // it must never fall into the corrupt-file recovery path.
-    match schema_version_from_contents(path, &contents) {
-        Ok(schema_version) if schema_version != CURRENT_SCHEMA_VERSION => {
-            return Ok(PersistentDataEnvelope::unsupported(schema_version));
-        }
-        Ok(_) => {}
-        Err(_) => return recover_unusable_data(path, "corrupt"),
-    }
-
-    match serde_json::from_str::<PersistentData>(&contents) {
-        Ok(data) => Ok(PersistentDataEnvelope::supported(data)),
+    match parse_layout_bytes(&contents) {
+        Ok(envelope) => Ok(envelope),
         Err(_) => recover_unusable_data(path, "corrupt"),
     }
 }
@@ -1286,11 +1429,13 @@ fn replace_data_file(
     layout_reduced: bool,
     shrink: Option<(LayoutCounts, LayoutCounts)>,
 ) -> Result<(), String> {
+    let prior_order = next_backup_order(path)?.saturating_sub(1);
+    let backup_clock = BackupClock::before_save(path);
     let shrink_backup = shrink.and_then(|(before, after)| {
         match archive_layout(path, BackupKind::Shrink, now) {
             Ok(backup) => Some((before, after, backup)),
-            Err(error) => {
-                crate::diag_warn!("persist", "could not keep the layout before shrink: {error}");
+            Err(_) => {
+                crate::diag_warn!("persist", "could not keep the pre-shrink layout backup");
                 None
             }
         }
@@ -1302,20 +1447,28 @@ fn replace_data_file(
         } else {
             "pre-replace"
         };
-        let backup_path = backup_path_for(path, reason);
+        let timestamp = timestamp_nanos(now);
+        let order = next_backup_order(path)?;
+        let pid = std::process::id();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("data.json");
+        let backup_path = path.with_file_name(format!("{name}.{reason}-{timestamp}-{pid}-{order}.bak"));
         copy_layout_file(path, &backup_path)?;
-        let keep_generation = layout_reduced
-            || layout_backups(path)
-                .into_iter()
-                .find(|backup| backup.kind == BackupKind::Generation)
-                .is_none_or(|backup| {
-                    timestamp_nanos(now).saturating_sub(backup.timestamp)
-                        >= Duration::from_secs(60).as_nanos()
-                });
+        let save_stamp = timestamp_nanos(now);
+        let backups = layout_backups(path);
+        let normal_generations = backups.iter()
+            .filter(|backup| backup.kind == BackupKind::Generation && backup.timestamp <= save_stamp);
+        // With a future-dated backup, overflow is preserved on disk. At the
+        // normal retention floor keep rotating the pre-replace copy, but do
+        // not generate more optional copies that would only grow that overflow.
+        let clock_overflow = backups.iter().any(|backup| backup.timestamp > save_stamp)
+            && normal_generations.clone().count() >= MIN_RECENT_GENERATIONS;
+        let keep_generation = !clock_overflow && (layout_reduced
+            || normal_generations.into_iter().next()
+                .is_none_or(|backup| save_stamp - backup.timestamp >= Duration::from_secs(60).as_nanos()));
         if keep_generation {
             match archive_layout(path, BackupKind::Generation, now) {
                 Ok(_) => archive_available = true,
-                Err(error) => crate::diag_warn!("persist", "could not keep layout backup generation: {error}"),
+                Err(_) => crate::diag_warn!("persist", "could not keep layout backup generation"),
             }
         }
         Some(backup_path)
@@ -1334,11 +1487,12 @@ fn replace_data_file(
     if let Some(backup_path) = backup_path.as_deref() {
         cleanup_old_pre_replace_backups(path, backup_path, archive_available);
     }
-    prune_layout_backups(path, now);
-    if let Some((before, after, backup)) = shrink_backup {
+    let clock = backup_clock.observe_save(path, now, prior_order);
+    prune_layout_backups_with_clock(path, now, &clock);
+    if let Some((before, after, _)) = shrink_backup {
         crate::diag::log(&format!(
-            "[persist] shrink tabs {}->{} workspaces {}->{} kept {}",
-            before.tabs, after.tabs, before.workspaces, after.workspaces, backup.display()
+            "[persist] shrink tabs {}->{} workspaces {}->{} kept pre-shrink layout backup",
+            before.tabs, after.tabs, before.workspaces, after.workspaces
         ));
     }
 
@@ -1409,17 +1563,51 @@ fn save_preflighted_to_path(
         })
 }
 
+// Only these storage-owned patterns are safe to move. Older generic scratch
+// files beside data.json could belong to other AtomicWrite callers.
+fn retain_interrupted_writes(path: &Path) {
+    let Some(parent) = path.parent() else { return; };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return; };
+    let prefix = format!("{name}.tmp-");
+    let backups = path.with_file_name("data-backups");
+    for directory in [parent, backups.as_path()] {
+        if !fs::symlink_metadata(directory).is_ok_and(|metadata| metadata.is_dir()) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(directory) else { continue; };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue; };
+            let main_temp = directory == parent && name.strip_prefix(&prefix)
+                .and_then(|stamp| stamp.split_once('-')).is_some_and(|(pid, nanos)| {
+                    pid.parse::<u32>().is_ok() && nanos.parse::<u128>().is_ok()
+                });
+            let backup_temp = name.strip_prefix(".mycmux-layout-copy-")
+                .or_else(|| (directory == backups).then(|| name.strip_prefix(".tmp")).flatten())
+                .is_some_and(|random| random.len() == 6 && random.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+            if (main_temp || backup_temp) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                if let Err(error) = crate::util::atomic_write::preserve_in_old(&entry.path()) {
+                    crate::diag_warn!("storage", "could not preserve interrupted layout file: {error}");
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn load_envelope<T: PersistentDataTarget + ?Sized>(
     target: &T,
 ) -> Result<PersistentDataEnvelope, String> {
     let _process_guard = interprocess_data_lock::acquire()?;
     let path = target.persistent_data_path()?;
+    let _activity = lock_layout_directory(path.parent().unwrap_or(Path::new(".")), Duration::from_secs(30))?;
     if let Some(schema_version) = quarantined_schema_version() {
         return Ok(PersistentDataEnvelope::unsupported(schema_version));
     }
     let envelope = load_envelope_from_path(&path)?;
     if !envelope.supported {
         latch_unsupported_schema(envelope.schema_version);
+    } else {
+        retain_interrupted_writes(&path);
     }
     Ok(envelope)
 }
@@ -1452,14 +1640,25 @@ where
     T: PersistentDataTarget + ?Sized,
     F: FnOnce(&mut PersistentData),
 {
+    let counts = update_if_changed(target, |disk| {
+        updater(disk);
+        true
+    })?;
+    report(counts);
+    Ok(())
+}
+
+pub(crate) fn update_if_changed<T, F>(target: &T, updater: F) -> Result<LayoutCounts, PersistentStorageError>
+where
+    T: PersistentDataTarget + ?Sized,
+    F: FnOnce(&mut PersistentData) -> bool,
+{
     ensure_persistence_write_platform_supported()?;
     let _guard = save_lock().lock().map_err(|error| {
         PersistentStorageError::storage(format!("Failed to lock data file: {error}"))
     })?;
     let _process_guard = interprocess_data_lock::acquire().map_err(PersistentStorageError::from)?;
-    let counts = update_while_locked(target, SystemTime::now(), updater)?;
-    report(counts);
-    Ok(())
+    update_if_changed_while_locked(target, layout_write_time(), None, updater)
 }
 
 fn save_lock_until(lock: &Mutex<()>, deadline: Instant) -> Result<std::sync::MutexGuard<'_, ()>, PersistentStorageError> {
@@ -1478,7 +1677,7 @@ fn save_lock_until(lock: &Mutex<()>, deadline: Instant) -> Result<std::sync::Mut
 /// Ordinary autosaves keep their 30-second interprocess timeout. Only the
 /// last-chance exit writer abandons lock contention after at most 100 ms.
 pub(crate) fn update_for_shutdown<T, F>(target: &T, deadline: Instant, updater: F) -> Result<(), PersistentStorageError>
-where T: PersistentDataTarget + ?Sized, F: FnOnce(&mut PersistentData),
+where T: PersistentDataTarget + ?Sized, F: FnOnce(&mut PersistentData) -> bool,
 {
     ensure_persistence_write_platform_supported()?;
     let lock_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
@@ -1486,13 +1685,27 @@ where T: PersistentDataTarget + ?Sized, F: FnOnce(&mut PersistentData),
     let _process_guard = interprocess_data_lock::acquire_with_timeout(lock_deadline.saturating_duration_since(Instant::now()))
         .map_err(PersistentStorageError::from)?;
     if Instant::now() >= deadline { return Err(PersistentStorageError::storage("Shutdown save budget expired")); }
-    update_while_locked(target, SystemTime::now(), updater).map(|_| ())
+    update_if_changed_while_locked(target, layout_write_time(), Some(lock_deadline), updater).map(|_| ())
 }
 
+#[cfg(test)]
 fn update_while_locked<T, F>(target: &T, now: SystemTime, updater: F) -> Result<LayoutCounts, PersistentStorageError>
 where
     T: PersistentDataTarget + ?Sized,
     F: FnOnce(&mut PersistentData),
+{
+    update_if_changed_while_locked(target, now, None, |data| {
+        updater(data);
+        true
+    })
+}
+
+fn update_if_changed_while_locked<T, F>(
+    target: &T, now: SystemTime, deadline: Option<Instant>, updater: F,
+) -> Result<LayoutCounts, PersistentStorageError>
+where
+    T: PersistentDataTarget + ?Sized,
+    F: FnOnce(&mut PersistentData) -> bool,
 {
     if let Some(schema_version) = quarantined_schema_version() {
         return Err(PersistentStorageError::unsupported_schema(schema_version));
@@ -1500,6 +1713,12 @@ where
     let path = target
         .persistent_data_path()
         .map_err(PersistentStorageError::from)?;
+    let timeout = deadline.map_or(Duration::from_secs(30), |at| at.saturating_duration_since(Instant::now()));
+    let _activity = lock_layout_directory(path.parent().unwrap_or(Path::new(".")), timeout)
+        .map_err(PersistentStorageError::from)?;
+    if deadline.is_some_and(|at| Instant::now() > at) {
+        return Err(PersistentStorageError::storage("Shutdown layout activity lock budget expired"));
+    }
     // This locked read is also the writer preflight. Reuse the parsed payload
     // rather than reopening and reparsing the same bytes in save_to_path.
     let envelope = load_envelope_from_path(&path).map_err(PersistentStorageError::from)?;
@@ -1513,7 +1732,9 @@ where
         PersistentStorageError::storage("supported data.json load returned no data")
     })?;
     let before = data.layout_counts();
-    updater(&mut data);
+    if !updater(&mut data) {
+        return Ok(before);
+    }
     let after = data.layout_counts();
     let layout_reduced = after.tabs < before.tabs || after.workspaces < before.workspaces;
     let shrink = before.shrank_to(after).then_some((before, after));
@@ -1589,6 +1810,16 @@ mod tests {
         assert_eq!(names.len(), 4);
         assert_eq!(data_mutex_name(Some("Test"), None), data_mutex_name(Some("test"), None));
         assert_ne!(data_mutex_name(Some("test"), None), data_mutex_name(Some("test"), Some(123)));
+    }
+
+    #[test]
+    fn l3_fix2_23_windows_instance_guard_uses_the_same_profile_scope_as_data_writes() {
+        let lib = include_str!("../lib.rs");
+        let windows = lib.split_once("#[cfg(target_os = \"windows\")]\nmod single_instance {").unwrap().1
+            .split_once("#[cfg(unix)]").unwrap().0;
+        assert_eq!(normalize_windows_profile_name("Demo"), normalize_windows_profile_name("demo"));
+        assert!(windows.contains("normalize_windows_profile_name(name)"),
+            "Demo and demo name the same saved data but take different instance mutexes");
     }
 
     #[test]
@@ -2030,8 +2261,7 @@ mod tests {
         reset_quarantined_schema_for_test();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("data.json");
-        let archive_dir = path.with_file_name("data-backups");
-        fs::write(&archive_dir, b"archive directory is blocked").unwrap();
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(Some(path.clone())));
         save_to_path(&path, &PersistentData {
             workspaces: layout_with_tab_counts(&[5]),
             ..Default::default()
@@ -2049,7 +2279,7 @@ mod tests {
             fs::read(backup).unwrap() == original
         }), "the next save removed the only copy of the five-tab layout");
 
-        fs::rename(&archive_dir, path.with_file_name("previous-backup-blocker")).unwrap();
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(None));
         update(path.as_path(), |data| data.active_workspace_id = None).unwrap();
         assert_eq!(pre_replace_backups(&path).len(), 1);
         assert!(layout_backups(&path).iter().any(|backup| {
@@ -2063,7 +2293,7 @@ mod tests {
         reset_quarantined_schema_for_test();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("data.json");
-        fs::write(path.with_file_name("data-backups"), b"archive directory is blocked").unwrap();
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(Some(path.clone())));
 
         let mut originals = Vec::new();
         for generation in 0..22 {
@@ -2083,6 +2313,7 @@ mod tests {
             .collect();
         assert_eq!(retained.len(), 20);
         assert_eq!(retained, originals.into_iter().skip(2).collect());
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(None));
     }
 
     #[test]
@@ -2091,8 +2322,7 @@ mod tests {
         reset_quarantined_schema_for_test();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("data.json");
-        let archive_dir = path.with_file_name("data-backups");
-        fs::write(&archive_dir, b"archive directory is blocked").unwrap();
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(Some(path.clone())));
 
         let mut originals = HashSet::new();
         for generation in 0..20 {
@@ -2110,7 +2340,7 @@ mod tests {
         let live = fs::read(&path).unwrap();
         let files_before: HashSet<_> = fs::read_dir(dir.path()).unwrap()
             .map(|entry| entry.unwrap().file_name()).collect();
-        let candidates_before = recovery_backups(&path);
+        let candidates_before = scan_recovery_backups(&path).unwrap();
         FAIL_NEXT_LAYOUT_COPY.with(|failure| failure.set(true));
         let error = update(path.as_path(), |data| data.workspaces = layout_with_tab_counts(&[2]))
             .unwrap_err();
@@ -2118,14 +2348,14 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), live);
         let files_after: HashSet<_> = fs::read_dir(dir.path()).unwrap()
             .map(|entry| entry.unwrap().file_name()).collect();
-        let candidates_after = recovery_backups(&path);
+        let candidates_after = scan_recovery_backups(&path).unwrap();
 
         update(path.as_path(), |data| data.active_workspace_id = Some("workspace-0".into())).unwrap();
         let retained: HashSet<_> = pre_replace_backups(&path).into_iter()
             .filter(|backup| deferred_shrink_backup_timestamp(&path, backup).is_some())
             .map(|backup| fs::read(backup).unwrap()).collect();
 
-        fs::rename(&archive_dir, path.with_file_name("previous-backup-blocker")).unwrap();
+        BLOCK_LAYOUT_ARCHIVE_FOR.with(|blocked| blocked.replace(None));
         update(path.as_path(), |data| data.active_workspace_id = None).unwrap();
         let archived: HashSet<_> = layout_backups(&path).into_iter()
             .filter(|backup| backup.kind == BackupKind::Shrink)
@@ -2213,6 +2443,335 @@ mod tests {
                 .as_deref(),
             Some("old")
         );
+    }
+
+    #[test]
+    fn l3_77_shutdown_with_nothing_to_fill_does_not_rotate_the_backup() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        let original = PersistentData {
+            workspaces: layout_with_tab_counts(&[3]),
+            ..Default::default()
+        };
+        let edited = PersistentData {
+            workspaces: layout_with_tab_counts(&[2]),
+            ..Default::default()
+        };
+        save_to_path(&path, &original).unwrap();
+        save_to_path(&path, &edited).unwrap();
+        let before = pre_replace_backups(&path);
+        let bytes = fs::read(&before[0]).unwrap();
+        update_for_shutdown(path.as_path(), Instant::now() + Duration::from_secs(1), |_| false).unwrap();
+        assert_eq!(pre_replace_backups(&path), before);
+        assert_eq!(fs::read(&before[0]).unwrap(), bytes);
+    }
+
+    #[test]
+    fn l3_96_recovers_identifiable_interrupted_backup_copy_into_old() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        save_to_path(&path, &PersistentData::default()).unwrap();
+        let backups = path.with_file_name("data-backups");
+        fs::create_dir_all(&backups).unwrap();
+        let partial = backups.join(".tmpAbC123");
+        fs::write(&partial, b"interrupted").unwrap();
+        let unrelated = dir.path().join(".tmpXyz123");
+        fs::write(&unrelated, b"other writer").unwrap();
+
+        assert!(load_envelope(path.as_path()).unwrap().supported);
+        assert!(!partial.exists());
+        assert_eq!(fs::read(backups.join("_old").join(".tmpAbC123")).unwrap(), b"interrupted");
+        assert_eq!(fs::read(unrelated).unwrap(), b"other writer");
+    }
+
+    #[test]
+    fn l3_100_a_future_generation_does_not_suppress_new_generations() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        save_to_path(&path, &PersistentData::default()).unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let future = archive_layout(&path, BackupKind::Generation, now + Duration::from_secs(7200)).unwrap();
+        for elapsed in [0, 59, 60] {
+            update_while_locked(path.as_path(), now + Duration::from_secs(elapsed), |_| {}).unwrap();
+        }
+        let timestamps: HashSet<_> = layout_backups(&path).into_iter().map(|backup| backup.timestamp).collect();
+        assert_eq!(timestamps, [100, 160, 7300].map(|sec| timestamp_nanos(UNIX_EPOCH + Duration::from_secs(sec))).into());
+        assert!(future.is_file());
+    }
+
+    #[test]
+    fn l3_101_moves_the_interrupted_main_write_without_overwriting_earlier_copies() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        save_to_path(&path, &PersistentData::default()).unwrap();
+        let previous = fs::read(&path).unwrap();
+        let name = "data.json.tmp-4294967295-1000";
+        let partial = dir.path().join(name);
+        fs::write(&partial, b"partial layout").unwrap();
+        let old = dir.path().join("_old");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join(name), b"previous interrupted layout").unwrap();
+
+        assert!(load_envelope(path.as_path()).unwrap().supported);
+        assert!(!partial.exists());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        let files: Vec<_> = fs::read_dir(old).unwrap().map(|entry| fs::read(entry.unwrap().path()).unwrap()).collect();
+        assert!(files.contains(&b"partial layout".to_vec()));
+        assert!(files.contains(&b"previous interrupted layout".to_vec()));
+    }
+
+    #[test]
+    fn l3_drop_102_restores_the_latest_numbered_backup_after_shrink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        let time = UNIX_EPOCH + Duration::from_secs(120);
+        let large = PersistentData { workspaces: layout_with_tab_counts(&[10]), ..Default::default() };
+        fs::write(&path, serde_json::to_vec(&large).unwrap()).unwrap();
+        let before = archive_layout(&path, BackupKind::Shrink, time).unwrap();
+        let small = PersistentData { workspaces: layout_with_tab_counts(&[2]), ..Default::default() };
+        fs::write(&path, serde_json::to_vec(&small).unwrap()).unwrap();
+        let after = archive_layout(&path, BackupKind::Generation, time + Duration::from_secs(61)).unwrap();
+        fs::rename(&path, dir.path().join("unavailable.json")).unwrap();
+
+        assert_eq!(load_from_path(&path).unwrap().layout_counts().tabs, 2);
+        assert!(before.is_file());
+        assert_eq!(fs::read(&path).unwrap(), fs::read(&after).unwrap());
+    }
+
+    fn review_generation(path: &Path, tabs: usize, conversation: &str, kind: BackupKind, time: SystemTime) -> PathBuf {
+        let mut data = PersistentData { workspaces: layout_with_tab_counts(&[tabs]), ..Default::default() };
+        data.workspaces[0].name = conversation.to_owned();
+        data.workspaces[0].panes[0].tabs.as_mut().unwrap()[0].agent_session_id = Some(conversation.into());
+        data.active_tab_id = data.workspaces[0].panes[0].tabs.as_ref().unwrap()[0].tab_id.clone();
+        fs::write(path, serde_json::to_vec(&data).unwrap()).unwrap();
+        archive_layout(path, kind, time).unwrap()
+    }
+
+    #[test]
+    fn l3_fix2_11_a_forward_wall_clock_jump_does_not_expire_a_recent_shrink_copy() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let data = PersistentData { workspaces: layout_with_tab_counts(&[10]), ..Default::default() };
+        fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+        update_while_locked(path.as_path(), now, |data| data.workspaces = layout_with_tab_counts(&[2])).unwrap();
+        let shrink = layout_backups(&path).into_iter().find(|b| b.kind == BackupKind::Shrink).unwrap();
+        update_while_locked(path.as_path(), now + Duration::from_secs(31 * 86_400), |_| {}).unwrap();
+        drop(_serial);
+
+        assert!(shrink.path.is_file(), "the original pre-shrink copy must still be recoverable");
+    }
+
+    #[test]
+    fn l3_fix2_11_legacy_shrink_copy_stays_available_after_the_first_save_on_a_new_clock() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let directory = temp.path().join("data-backups");
+        fs::create_dir(&directory).unwrap();
+        let old_time = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let original = PersistentData { workspaces: layout_with_tab_counts(&[10]), ..Default::default() };
+        let backup = directory.join(format!("shrink-{}-42.json", timestamp_nanos(old_time)));
+        fs::write(&backup, serde_json::to_vec(&original).unwrap()).unwrap();
+        let current = PersistentData { workspaces: layout_with_tab_counts(&[2]), ..Default::default() };
+        fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+
+        update_while_locked(path.as_path(), old_time + Duration::from_secs(31 * 86_400), |_| {}).unwrap();
+        drop(_serial);
+        assert!(backup.is_file());
+    }
+
+    #[test]
+    fn l3_fix2_12_recovery_orders_committed_generations_through_a_wall_clock_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        let now = UNIX_EPOCH + Duration::from_secs(10_000);
+        review_generation(&path, 1, "future-date-old-content", BackupKind::Generation, now + Duration::from_secs(10_000));
+        review_generation(&path, 1, "corrected-date-new-content", BackupKind::Generation, now);
+        fs::rename(&path, dir.path().join("missing-main.fixture")).unwrap();
+
+        let restored = load_from_path(&path).unwrap();
+        let tab = &restored.workspaces[0].panes[0].tabs.as_ref().unwrap()[0];
+        assert_eq!(tab.agent_session_id.as_deref(), Some("corrected-date-new-content"));
+    }
+
+    #[test]
+    fn l3_fix2_21_future_generation_does_not_disable_normal_count_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        fs::write(&path, b"{}").unwrap();
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let future = archive_layout(&path, BackupKind::Generation, now + Duration::from_secs(365 * 86_400)).unwrap();
+        for seconds in 0..32 {
+            archive_layout(&path, BackupKind::Generation, now + Duration::from_secs(seconds)).unwrap();
+        }
+        prune_layout_backups(&path, now + Duration::from_secs(60));
+        assert!(future.is_file());
+        assert_eq!(layout_backups(&path).len(), 21);
+    }
+
+    #[test]
+    fn l3_fix3_05_a_failed_backup_scan_cannot_start_or_save_an_empty_layout() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let now = UNIX_EPOCH + Duration::from_secs(20_000);
+        let backup = review_generation(&path, 1, "recoverable", BackupKind::Generation, now);
+        fs::rename(&path, temp.path().join("removed-main.fixture")).unwrap();
+        let directory = backup.parent().unwrap();
+        let hidden = temp.path().join("unavailable-backups.fixture");
+        fs::rename(directory, &hidden).unwrap();
+        fs::write(directory, b"cannot enumerate this directory").unwrap();
+
+        assert!(load_from_path(&path).is_err(), "an incomplete scan must not report an empty layout");
+        assert!(update_while_locked(path.as_path(), now, |_| {}).is_err());
+        assert!(!path.exists());
+
+        fs::rename(directory, temp.path().join("directory-error.fixture")).unwrap();
+        fs::rename(hidden, directory).unwrap();
+        assert_eq!(load_from_path(&path).unwrap().workspaces[0].name, "recoverable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn l3_fix3_05_an_unreadable_candidate_does_not_create_an_empty_layout() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let backup = review_generation(&path, 1, "recoverable", BackupKind::Generation, UNIX_EPOCH);
+        fs::rename(&path, temp.path().join("removed-main.fixture")).unwrap();
+        let original = fs::metadata(&backup).unwrap().permissions();
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0)).unwrap();
+        let read_error = fs::read(&backup).unwrap_err().kind();
+        let initial = load_from_path(&path);
+        fs::set_permissions(&backup, original).unwrap();
+
+        assert_eq!(read_error, std::io::ErrorKind::PermissionDenied);
+        assert!(initial.is_err());
+        assert!(!path.exists());
+        assert_eq!(load_from_path(&path).unwrap().workspaces[0].name, "recoverable");
+    }
+
+    #[test]
+    fn l3_drop_102_recovers_the_latest_generation_with_its_original_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let backups = temp.path().join("data-backups");
+        fs::create_dir(&backups).unwrap();
+
+        let mut older = PersistentData { workspaces: layout_with_tab_counts(&[10]), ..Default::default() };
+        let pane = &mut older.workspaces[0].panes[0];
+        pane.pane_id = Some("same-pane".into());
+        pane.tabs.as_mut().unwrap()[1].agent_session_id = Some("old-conversation".into());
+        let shrink = backups.join("shrink-100-1.json");
+        fs::write(&shrink, serde_json::to_vec(&older).unwrap()).unwrap();
+
+        let mut newest = older.clone();
+        let mut second_row = newest.workspaces[0].clone();
+        newest.workspaces[0].panes[0].tabs.as_mut().unwrap().truncate(1);
+        let mut next_tab = second_row.panes[0].tabs.as_ref().unwrap()[1].clone();
+        next_tab.agent_session_id = Some("new-conversation".into());
+        newest.active_workspace_id = Some(second_row.id.clone());
+        newest.active_tab_id = next_tab.tab_id.clone();
+        second_row.panes[0].tabs = Some(vec![next_tab]);
+        newest.workspaces.push(second_row);
+        let newest_bytes = serde_json::to_vec(&newest).unwrap();
+        fs::write(backups.join("data-200-1.json"), &newest_bytes).unwrap();
+
+        let recovered = load_from_path(&path).unwrap();
+        assert_eq!(recovered.layout_counts().tabs, 2);
+        assert_eq!(recovered.workspaces.len(), 2);
+        let later_tabs = recovered.workspaces[1].panes[0].tabs.as_ref().unwrap();
+        assert_eq!(later_tabs[0].tab_id.as_deref(), Some("tab-0-1"));
+        assert_eq!(later_tabs[0].agent_session_id.as_deref(), Some("new-conversation"));
+        assert_eq!(recovered.active_tab_id, newest.active_tab_id);
+        assert!(fs::read(&path).unwrap() == newest_bytes, "restore the chosen generation byte for byte");
+        assert!(shrink.is_file());
+    }
+
+    #[test]
+    fn l3_fix3_09_a_save_cannot_reuse_an_order_from_an_unreadable_generation_directory() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let future = UNIX_EPOCH + Duration::from_secs(40_000);
+        let older = review_generation(&path, 1, "old-conversation", BackupKind::Generation, future);
+        update_while_locked(path.as_path(), future + Duration::from_secs(61), |layout| {
+            layout.workspaces[0].panes[0].tabs.as_mut().unwrap()[0].agent_session_id = Some("new-conversation".into());
+        }).unwrap();
+        let latest = fs::read(&path).unwrap();
+        let directory = older.parent().unwrap();
+        let unlisted = temp.path().join("unlisted-backups.fixture");
+        fs::rename(directory, &unlisted).unwrap();
+        fs::write(directory, b"cannot enumerate this directory").unwrap();
+
+        let rolled_back = future - Duration::from_secs(10_000);
+        assert!(update_while_locked(path.as_path(), rolled_back, |layout| layout.workspaces[0].name = "Changed".into()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), latest);
+
+        fs::rename(directory, temp.path().join("directory-error.fixture")).unwrap();
+        fs::rename(unlisted, directory).unwrap();
+        update_while_locked(path.as_path(), rolled_back, |layout| layout.workspaces[0].name = "Changed".into()).unwrap();
+        fs::rename(&path, temp.path().join("removed-main.fixture")).unwrap();
+        let recovered = load_from_path(&path).unwrap();
+        assert_eq!(recovered.workspaces[0].panes[0].tabs.as_ref().unwrap()[0].agent_session_id.as_deref(), Some("new-conversation"));
+    }
+
+    #[test]
+    fn l3_fix3_11_future_generations_do_not_keep_accumulating_new_overflow_archives() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let future = review_generation(&path, 1, "future", BackupKind::Generation, now + Duration::from_secs(365 * 86_400));
+        for second in 0..32 {
+            archive_layout(&path, BackupKind::Generation, now + Duration::from_secs(second)).unwrap();
+        }
+        prune_layout_backups(&path, now + Duration::from_secs(60));
+        let overflow = future.parent().unwrap().join("_old");
+        let kept_before = layout_backups(&path).len() + fs::read_dir(&overflow).map_or(0, Iterator::count);
+        for seconds in [120, 181] {
+            update_while_locked(path.as_path(), now + Duration::from_secs(seconds), |_| {}).unwrap();
+        }
+
+        assert!(future.is_file());
+        assert!(layout_backups(&path).len() + fs::read_dir(&overflow).map_or(0, Iterator::count) <= kept_before);
+    }
+
+    #[tokio::test]
+    async fn l3_fix3_12_shrink_diagnostics_do_not_include_the_backup_path() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let fixture_owner = "layout-owner@example.test";
+        let path = temp.path().join(fixture_owner).join("data.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let data = PersistentData { workspaces: layout_with_tab_counts(&[4]), ..Default::default() };
+        fs::write(&path, serde_json::to_vec(&data).unwrap()).unwrap();
+
+        crate::diag::with_test_dir(temp.path().to_owned(), async {
+            update_while_locked(path.as_path(), SystemTime::now(), |layout| {
+                layout.workspaces = layout_with_tab_counts(&[1]);
+            }).unwrap();
+        }).await;
+
+        let log = fs::read_to_string(temp.path().join("diag.log")).unwrap();
+        assert!(log.contains("shrink tabs 4->1"));
+        assert!(!log.contains(fixture_owner));
     }
 
     #[test]

@@ -121,6 +121,13 @@
   flex: 0 0 12px;
   color: var(--cmux-text-dim);
 }
+.cmux-presend-pending.is-waiting {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cmux-presend-toggle {
   flex: 0 0 auto;
   padding: 2px 4px;

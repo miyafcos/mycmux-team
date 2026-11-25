@@ -13,6 +13,7 @@ import { LauncherTab } from "./tabs/LauncherTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
 import { PocketTab } from "./tabs/PocketTab";
 import { UsageTab } from "./tabs/UsageTab";
+import type { AccountManagementSection } from "../../lib/tabAccounts";
 import { KeybindingsTab } from "./tabs/KeybindingsTab";
 import { AppInfoTab } from "./tabs/AppInfoTab";
 import { PetTab } from "./tabs/PetTab";
@@ -159,13 +160,15 @@ interface SettingsDialogProps {
   onOpenOnlinePanel: () => void;
   /** Lets a caller land straight on a tab, e.g. the accounts panel's detail link. */
   initialTab?: SettingsTabId;
+  accountSection?: AccountManagementSection;
 }
 
-export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel, initialTab }: SettingsDialogProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab ?? "appearance");
+export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel, initialTab, accountSection }: SettingsDialogProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(accountSection ? "usage" : initialTab ?? "appearance");
   useEffect(() => {
-    if (initialTab) setActiveTab(initialTab);
-  }, [initialTab]);
+    if (accountSection) setActiveTab("usage");
+    else if (initialTab) setActiveTab(initialTab);
+  }, [initialTab, accountSection]);
 
   const usageAccounts = useUsageStore((s) => s.accounts);
   const usageReauthCount = usageAccounts.filter((a) => a.state === "needs_relogin").length;
@@ -252,7 +255,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
               />
             )}
             {activeTab === "pocket" && <PocketTab />}
-            {activeTab === "usage" && <UsageTab />}
+            {activeTab === "usage" && <UsageTab accountSection={accountSection} onLoginOpened={onClose} />}
             {activeTab === "keybindings" && <KeybindingsTab />}
             {activeTab === "appInfo" && <AppInfoTab />}
           </div>

@@ -482,6 +482,7 @@ async fn run(app: &AppHandle, base: &Path, watch: &LoginWatch) {
                 .await;
                 match captured {
                     Ok(Ok((profile, updated_existing))) => {
+                        let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile.id }));
                         let _ = app.emit(
                             EVENT_LOGIN_COMPLETED,
                             LoginCompletedPayload {

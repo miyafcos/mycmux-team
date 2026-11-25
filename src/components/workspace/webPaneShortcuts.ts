@@ -1,3 +1,4 @@
+import { isPreparingLayoutQuit } from "../../lib/layoutQuit";
 import {
   effectiveShortcut,
   keyFromEventCode,
@@ -167,6 +168,7 @@ export function dispatchWebPaneKeydown(
   expectedTabIds: ReadonlySet<string>,
   activateTab?: (tabId: string) => boolean,
 ): boolean {
+  if (isPreparingLayoutQuit()) return false;
   if (!isForwardedKey(value) || value.isComposing || !expectedTabIds.has(value.tabId)) return false;
   if (!forwardedShortcuts.has(shortcutFromWebPanePayload(value))) return false;
   if (activateTab && !activateTab(value.tabId)) return false;

@@ -438,7 +438,7 @@ fn sync_provider_with_grok(
 
 /// Start the watcher. Failures are logged and the loop keeps going: a broken
 /// tick must never take the app down, and the next rotation gets another try.
-pub fn start_live_sync(base: PathBuf) {
+pub fn start_live_sync(base: PathBuf, registered: impl Fn(String) + Send + 'static) {
     thread::spawn(move || {
         let mut stamps = FileStamps::new();
         let mut prewarm_stamps = FileStamps::new();
@@ -483,9 +483,10 @@ pub fn start_live_sync(base: PathBuf) {
             // A switch is mid-flight: its own capture already covers this
             // rotation, and interleaving would race the restore. Skip rather
             // than block — the next tick picks up whatever it left behind.
-            let Some(_guard) = super::try_mutation_guard() else {
+            let Some(guard) = super::try_mutation_guard() else {
                 continue;
             };
+            let mut new_profiles = Vec::new();
             for provider in [CliProvider::Claude, CliProvider::Codex, CliProvider::Grok] {
                 if !backoff.due(provider, now) {
                     continue;
@@ -518,6 +519,7 @@ pub fn start_live_sync(base: PathBuf) {
                             "cli-accounts",
                             "auto-registered live login ({provider:?}) as {profile_id}"
                         );
+                        new_profiles.push(profile_id);
                     }
                     SyncOutcome::FiledToOwner(profile_id) => {
                         crate::diag_warn!("cli-accounts", "filed live Claude tokens to owner profile={profile_id}");
@@ -533,6 +535,8 @@ pub fn start_live_sync(base: PathBuf) {
                     | SyncOutcome::Unverified => {}
                 }
             }
+            drop(guard);
+            for profile_id in new_profiles { registered(profile_id); }
         }
     });
 }

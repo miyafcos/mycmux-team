@@ -63,10 +63,12 @@ def test_private_login_and_account_launch_resolve_only_backend_owned_paths():
 
 def test_private_login_frontend_never_supplies_a_home_or_offers_a_global_switch():
     source = read("src/stores/cliLoginStore.ts")
-    start = source.index("async function openLoginTab(")
-    tab = source[start:source.index("function closeLoginTab(", start)]
-    assert "launchEnv: { MYCMUX_CLI_LOGIN_ID: session.login_id }" in tab
-    assert "session.env" not in tab and "commandArgv:" not in tab
+    start = source.index("function openLoginTab(")
+    tab = source[start:source.index("let openingGemini", start)]
+    assert "cwd: home, launchEnv, ephemeral: true" in tab
+    private_tab_call = 'openLoginTab(home, loginTabLabel(session.provider, mode), { MYCMUX_CLI_LOGIN_ID: session.login_id })'
+    assert private_tab_call in source
+    assert "session.env" not in source and "commandArgv:" not in tab
     start = source.index('if (payload.purpose?.kind === "account_home"')
     private = source[start:source.index("const label = payload.profile.label", start)]
     assert "return;" in private

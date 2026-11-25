@@ -168,20 +168,89 @@ pub fn show_main_window(app: &AppHandle) {
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = app_handle.get_window("main") {
-            let _ = restore_and_focus(&window);
+            restore_main_window_for_activation(
+                || window.is_minimized(),
+                || { let _ = window.unminimize(); },
+                || { let _ = window.show(); },
+                || {
+                    recenter_window_if_offscreen(&window);
+                    let _ = window.set_focus();
+                },
+            );
         }
     });
 }
 
-fn restore_and_focus(window: &tauri::Window) -> Result<(), String> {
-    let mut result = match window.is_minimized() {
-        Ok(true) => window.unminimize().map_err(|error| error.to_string()),
-        Ok(false) => Ok(()),
-        Err(error) => Err(error.to_string()),
-    };
-    result = result.and(window.show().map_err(|error| error.to_string()));
-    recenter_window_if_offscreen(window);
-    result.and(window.set_focus().map_err(|error| error.to_string()))
+fn restore_main_window_for_activation<E>(
+    is_minimized: impl FnOnce() -> Result<bool, E>,
+    unminimize: impl FnOnce(),
+    show: impl FnOnce(),
+    focus: impl FnOnce(),
+) {
+    if matches!(is_minimized(), Ok(true)) {
+        unminimize();
+    }
+    show();
+    focus();
+}
+
+enum WindowFocusFailure<E> {
+    Restore(E),
+    Focus(E),
+}
+
+fn restore_then_focus<E>(
+    restore: impl FnOnce() -> Result<(), E>,
+    focus: impl FnOnce() -> Result<(), E>,
+) -> Result<(), WindowFocusFailure<E>> {
+    restore().map_err(WindowFocusFailure::Restore)?;
+    focus().map_err(WindowFocusFailure::Focus)
+}
+
+fn focus_error_message(error: WindowFocusFailure<impl std::fmt::Display>, account_management: bool) -> String {
+    match (error, account_management) {
+        (WindowFocusFailure::Restore(_), true) => "window_restore_failed".into(),
+        (WindowFocusFailure::Focus(_), true) => "window_focus_refused".into(),
+        (WindowFocusFailure::Restore(error) | WindowFocusFailure::Focus(error), false) => error.to_string(),
+    }
+}
+
+fn restore_and_focus(window: &tauri::Window) -> Result<(), WindowFocusFailure<tauri::Error>> {
+    restore_then_focus(|| {
+        if window.is_minimized()? {
+            window.unminimize()?;
+        }
+        window.show()
+    }, || {
+        recenter_window_if_offscreen(window);
+        window.set_focus()
+    })
+}
+
+fn management_focus_destination<T>(
+    registry: &crate::window_registry::WindowRegistry,
+    label: &str,
+    expected: &crate::window_registry::WindowAccountManagementSubscription,
+    get_window: impl FnOnce() -> Option<T>,
+) -> Result<T, &'static str> {
+    registry.account_management_window(label, expected, get_window).ok_or("window_generation_mismatch")
+}
+
+#[cfg(test)]
+#[test]
+fn account_management_focus_separates_failed_show_from_focus_refusal() {
+    let management_error = |failure| focus_error_message(failure, true);
+    assert_eq!(
+        restore_then_focus(|| Err("native restore failed"), || panic!("must show the window before taking focus"))
+            .map_err(management_error),
+        Err("window_restore_failed".into()),
+    );
+    assert_eq!(
+        restore_then_focus(|| Ok(()), || Err("native focus refused")).map_err(management_error),
+        Err("window_focus_refused".into()),
+    );
+    assert_eq!(restore_then_focus::<&str>(|| Ok(()), || Ok(())).map_err(management_error), Ok(()));
+    assert_eq!(focus_error_message(WindowFocusFailure::Focus("native focus refused"), false), "native focus refused");
 }
 
 fn valid_focus_window_label(label: &str) -> bool {
@@ -198,6 +267,8 @@ pub async fn focus_window(
     caller: tauri::Webview,
     label: String,
     focus_primary: Option<bool>,
+    expires_at: Option<u64>,
+    account_management_subscription: Option<crate::window_registry::WindowAccountManagementSubscription>,
 ) -> Result<(), String> {
     if !valid_focus_window_label(&label) {
         return Err("Invalid application window label".into());
@@ -210,15 +281,34 @@ pub async fn focus_window(
     } else {
         None
     };
-    let window = app.get_window(&label).ok_or("Application window is unavailable")?;
+    let window = if account_management_subscription.is_none() {
+        Some(app.get_window(&label).ok_or("Application window is unavailable")?)
+    } else {
+        None
+    };
+    let app_handle = app.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
-        let result = restore_and_focus(&window).and_then(|()| {
+        if expires_at.is_some_and(|deadline| crate::tearout::unix_ms() >= deadline) {
+            let _ = send.send(Err("focus_request_expired".into()));
+            return;
+        }
+        let result = (|| -> Result<(), String> {
+            let window = if let Some(expected) = &account_management_subscription {
+                let state = app_handle.try_state::<AppState>().ok_or("window_generation_mismatch")?;
+                management_focus_destination(&state.window_registry, &label, expected, || {
+                    app_handle.get_window(&label)
+                })?
+            } else {
+                window.ok_or("Application window is unavailable")?
+            };
+            restore_and_focus(&window)
+                .map_err(|error| focus_error_message(error, account_management_subscription.is_some()))?;
             if let Some(primary) = primary {
                 primary.set_focus().map_err(|error| error.to_string())?;
             }
             Ok(())
-        });
+        })();
         let _ = send.send(result);
     }).map_err(|error| error.to_string())?;
     receive.await.map_err(|error| error.to_string())?
@@ -416,9 +506,23 @@ pub enum ResolvedChildWindow {
 #[derive(Default)]
 pub(crate) struct ChildWindowLabelReservations {
     reserved: Arc<Mutex<HashSet<String>>>,
+    quit_started: std::sync::atomic::AtomicBool,
 }
 
 impl ChildWindowLabelReservations {
+    pub(crate) fn stop_for_quit(&self) {
+        let _reservation = self.reserved.lock().unwrap_or_else(|error| error.into_inner());
+        self.quit_started.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn quit_targets(&self, live: impl FnOnce() -> Vec<String>) -> (HashSet<String>, bool) {
+        let reserved = self.reserved.lock().unwrap_or_else(|error| error.into_inner());
+        let windows = live().into_iter()
+            .filter(|label| label == "main" || is_valid_child_window_label(label))
+            .collect();
+        (windows, !reserved.is_empty())
+    }
+
     pub(crate) fn resolve(
         &self,
         live_labels: impl FnOnce() -> Vec<String>,
@@ -433,6 +537,9 @@ impl ChildWindowLabelReservations {
         }
         let mut reserved = self.reserved.lock()
             .map_err(|_| "Child window label reservations are poisoned".to_string())?;
+        if self.quit_started.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Application is preparing to quit".into());
+        }
         // Snapshot the in-memory window map under the same lock as allocation.
         // A build cannot release its reservation between this snapshot and insert.
         let existing = live_labels();
@@ -453,21 +560,40 @@ impl ChildWindowLabelReservations {
             restored_decoration: None,
             restored_native: None,
             restored_maximized: None,
+            creation_failed: None,
+            workspace_creation: None,
         }))
     }
 }
 
 /// Dropping a build task releases its label, including scheduling/build failures.
-#[derive(Debug)]
 pub struct ChildWindowLabelReservation {
     label: String,
     reserved: Arc<Mutex<HashSet<String>>>,
     restored_decoration: Option<bool>,
     restored_native: Option<bool>,
     restored_maximized: Option<bool>,
+    creation_failed: Option<Box<dyn FnOnce() + Send>>,
+    workspace_creation: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
+}
+
+impl std::fmt::Debug for ChildWindowLabelReservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ChildWindowLabelReservation").field("label", &self.label).finish_non_exhaustive()
+    }
 }
 
 impl ChildWindowLabelReservation {
+    pub(crate) fn track_workspace_creation(
+        &mut self, id: String, active: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.workspace_creation = Some((id, active));
+    }
+
+    pub(crate) fn on_creation_failed(&mut self, callback: impl FnOnce() + Send + 'static) {
+        self.creation_failed = Some(Box::new(callback));
+    }
+
     pub(crate) fn label(&self) -> &str {
         &self.label
     }
@@ -475,6 +601,9 @@ impl ChildWindowLabelReservation {
 
 impl Drop for ChildWindowLabelReservation {
     fn drop(&mut self) {
+        if let Some(notify) = self.creation_failed.take() {
+            notify();
+        }
         self.reserved.lock().unwrap_or_else(|error| error.into_inner())
             .remove(&self.label);
     }
@@ -584,6 +713,7 @@ pub fn spawn_child_window(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<(), String> {
+    let mut reservation = reservation;
     let restored_decoration = reservation.restored_decoration;
     let restored_native = reservation.restored_native.unwrap_or(false);
     let restored_maximized = reservation.restored_maximized.unwrap_or(false);
@@ -593,6 +723,11 @@ pub fn spawn_child_window(
     let post_handle = app.clone();
     std::thread::Builder::new().spawn(move || {
         let posted = post_handle.run_on_main_thread(move || {
+            if reservation.workspace_creation.as_ref().is_some_and(|(_, active)|
+                !active.load(std::sync::atomic::Ordering::Acquire)
+            ) {
+                return;
+            }
             let mut builder = tauri::WebviewWindowBuilder::new(
                 &app_handle,
                 &build_label,
@@ -644,15 +779,25 @@ pub fn spawn_child_window(
                 builder = builder.position(x, y);
             }
 
+            if let Some((id, _)) = reservation.workspace_creation.as_ref() {
+                let js_id = serde_json::Value::String(id.clone()).to_string();
+                builder = builder.initialization_script(format!(
+                    "window.__MYCMUX_WORKSPACE_CREATION_ID__ = {js_id};"
+                ));
+            }
+            let state = app_handle.state::<AppState>();
+            let publication_id = state.window_registry.register_fragment_publisher(&build_label);
+            let builder = builder.initialization_script(format!(
+                "window.__MYCMUX_LAYOUT_PUBLICATION_ID__ = {publication_id:?};"
+            ));
             let creation_start = std::time::Instant::now();
             let built = builder.build();
             crate::watchdog::record_webview_creation(
                 &build_label, &build_label, creation_start.elapsed(), built.is_ok(),
             );
-            // Success is already in the OS window map; failure frees the slot.
-            drop(reservation);
             match built {
                 Ok(window) => {
+                    reservation.creation_failed = None;
                     #[cfg(windows)]
                     crate::watchdog::register_process_failed(window.as_ref());
                     #[cfg(target_os = "macos")]
@@ -702,9 +847,12 @@ pub fn spawn_child_window(
 
                 }
                 Err(err) => {
+                    state.window_registry.unregister_fragment_publisher(&build_label);
                     crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
                 }
             }
+            // Failure returns this label's pending adoption before reusing its slot.
+            drop(reservation);
         });
         if let Err(err) = posted {
             crate::diag_warn!("window", "failed to schedule child window creation: {err}");
@@ -976,6 +1124,36 @@ mod tests {
     }
 
     #[test]
+    fn l3_85_native_creation_reports_failure_before_releasing_the_label() {
+        let source = include_str!("window.rs");
+        let body = source.split_once("pub fn spawn_child_window(").unwrap().1
+            .split_once("pub(crate) fn spawn_child_window_with_restore(").unwrap().0;
+        let outcome = body.find("match built").unwrap();
+        let release = body.find("drop(reservation)").unwrap();
+        assert!(outcome < release, "a replacement could already own the failed window's adoption queue");
+    }
+
+    #[test]
+    fn l3_85_a_failed_reservation_notifies_while_it_still_owns_the_label() {
+        let labels = ChildWindowLabelReservations::default();
+        let ResolvedChildWindow::New(mut failed) =
+            labels.resolve(Vec::new, Some("mycmux-w1".to_string())).unwrap()
+        else {
+            panic!("expected a reservation for a new window");
+        };
+        let still_reserved = Arc::clone(&failed.reserved);
+        let notified = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback = Arc::clone(&notified);
+        failed.on_creation_failed(move || {
+            assert!(still_reserved.lock().unwrap().contains("mycmux-w1"));
+            callback.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        drop(failed);
+        assert!(notified.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!labels.reserved.lock().unwrap().contains("mycmux-w1"));
+    }
+
+    #[test]
     fn dropping_a_failed_build_reservation_makes_its_label_reusable() {
         let allocator = ChildWindowLabelReservations::default();
         let failed_build = reserve(&allocator, &[], None);
@@ -1196,5 +1374,59 @@ mod tests {
     #[test]
     fn no_monitors_means_no_claim_either_way() {
         assert!(!rect_overlaps_any_monitor((0, 0, 100, 100), &[]));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn int_fix4_management_focus_checks_the_generation_before_native_restore() {
+    let registry = crate::window_registry::WindowRegistry::new();
+    let label = "mycmux-w1";
+    let old = registry.register_fragment_publisher(label);
+    assert!(registry.set_account_management_ready(label, Some(&old), 0, 1, Some("opened".into())));
+    let target = registry.tab_index("main").into_iter().next().unwrap().account_management_subscription.unwrap();
+    registry.unregister_fragment_publisher(label);
+    let successor = registry.register_fragment_publisher(label);
+    assert!(registry.set_account_management_ready(label, Some(&successor), 0, 1, Some("successor".into())));
+    let replacement = registry.tab_index("main").into_iter().next().unwrap().account_management_subscription.unwrap();
+    assert_ne!(target, replacement);
+    assert_eq!(
+        management_focus_destination(&registry, label, &target, || -> Option<()> {
+            panic!("must not obtain the successor's native handle")
+        }),
+        Err("window_generation_mismatch")
+    );
+    assert_eq!(
+        management_focus_destination(&registry, label, &replacement, || Some("successor-handle")),
+        Ok("successor-handle")
+    );
+    let replaced_mark = crate::window_registry::WindowAccountManagementSubscription {
+        publication_id: successor, subscription_id: target.subscription_id,
+    };
+    assert_eq!(
+        management_focus_destination(&registry, label, &replaced_mark, || -> Option<()> {
+            panic!("must not obtain a handle for a replaced subscription")
+        }),
+        Err("window_generation_mismatch")
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn int_fix4_native_main_reveal_is_independent_of_management_restore_errors() {
+    use std::cell::RefCell;
+    for (minimized, expected) in [
+        (Err(()), &["show", "focus"][..]),
+        (Ok(false), &["show", "focus"][..]),
+        (Ok(true), &["unminimize", "show", "focus"][..]),
+    ] {
+        let calls = RefCell::new(Vec::new());
+        restore_main_window_for_activation(
+            || minimized,
+            || calls.borrow_mut().push("unminimize"),
+            || calls.borrow_mut().push("show"),
+            || calls.borrow_mut().push("focus"),
+        );
+        assert_eq!(calls.into_inner(), expected);
     }
 }

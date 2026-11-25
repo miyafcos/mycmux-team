@@ -5,6 +5,7 @@ import { PresendReadingPanel } from "./PresendReadingPanel";
 
 import {
   buildComposerPayload,
+  MAX_SEND_CHARS,
   composerKeyIntent,
   resolveComposerAgentLabelKind,
   resolveComposerTarget,
@@ -17,9 +18,6 @@ import { useComposerStore } from "../../stores/composerStore";
 import { useToastStore } from "../../stores/toastStore";
 import { COMPOSER_LINE_HEIGHT, COMPOSER_MAX_ROWS, COMPOSER_PLACEHOLDER, TARGET_LABEL } from "./composerLook";
 import "./composer.css";
-
-/** Past this the pane's line editor is the wrong tool and the write would stall it. */
-const MAX_SEND_CHARS = 100_000;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -37,6 +35,7 @@ interface PaneSendOutcome {
 
 export interface PaneComposerProps {
   sessionId: string;
+  presendVisible?: boolean;
   /** Enough of the pane's launch parameters to tell which program reads the input. */
   target: ComposerTargetInput;
 }
@@ -46,7 +45,7 @@ export interface PaneComposerProps {
  * over it works the way it does everywhere else. The pane's program only ever
  * sees the finished text, sent as the keystrokes that program understands.
  */
-export function PaneComposer({ sessionId, target }: PaneComposerProps) {
+export function PaneComposer({ sessionId, target, presendVisible = true }: PaneComposerProps) {
   const draft = useComposerStore((state) => state.draftBySession[sessionId] ?? "");
   const setDraft = useComposerStore((state) => state.setDraft);
   const clearDraft = useComposerStore((state) => state.clearDraft);
@@ -57,7 +56,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
   const adoptingRef = useRef(false);
 
   const resolved = resolveComposerTarget(target);
-  const presend = usePresendReading(sessionId, draft, resolved, target);
+  const presend = usePresendReading(sessionId, draft, resolved, presendVisible);
   // The badge names the agent; the payload follows the input shape it shares.
   const label = TARGET_LABEL[resolveComposerAgentLabelKind(target)];
   const payload = buildComposerPayload({ text: draft, target: resolved });
@@ -229,7 +228,8 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
     >
       {presend.enabled ? (
         <PresendReadingPanel reading={presend.reading} pending={presend.pending}
-          tabEnabled={presend.tabEnabled} onToggle={presend.toggle} onAppend={appendReading} />
+          waitingForAgent={presend.waitingForAgent} tabEnabled={presend.tabEnabled} pause={presend.pause}
+          onToggle={presend.toggle} onAppend={appendReading} />
       ) : null}
       <div className={`cmux-composer-shell${focused ? " is-focused" : ""}`}>
         <span className="cmux-composer-badge">{label}</span>
@@ -241,7 +241,7 @@ export function PaneComposer({ sessionId, target }: PaneComposerProps) {
           placeholder={COMPOSER_PLACEHOLDER}
           onChange={(event) => editDraft(event.target.value)}
           onCompositionStart={presend.compositionStart}
-          onCompositionEnd={presend.compositionEnd}
+          onCompositionEnd={event => presend.compositionEnd(event.currentTarget.value)}
           onFocus={() => { setFocused(true); adoptPendingLine(); }}
           onBlur={() => setFocused(false)}
           onKeyDown={(event) => {

@@ -1,8 +1,9 @@
 //! Opt-in pre-send readings. This lane never writes reading data to a PTY or to storage.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,6 +18,11 @@ use crate::pty::manager::SessionManager;
 mod credentials;
 
 const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
+// The renderer limits the original draft in UTF-16 units (composerSend.ts).
+// At most N + 1 distinct mask starts can each add one ASCII marker and two quotes.
+const MAX_ORIGINAL_DRAFT_UNITS: usize = 100_000;
+const MAX_TRANSFER_DRAFT_CHARS: usize =
+    MAX_ORIGINAL_DRAFT_UNITS + (MAX_ORIGINAL_DRAFT_UNITS + 1) * (credentials::OMITTED.len() + 2);
 const MAX_READS: usize = 20;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const INSTRUCTIONS: &str = include_str!("presend_prompt_ja.txt");
@@ -156,6 +162,19 @@ pub struct Reading {
     missing: String,
     elapsed_ms: u64,
     provider: Provider,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum PresendResult {
+    Complete(Reading),
+    Incomplete { disposition: &'static str, attempted: bool },
+}
+
+#[derive(Default)]
+struct ReadProgress {
+    claim_revision: AtomicU64,
+    attempted: AtomicBool,
 }
 
 fn remove_instruction_echo(value: &str) -> String {
@@ -538,11 +557,25 @@ impl Drop for ProcessSession {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct SourceConversation {
+    kind: String,
+    id: String,
+    agent_pid: u32,
+    started_at: u64,
+}
+impl From<crate::pty::manager::TrustedAgentIdentity> for SourceConversation {
+    fn from(agent: crate::pty::manager::TrustedAgentIdentity) -> Self {
+        Self { kind: agent.kind, id: agent.session_id, agent_pid: agent.agent_pid, started_at: agent.agent_started_at }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct ReadingOwner {
     window: String,
     session_id: String,
     pty_generation: Option<u64>,
+    conversation: Option<SourceConversation>,
 }
 
 #[derive(Default)]
@@ -577,7 +610,10 @@ struct Control {
     provider: Option<Provider>,
     revision: u64,
     generation: u64,
+    last_claim_revision: u64,
     active: Option<String>,
+    active_tab: Option<String>,
+    paused_tabs: HashSet<String>,
     canceled: VecDeque<String>,
     shutdown: bool,
 }
@@ -649,6 +685,7 @@ impl PresendService {
                 control.enabled = enabled && !control.shutdown;
                 control.provider = Some(provider);
                 control.active = None;
+                control.active_tab = None;
                 control.revision += 1;
                 control.generation += 1;
                 self.0.updates.send_replace(control.revision);
@@ -659,6 +696,22 @@ impl PresendService {
             self.0.engine.lock().await.close().await;
         }
     }
+    fn tab_preference(&self, session_id: &str, enabled: Option<bool>) -> bool {
+        let mut control = self.0.control.lock().unwrap_or_else(|e| e.into_inner());
+        if enabled == Some(true) {
+            control.paused_tabs.remove(session_id);
+        } else if enabled == Some(false) {
+            control.paused_tabs.insert(session_id.to_owned());
+            if control.active_tab.as_deref() == Some(session_id) {
+                control.active = None;
+                control.active_tab = None;
+                control.revision += 1;
+                self.0.updates.send_replace(control.revision);
+            }
+        }
+        !control.paused_tabs.contains(session_id)
+    }
+
     pub fn cancel(&self, request_id: &str) {
         let mut control = self.0.control.lock().unwrap_or_else(|e| e.into_inner());
         // Cancellation can cross an async IPC call before that call claims its
@@ -671,6 +724,7 @@ impl PresendService {
         }
         if control.active.as_deref() == Some(request_id) {
             control.active = None;
+            control.active_tab = None;
             control.revision += 1;
             self.0.updates.send_replace(control.revision);
         }
@@ -682,6 +736,7 @@ impl PresendService {
             control.generation += 1;
             control.enabled = false;
             control.active = None;
+            control.active_tab = None;
             control.revision += 1;
             self.0.updates.send_replace(control.revision);
         }
@@ -718,20 +773,46 @@ impl PresendService {
         window: &str,
         request: PresendReadingRequest,
         observed_generation: Option<u64>,
-        trusted_agent: impl FnOnce() -> Option<crate::pty::manager::TrustedAgentIdentity>,
-        owner_is_current: impl FnOnce() -> bool,
+        trusted_agent: impl Fn() -> Option<crate::pty::manager::TrustedAgentIdentity>,
+        reply_is_current: impl FnOnce() -> bool,
+        owner_is_current: impl Fn() -> bool,
         confirm_foreground: impl Future<Output = Option<bool>>,
+        foreground_proof: Option<&Mutex<Option<LiveProcess>>>,
+        progress: Option<&ReadProgress>,
     ) -> Option<Reading> {
         let PresendReadingRequest {
             request_id, session_id, pty_generation, provider, draft,
             conversation_excerpt, reply_source, workdir_name, workdir_is_basename, require_foreground_agent,
+            edited_at_ms, conversation_at_edit,
         } = request;
-        if pty_generation.is_some() && pty_generation != observed_generation {
+        if pty_generation.is_some() && pty_generation != observed_generation
+            || require_foreground_agent == Some(true) && (pty_generation.is_none() || edited_at_ms.unwrap_or(0) == 0)
+        {
             return None;
         }
+        let cached = trusted_agent().filter(|agent| {
+            Some(agent.session_epoch) == pty_generation && agent.agent_pid > 0 && agent.agent_started_at > 0
+        });
+        let conversation = match conversation_at_edit {
+            Some(edited) => Some(SourceConversation::from(cached.filter(|agent| edited.matches(agent))?)),
+            None if foreground_proof.is_some() => None,
+            None => cached.map(SourceConversation::from),
+        };
+        let source_is_current = || {
+            owner_is_current() && conversation.as_ref().is_none_or(|expected| {
+                let observed_process_matches = foreground_proof.is_none_or(|proof| {
+                    proof.lock().unwrap_or_else(|error| error.into_inner()).is_some_and(|process| {
+                        process.pid.as_u32() == expected.agent_pid && process.started_at == expected.started_at
+                    })
+                });
+                observed_process_matches && trusted_agent().is_some_and(|agent| {
+                    Some(agent.session_epoch) == pty_generation && SourceConversation::from(agent) == *expected
+                })
+            })
+        };
         let confirmed_excerpt = || {
-            let Some(source) = &reply_source else { return "" };
-            if pty_generation.is_none() {
+            let (Some(source), Some(_)) = (&reply_source, &conversation) else { return "" };
+            if !reply_is_current() {
                 return "";
             }
             trusted_agent()
@@ -746,6 +827,7 @@ impl PresendService {
                 window: window.to_owned(),
                 session_id,
                 pty_generation,
+                conversation: conversation.clone(),
             },
             &draft,
             confirmed_excerpt,
@@ -754,8 +836,9 @@ impl PresendService {
             } else {
                 Workdir::Path(&workdir_name)
             },
-            owner_is_current,
+            source_is_current,
             async move { require_foreground_agent != Some(true) || confirm_foreground.await == Some(true) },
+            progress,
         )
         .await
     }
@@ -769,14 +852,15 @@ impl PresendService {
         draft: &str,
         excerpt: impl FnOnce() -> &'a str,
         workdir: Workdir<'_>,
-        owner_is_current: impl FnOnce() -> bool,
+        owner_is_current: impl Fn() -> bool,
         confirm_foreground: impl Future<Output = bool>,
+        progress: Option<&ReadProgress>,
     ) -> Option<Reading> {
         if !ai_enabled {
             self.configure(false, provider).await;
             return None;
         }
-        if request_id.is_empty() || owner.session_id.is_empty() || draft.chars().count() > 100_000 {
+        if request_id.is_empty() || owner.session_id.is_empty() || draft.chars().nth(MAX_TRANSFER_DRAFT_CHARS).is_some() {
             return None;
         }
         let draft = credentials::scrub(draft);
@@ -788,6 +872,7 @@ impl PresendService {
             || prompt(&draft, &credentials::scrub(excerpt()), &workdir),
             owner_is_current,
             confirm_foreground,
+            progress,
         )
         .await
     }
@@ -797,8 +882,9 @@ impl PresendService {
         provider: Provider,
         owner: ReadingOwner,
         build_prompt: impl FnOnce() -> String,
-        owner_is_current: impl FnOnce() -> bool,
+        owner_is_current: impl Fn() -> bool,
         confirm_foreground: impl Future<Output = bool>,
+        progress: Option<&ReadProgress>,
     ) -> Option<Reading> {
         let (revision, generation, mut updates) = {
             let mut control = self.0.control.lock().unwrap_or_else(|e| e.into_inner());
@@ -806,11 +892,17 @@ impl PresendService {
                 || control.shutdown
                 || control.provider != Some(provider)
                 || control.canceled.contains(&request_id)
+                || control.paused_tabs.contains(&owner.session_id)
             {
                 return None;
             }
             control.revision += 1;
             control.active = Some(request_id);
+            control.active_tab = Some(owner.session_id.clone());
+            control.last_claim_revision = control.revision;
+            if let Some(progress) = progress {
+                progress.claim_revision.store(control.revision, Ordering::Relaxed);
+            }
             self.0.updates.send_replace(control.revision);
             (
                 control.revision,
@@ -826,7 +918,7 @@ impl PresendService {
         if !self.current(revision) {
             return None;
         }
-        let can_reuse_pty = owner.pty_generation.is_some();
+        let can_reuse_pty = owner.pty_generation.is_some() && owner.conversation.is_some();
         if engine.provider != Some(provider)
             || !can_reuse_pty
             || engine.owner.as_ref() != Some(&owner)
@@ -869,6 +961,9 @@ impl PresendService {
                 _ = updates.changed() => None,
                 result = async {
                     began_writing = true;
+                    if let Some(progress) = progress {
+                        progress.attempted.store(true, Ordering::Relaxed);
+                    }
                     tokio::time::timeout_at(deadline, writing).await
                 } => Some(matches!(result, Ok(Ok(())))),
             };
@@ -895,7 +990,7 @@ impl PresendService {
             self.discard_unsent(&mut engine, provider).await;
             return None;
         }
-        let result = output.and_then(|text| {
+        let result = output.filter(|_| owner_is_current()).and_then(|text| {
             parse_reading(
                 &text,
                 provider,
@@ -920,11 +1015,13 @@ impl PresendService {
         if warm {
             self.arm_idle_timer();
         }
+        let owner_still_current = owner_is_current();
         let mut control = self.0.control.lock().unwrap_or_else(|e| e.into_inner());
-        if control.revision != revision || !control.enabled || control.shutdown {
+        if control.revision != revision || !control.enabled || control.shutdown || !owner_still_current {
             return None;
         }
         control.active = None;
+        control.active_tab = None;
         result
     }
 }
@@ -946,13 +1043,21 @@ pub fn lifecycle_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 pub async fn configure_presend_reading(
     app: tauri::AppHandle,
     service: tauri::State<'_, PresendService>,
-    enabled: bool,
-    provider: Provider,
-) -> Result<(), String> {
-    service
-        .configure(enabled && super::resolve(&app).enabled, provider)
-        .await;
-    Ok(())
+    enabled: Option<bool>,
+    provider: Option<Provider>,
+    session_id: Option<String>,
+    tab_enabled: Option<bool>,
+) -> Result<Option<bool>, String> {
+    match (enabled, provider, session_id, tab_enabled) {
+        (Some(enabled), Some(provider), None, None) => {
+            service.configure(enabled && super::resolve(&app).enabled, provider).await;
+            Ok(None)
+        }
+        (None, None, Some(session_id), tab_enabled) if !session_id.is_empty() => {
+            Ok(Some(service.tab_preference(&session_id, tab_enabled)))
+        }
+        _ => Err("Invalid pre-send reading configuration".into()),
+    }
 }
 #[tauri::command]
 pub async fn cancel_presend_reading(
@@ -962,16 +1067,28 @@ pub async fn cancel_presend_reading(
     service.cancel(&request_id);
     Ok(())
 }
-#[derive(serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresendReplySource {
-    pty_generation: u64,
-    agent_kind: String,
-    agent_session_id: String,
-    occurred_at: u64,
+    pub(crate) pty_generation: u64,
+    pub(crate) agent_kind: String,
+    pub(crate) agent_session_id: String,
+    pub(crate) occurred_at: u64,
+    #[serde(default)]
+    pub(crate) event_id: String,
+    #[serde(default)]
+    pub(crate) source_revision: u64,
+    #[serde(default)]
+    pub(crate) source_byte_start: u64,
+    #[serde(default)]
+    pub(crate) source_byte_end: u64,
+    #[serde(default)]
+    pub(crate) file_generation: u64,
+    #[serde(default)]
+    pub(crate) content_digest: String,
 }
 impl PresendReplySource {
-    fn matches(&self, generation: Option<u64>, agent: &crate::pty::manager::TrustedAgentIdentity) -> bool {
+    pub(crate) fn matches(&self, generation: Option<u64>, agent: &crate::pty::manager::TrustedAgentIdentity) -> bool {
         generation == Some(self.pty_generation)
             && agent.session_epoch == self.pty_generation
             && agent.kind == self.agent_kind
@@ -979,6 +1096,22 @@ impl PresendReplySource {
             // Reject transcript events from before or within the process birth second.
             && agent.agent_started_at > 0
             && self.occurred_at / 1_000 > agent.agent_started_at
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresendConversationAtEdit {
+    agent_kind: String,
+    agent_session_id: String,
+}
+
+impl PresendConversationAtEdit {
+    fn matches(&self, agent: &crate::pty::manager::TrustedAgentIdentity) -> bool {
+        self.agent_session_id == agent.session_id
+            && (self.agent_kind == agent.kind
+                || matches!((self.agent_kind.as_str(), agent.kind.as_str()),
+                    ("claude", "claude-codex") | ("claude-codex", "claude")))
     }
 }
 
@@ -996,48 +1129,67 @@ struct PresendReadingRequest {
     #[cfg_attr(test, serde(default))]
     workdir_is_basename: bool,
     require_foreground_agent: Option<bool>,
+    edited_at_ms: Option<u64>,
+    conversation_at_edit: Option<PresendConversationAtEdit>,
 }
 
-fn foreground_agent_in_pty(root: u32) -> Option<bool> {
-    use crate::pty::monitor::{build_child_index, find_agent_descendant};
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiveProcess {
+    pid: sysinfo::Pid,
+    started_at: u64,
+}
 
-    let root = Pid::from_u32(root);
-    let mut system = System::new();
-    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    system.process(root)?;
-    let children = build_child_index(&system);
+fn is_live_process(process: &sysinfo::Process) -> bool {
+    use sysinfo::ProcessStatus::*;
+    !matches!(process.status(), Zombie | Dead | Stop)
+}
 
-    // Refresh command lines only in the PTY subtree for interpreter-based agents.
-    let mut selected = std::collections::HashSet::new();
-    let mut pending = vec![root];
-    while let Some(pid) = pending.pop() {
-        if selected.insert(pid) {
-            pending.extend(children.get(&pid).into_iter().flatten().copied());
-        }
+impl LiveProcess {
+    fn predates_edit(self, edited_at_ms: u64) -> bool {
+        // sysinfo reports birth in whole seconds. Require the whole second to
+        // precede the edit so a replacement born in that second cannot inherit it.
+        self.started_at.saturating_add(1).saturating_mul(1000) <= edited_at_ms
     }
-    let selected: Vec<_> = selected.into_iter().collect();
-    system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&selected),
-        true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
-    );
-    let running = |pid| {
-        system.process(pid).is_some_and(|process| {
-            !matches!(process.status(), ProcessStatus::Zombie | ProcessStatus::Dead | ProcessStatus::Stop)
-        })
-    };
-    if !running(root) {
+
+    fn still_running(self) -> bool {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut system = System::new();
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[self.pid]), true, ProcessRefreshKind::nothing());
+        system.process(self.pid).is_some_and(|p| p.start_time() == self.started_at && is_live_process(p))
+    }
+}
+
+static PRESEND_PROBE: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+fn foreground_agent_in_pty(root: u32) -> Option<Option<LiveProcess>> {
+    foreground_agent_in_tree(root, &crate::commands::terminal::process_tree_for_roots(&[root]))
+}
+
+fn foreground_agent_in_tree(root: u32, system: &sysinfo::System) -> Option<Option<LiveProcess>> {
+    use crate::pty::monitor::{build_child_index, find_agent_descendant};
+    let root = sysinfo::Pid::from_u32(root);
+    if !system.process(root).is_some_and(is_live_process) {
         return None;
     }
-    let children = build_child_index(&system);
-    Some(find_agent_descendant(&system, &children, root).is_some_and(|(_, pid)| running(pid)))
+    let children = build_child_index(system);
+    Some(find_agent_descendant(system, &children, root).and_then(|(_, pid)| {
+        let process = system.process(pid)?;
+        let started_at = process.start_time();
+        (started_at > 0 && is_live_process(process)).then_some(LiveProcess { pid, started_at })
+    }))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ForegroundCheckFailure {
-    Unavailable,
+    StateUnavailable,
+    PtyUnavailable,
+    RootUnavailable,
+    ProcessUnavailable,
+    ProbeFailed,
+    ProbeBusy,
+    PtyExited,
+    AgentChanged,
     Timeout,
     GenerationChanged,
 }
@@ -1048,11 +1200,26 @@ fn foreground_check_line(result: Result<bool, ForegroundCheckFailure>, elapsed_m
         Ok(true) if elapsed_ms <= 150.0 => return None,
         Ok(true) => "slow_ok",
         Ok(false) => "no_agent",
-        Err(Unavailable) => "unavailable",
+        Err(StateUnavailable) => "state_unavailable",
+        Err(PtyUnavailable) => "pty_unavailable",
+        Err(RootUnavailable) => "root_unavailable",
+        Err(ProcessUnavailable) => "process_unavailable",
+        Err(ProbeFailed) => "probe_failed",
+        Err(ProbeBusy) => "probe_busy",
+        Err(PtyExited) => "pty_exited",
+        Err(AgentChanged) => "agent_changed",
         Err(Timeout) => "timeout",
         Err(GenerationChanged) => "generation_changed",
     };
     Some(format!("presend_foreground_check result={result} elapsed_ms={elapsed_ms:.3}"))
+}
+
+fn finish_foreground_check(
+    probe: Result<bool, ForegroundCheckFailure>, started: Instant, deadline: Instant, now: Instant,
+) -> (Option<bool>, Option<String>) {
+    let result = if now >= deadline { Err(ForegroundCheckFailure::Timeout) } else { probe };
+    let line = foreground_check_line(result, now.saturating_duration_since(started).as_secs_f64() * 1_000.0);
+    (result.ok(), line)
 }
 
 async fn confirm_foreground_agent<M: Send + Sync + 'static>(
@@ -1061,7 +1228,7 @@ async fn confirm_foreground_agent<M: Send + Sync + 'static>(
     observe_root: fn(&M, &str) -> Option<(u64, u64, Option<u32>)>,
     observe_current: fn(&M, &str) -> Option<(u64, Option<u64>)>,
     is_running: fn(&M, &str) -> bool,
-    detect: impl FnOnce(u32) -> Option<bool> + Send + 'static,
+    detect: impl FnOnce(u32) -> Result<bool, ForegroundCheckFailure> + Send + 'static,
     timeout: Duration,
     write_diagnostic: impl FnOnce(&str) + Send + 'static,
 ) -> Option<bool> {
@@ -1070,63 +1237,141 @@ async fn confirm_foreground_agent<M: Send + Sync + 'static>(
     let deadline = started + timeout;
     let runtime = tokio::runtime::Handle::try_current().ok()?;
     let result = async {
-        let (manager, session_id) = session.ok_or(Unavailable)?;
+        let (manager, session_id) = session.ok_or(StateUnavailable)?;
         let manager = Arc::clone(manager);
         let session_id = session_id.to_owned();
         let probe = runtime.spawn_blocking(move || {
-            let (epoch, _, root) = observe_root(&manager, &session_id).ok_or(Unavailable)?;
+            let (epoch, _, root) = observe_root(&manager, &session_id).ok_or(PtyUnavailable)?;
             if Some(epoch) != observed_generation {
                 return Err(GenerationChanged);
             }
-            let foreground = detect(root.ok_or(Unavailable)?).ok_or(Unavailable)?;
-            let (current_epoch, _) = observe_current(&manager, &session_id).ok_or(Unavailable)?;
+            let foreground = detect(root.ok_or(RootUnavailable)?)?;
+            let (current_epoch, _) = observe_current(&manager, &session_id).ok_or(PtyExited)?;
             if current_epoch != epoch {
                 return Err(GenerationChanged);
             }
-            is_running(&manager, &session_id).then_some(foreground).ok_or(Unavailable)
+            is_running(&manager, &session_id).then_some(foreground).ok_or(PtyExited)
         });
-        let foreground = tokio::time::timeout_at(deadline, probe)
+        tokio::time::timeout_at(deadline, probe)
             .await
             .map_err(|_| Timeout)?
-            .map_err(|_| Unavailable)??;
-        (Instant::now() < deadline).then_some(foreground).ok_or(Timeout)
+            .map_err(|_| ProbeFailed)?
     }
     .await;
-    if let Some(line) = foreground_check_line(result, started.elapsed().as_secs_f64() * 1_000.0) {
-        drop(runtime.spawn_blocking(move || write_diagnostic(&line)));
+    publish_foreground_check(result, started, deadline, Instant::now, |line| {
+        let writer = runtime.clone();
+        drop(runtime.spawn(async move {
+            if let Ok(line) = line.await {
+                drop(writer.spawn_blocking(move || write_diagnostic(&line)));
+            }
+        }));
+    })
+}
+
+fn publish_foreground_check(
+    probe: Result<bool, ForegroundCheckFailure>, started: Instant, deadline: Instant,
+    clock: impl Fn() -> Instant,
+    schedule: impl FnOnce(tokio::sync::oneshot::Receiver<String>),
+) -> Option<bool> {
+    let sampled = clock();
+    if probe == Ok(true) && sampled < deadline && sampled.saturating_duration_since(started) <= Duration::from_millis(150) {
+        return Some(true);
     }
-    // A positive probe must still be fresh after dispatching the diagnostic.
-    result.ok().filter(|&foreground| !foreground || Instant::now() < deadline)
+    let (send, receive) = tokio::sync::oneshot::channel();
+    schedule(receive);
+    let (result, line) = finish_foreground_check(probe, started, deadline, clock());
+    if let Some(line) = line {
+        let _ = send.send(line);
+    }
+    result
 }
 
 async fn read_presend_from_command(
     service: &PresendService,
     ai_enabled: impl FnOnce() -> bool,
     window: &str,
-    request: PresendReadingRequest,
+    mut request: PresendReadingRequest,
     manager: Option<&Arc<SessionManager>>,
+    livebrief: Option<&crate::livebrief::LiveBriefService>,
+    progress: Option<&ReadProgress>,
+    write_diagnostic: impl FnOnce(&str) + Send + 'static,
 ) -> Option<Reading> {
+    // The native command owns this requirement even if a renderer omits it.
+    request.require_foreground_agent = Some(true);
     let session_id = request.session_id.clone();
+    let reply_source = request.reply_source.clone();
+    let edited_at_ms = request.edited_at_ms.filter(|at| *at > 0)?;
+    let generation = request.pty_generation.filter(|generation| *generation > 0)?;
     let observe_generation = || manager?.session_observation(&session_id).map(|(epoch, _)| epoch);
-    let observed_generation = observe_generation();
+    let started = Instant::now();
+    let observed = manager.ok_or(ForegroundCheckFailure::StateUnavailable)
+        .and_then(|manager| manager.session_observation(&session_id).ok_or(ForegroundCheckFailure::PtyUnavailable))
+        .and_then(|(epoch, _)| (epoch == generation).then_some(epoch).ok_or(ForegroundCheckFailure::GenerationChanged));
+    let observed_generation = match observed {
+        Ok(epoch) => epoch,
+        Err(reason) => {
+            if let Some(line) = foreground_check_line(Err(reason), started.elapsed().as_secs_f64() * 1000.0) {
+                drop(tokio::task::spawn_blocking(move || write_diagnostic(&line)));
+            }
+            return None;
+        }
+    };
+    let proof = Arc::new(Mutex::new(None::<LiveProcess>));
+    let probe_proof = Arc::clone(&proof);
+    let reply_owner = Arc::new(AtomicBool::new(false));
+    let probe_reply_owner = Arc::clone(&reply_owner);
+    let ownership_scan = request.conversation_at_edit.as_ref().and(reply_source.clone())
+        .and_then(|source| Some((Arc::clone(manager?), session_id.clone(), source)));
     service
         .read_renderer_request(
             ai_enabled(),
             window,
             request,
-            observed_generation,
+            Some(observed_generation),
             || manager?.trusted_agent_identity(&session_id),
-            || observe_generation() == observed_generation,
+            || reply_owner.load(Ordering::Relaxed)
+                && livebrief.and_then(|service| service.presend_reply_source(&session_id)).as_ref() == reply_source.as_ref(),
+            || observe_generation() == Some(observed_generation) && {
+                let process = *proof.lock().unwrap_or_else(|err| err.into_inner());
+                process.is_some_and(LiveProcess::still_running)
+            },
             confirm_foreground_agent(
                 manager.map(|manager| (manager, session_id.as_str())),
-                observed_generation,
+                Some(observed_generation),
                 SessionManager::intervention_observation,
                 SessionManager::session_observation,
                 SessionManager::is_running,
-                foreground_agent_in_pty,
+                move |root| {
+                    use ForegroundCheckFailure::*;
+                    let _lease = match PRESEND_PROBE.try_lock() {
+                        Ok(lease) => lease,
+                        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => return Err(ProbeBusy),
+                    };
+                    use crate::commands::terminal::{presend_owns_reply, process_tree_for_roots};
+                    let ptys = ownership_scan.as_ref().map(|(manager, _, _)| manager.iter_pids());
+                    let roots = ptys.as_ref().map_or_else(|| vec![root], |ptys| {
+                        ptys.iter().filter_map(|(_, root)| *root).collect()
+                    });
+                    let tree = process_tree_for_roots(&roots);
+                    let Some(process) = foreground_agent_in_tree(root, &tree).ok_or(ProcessUnavailable)? else {
+                        return Ok(false);
+                    };
+                    if !process.predates_edit(edited_at_ms) {
+                        return Err(AgentChanged);
+                    }
+                    if let (Some((manager, session, source)), Some(ptys)) = (ownership_scan, ptys) {
+                        let owns = presend_owns_reply(&manager, &session, ptys, &tree, &source.agent_kind, &source.agent_session_id);
+                        probe_reply_owner.store(owns, Ordering::Relaxed);
+                    }
+                    *probe_proof.lock().unwrap_or_else(|err| err.into_inner()) = Some(process);
+                    Ok(true)
+                },
                 Duration::from_millis(250),
-                crate::diag::log,
+                write_diagnostic,
             ),
+            Some(&proof),
+            progress,
         )
         .await
 }
@@ -1145,11 +1390,14 @@ pub async fn run_presend_reading(
     workdir_name: String,
     workdir_is_basename: Option<bool>,
     require_foreground_agent: Option<bool>,
-) -> Result<Option<Reading>, String> {
+    edited_at_ms: Option<u64>,
+    conversation_at_edit: Option<PresendConversationAtEdit>,
+) -> Result<Option<PresendResult>, String> {
     use tauri::Manager;
 
     let state = window.try_state::<crate::AppState>();
-    Ok(read_presend_from_command(
+    let progress = ReadProgress::default();
+    let result = read_presend_from_command(
         &service,
         || super::resolve(window.app_handle()).enabled,
         window.label(),
@@ -1164,10 +1412,25 @@ pub async fn run_presend_reading(
             workdir_name,
             workdir_is_basename: workdir_is_basename.unwrap_or_default(),
             require_foreground_agent,
+            edited_at_ms,
+            conversation_at_edit,
         },
         state.as_ref().map(|state| &state.session_manager),
-    )
-    .await)
+        state.as_ref().map(|state| &state.livebrief_service),
+        Some(&progress),
+        crate::diag::log,
+    ).await;
+    if let Some(reading) = result {
+        return Ok(Some(PresendResult::Complete(reading)));
+    }
+    let revision = progress.claim_revision.load(Ordering::Relaxed);
+    let control = service.0.control.lock().unwrap_or_else(|e| e.into_inner());
+    let superseded = revision != 0 && control.last_claim_revision > revision;
+    let attempted = progress.attempted.load(Ordering::Relaxed);
+    Ok((superseded || attempted).then_some(PresendResult::Incomplete {
+        disposition: if superseded { "superseded" } else { "attempted" },
+        attempted,
+    }))
 }
 
 #[cfg(test)]

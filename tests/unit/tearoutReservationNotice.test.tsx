@@ -56,7 +56,7 @@ beforeEach(async () => {
   useSettingsStore.setState({ nativePaneTearoutEnabled: false, macNativePaneTearoutEnabled: false,
     notificationsEnabled: false, toastUserActionEnabled: false });
   boundary.emitTo.mockImplementation(async (_label: string, event: string, payload: any) => {
-    if (event === "mycmux://tearout-ready-query") dispatch("mycmux://tearout-receipt", { token: payload.token, ok: true });
+    if (event === "mycmux://tearout-ready-query") dispatch("mycmux://tearout-receipt", { token: payload.token, ok: true, creationId: payload.creationId });
   });
   boundary.invoke.mockImplementation(async (command: string) => {
     if (command === "tearout_transfer_refusal") return boundary.reserved ? proof() : undefined;
@@ -171,6 +171,25 @@ it("notices an ordinary prepare reservation without reporting a failed creation 
   expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace]);
   expect(boundary.invoke.mock.calls.find(([command, args]) => command === "tearout_log_record" && args.record.result === "rejected_busy")?.[1].record)
     .toMatchObject({ refusal_source: "backend_transfer", blocker_id: "first", blocker_phase: "moving" });
+});
+
+it("L3 fix2 10 never prepares or retires the successor to a failed ordinary window", async () => {
+  const invoke = boundary.invoke.getMockImplementation()!;
+  boundary.refusePrepare = true;
+  boundary.invoke.mockImplementation(async (command: string, args: any) => {
+    if (command === "open_workspace_window") {
+      queueMicrotask(() => dispatch("mycmux://window-open-failed", args.creationId
+        ? { label: "C", creation_id: args.creationId, kind: "move", moved_count: 0 }
+        : 1));
+    }
+    return invoke(command, args);
+  });
+  const completed = attempt("ordinary").catch(error => error);
+  await act(async () => { await flush(); await vi.advanceTimersByTimeAsync(100); });
+  expect(mutations().map(([command]) => command)).toEqual(["open_workspace_window"]);
+  expect(await completed).toMatchObject({ message: "workspace_window_creation_failed" });
+  expect(useWorkspaceListStore.getState().workspaces).toEqual([workspace]);
+  expect(tearoutOperationBusy()).toBe(false);
 });
 
 it("records an ordinary workspace operation ID as the phase blocker while it opens", async () => {

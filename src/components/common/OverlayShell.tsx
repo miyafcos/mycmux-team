@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 type OverlaySize = "full" | "wide" | "dialog";
@@ -112,10 +112,13 @@ export function OverlayShell({
     ? null
     : document.querySelector<HTMLElement>("[data-cmux-themed-root]") ?? document.body;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
+    const panel = panelRef.current;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && typeof active.focus === "function" && !panel?.contains(active)) previouslyFocusedRef.current = active;
+    // Set the fallback before a child effect focuses its requested field.
+    panel?.focus();
   }, [open]);
 
   const backgroundIsolationActive = open || closing;

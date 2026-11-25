@@ -8,6 +8,9 @@
  * into spaces and says so rather than guessing.
  */
 
+/** Maximum original draft size in UTF-16 code units, shared with pre-send reading. */
+export const MAX_SEND_CHARS = 100_000;
+
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 const CODEX_SHIFT_ENTER = "\x1b[13;2u";

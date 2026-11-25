@@ -50,8 +50,14 @@ fn hold_loaded_workspaces(registry: &WindowRegistry, data: &PersistentData) {
             .map(|group| group.label.as_str())
             .filter(|label| crate::commands::window::is_valid_child_window_label(label))
             .unwrap_or(MAIN_WINDOW_LABEL);
-        (workspace.id.as_str(), label)
+        (workspace.id.as_str(), has_restorable_panes(workspace).then_some(label))
     }));
+}
+
+fn has_restorable_panes(workspace: &storage::WorkspaceConfig) -> bool {
+    workspace.panes.iter().any(|pane| pane.tabs.as_ref().is_none_or(|tabs| {
+        tabs.iter().any(|tab| matches!(tab.lifecycle.as_deref(), None | Some("declared")))
+    }))
 }
 
 #[tauri::command(async)]
@@ -60,12 +66,14 @@ pub async fn save_persistent_data(
     app_handle: AppHandle,
     window: tauri::Window,
     mut data: PersistentData,
+    selection_changed: Option<bool>,
 ) -> Result<(), storage::PersistentStorageError> {
     let writer = window.label().to_owned();
     crate::util::task::run_blocking_result("save_persistent_data", move || {
         crate::perf_timeline::mark("store.save.enter", None);
         attach_detached_window_frames(&app_handle, &mut data);
-        if let Some(state) = app_handle.try_state::<crate::AppState>() {
+        let state = app_handle.try_state::<crate::AppState>();
+        if let Some(state) = &state {
             canonicalize_live_agent_sessions(&mut data, |session| {
                 state.session_manager.trusted_agent_identity(session)
                     .map(|identity| (identity.kind, identity.session_id))
@@ -73,7 +81,8 @@ pub async fn save_persistent_data(
             });
         }
         let result = save_persistent_data_for(
-            &app_handle, data, || live_workspace_ids(&app_handle), Some(&writer),
+            &app_handle, data, state.as_ref().map(|state| &state.window_registry), Some(&writer),
+            selection_changed.unwrap_or(false),
         );
         crate::perf_timeline::mark("store.save.done", None);
         result
@@ -155,24 +164,20 @@ fn apply_saved_window_groups(
     }
 }
 
-/// Workspaces held by a published window, a handoff or startup restoration.
-fn live_workspace_ids(app_handle: &AppHandle) -> std::collections::HashSet<String> {
-    let Some(state) = app_handle.try_state::<crate::AppState>() else {
-        return std::collections::HashSet::new();
-    };
-    state.window_registry.held_workspace_ids()
-}
-
 fn save_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
     target: &T,
     mut data: PersistentData,
-    live_workspace_ids: impl FnOnce() -> std::collections::HashSet<String>,
+    registry: Option<&WindowRegistry>,
     writer: Option<&str>,
+    selection_changed: bool,
 ) -> Result<(), storage::PersistentStorageError> {
     data.schema_version = storage::CURRENT_SCHEMA_VERSION;
     storage::update_reporting_layout(
         target,
-        move |disk| merge_persistent_data(disk, data, &live_workspace_ids()),
+        move |disk| {
+            let live = registry.map(WindowRegistry::workspace_ids_for_save).unwrap_or_default();
+            merge_persistent_data(disk, data, &live, selection_changed);
+        },
         |counts| {
             static FIRST_LAYOUT_SAVE: std::sync::Once = std::sync::Once::new();
             if let Some(writer) = writer {
@@ -214,10 +219,14 @@ fn merge_persistent_data(
     disk: &mut PersistentData,
     data: PersistentData,
     live: &std::collections::HashSet<String>,
+    selection_changed: bool,
 ) {
     disk.schema_version = data.schema_version;
     let mut workspaces = data.workspaces;
     let carried = carry_over_live_workspaces(&disk.workspaces, &workspaces, live);
+    let keep_selection = !selection_changed && disk.active_workspace_id.as_ref().is_some_and(|id| {
+        carried.iter().any(|row| &row.id == id && has_restorable_panes(row))
+    });
     if !carried.is_empty() {
         crate::diag::log(&format!(
             "[persist] kept {} workspace(s) a live window still holds but this save left out",
@@ -241,9 +250,11 @@ fn merge_persistent_data(
     disk.settings.ailog_usd_jpy_rate = ailog_usd_jpy_rate;
     disk.settings.ailog_mirror_full_text_root = ailog_mirror_full_text_root;
     disk.settings.ailog_claude_fallback_root = ailog_claude_fallback_root;
-    disk.active_workspace_id = data.active_workspace_id;
-    disk.active_pane_id = data.active_pane_id;
-    disk.active_tab_id = data.active_tab_id;
+    if !keep_selection {
+        disk.active_workspace_id = data.active_workspace_id;
+        disk.active_pane_id = data.active_pane_id;
+        disk.active_tab_id = data.active_tab_id;
+    }
 }
 
 fn infer_agent_kind(
@@ -418,7 +429,7 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            let error = save_persistent_data_for(path.as_path(), PersistentData::default(), HashSet::new, None)
+            let error = save_persistent_data_for(path.as_path(), PersistentData::default(), None, None, false)
                 .expect_err(phase);
             assert_eq!(error.kind(), "unsupportedSchema", "{phase}");
             assert_eq!(error.schema_version(), Some(999), "{phase}");
@@ -437,13 +448,195 @@ mod tests {
             if index == 0 {
                 let clean_path = temp.path().join("clean-target.json");
                 let latched_error =
-                    save_persistent_data_for(clean_path.as_path(), PersistentData::default(), HashSet::new, None)
+                    save_persistent_data_for(clean_path.as_path(), PersistentData::default(), None, None, false)
                         .expect_err("process latch must reject a different clean target");
                 assert_eq!(latched_error.kind(), "unsupportedSchema");
                 assert_eq!(latched_error.schema_version(), Some(999));
                 assert!(!clean_path.exists());
             }
         }
+    }
+
+    fn l3_workspace(id: &str, owner: &str, tabs: serde_json::Value) -> storage::WorkspaceConfig {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": id, "grid_template_id": "1x1", "created_at": 0,
+            "window_group": {"label": owner},
+            "panes": [{"agent_id": "shell", "pane_id": "pane", "tabs": tabs}],
+        })).unwrap()
+    }
+
+    #[test]
+    fn l3_76_carrying_an_unpublished_child_preserves_its_selection() {
+        let tabs = serde_json::json!([{"agent_id": "shell", "tab_id": "tab"}]);
+        let mut disk = PersistentData {
+            workspaces: vec![l3_workspace("child", "mycmux-w1", tabs.clone())],
+            active_workspace_id: Some("child".into()),
+            active_pane_id: Some("pane".into()),
+            active_tab_id: Some("tab".into()),
+            ..Default::default()
+        };
+        let save = PersistentData {
+            workspaces: vec![l3_workspace("main", "main", tabs)],
+            active_workspace_id: Some("main".into()),
+            ..Default::default()
+        };
+        merge_persistent_data(&mut disk, save, &HashSet::from(["child".into()]), false);
+        assert_eq!(disk.workspaces.len(), 2);
+        assert_eq!((disk.active_workspace_id.as_deref(), disk.active_pane_id.as_deref(), disk.active_tab_id.as_deref()),
+            (Some("child"), Some("pane"), Some("tab")));
+    }
+
+    #[test]
+    fn l3_drop_84_an_acquired_row_and_selection_survive_one_save_after_close() {
+        let tabs = serde_json::json!([{"agent_id": "shell", "tab_id": "tab"}]);
+        let child = l3_workspace("child", "mycmux-w1", tabs.clone());
+        let main = l3_workspace("main", "main", tabs);
+        let mut disk = PersistentData { workspaces: vec![main.clone()], ..Default::default() };
+        let stale = PersistentData {
+            workspaces: vec![main, child],
+            active_workspace_id: Some("child".into()),
+            active_pane_id: Some("pane".into()),
+            active_tab_id: Some("tab".into()),
+            ..Default::default()
+        };
+        let registry = WindowRegistry::new();
+        registry.publish_fragment(crate::window_registry::WindowFragment {
+            window_label: "mycmux-w1".into(),
+            workspaces: vec![serde_json::to_value(&stale.workspaces[1]).unwrap()],
+            ..Default::default()
+        });
+        registry.forget_closed_window("mycmux-w1");
+        assert!(registry.window_for_workspace("child").is_none());
+
+        merge_persistent_data(&mut disk, stale, &registry.held_workspace_ids(), false);
+        assert_eq!(disk.workspaces.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["main", "child"]);
+        assert_eq!(disk.active_workspace_id.as_deref(), Some("child"));
+        assert_eq!(disk.active_pane_id.as_deref(), Some("pane"));
+        assert_eq!(disk.active_tab_id.as_deref(), Some("tab"));
+    }
+
+    #[test]
+    fn l3_107_empty_tab_rows_do_not_keep_unreleasable_startup_holds() {
+        let registry = WindowRegistry::new();
+        let data = PersistentData {
+            workspaces: vec![l3_workspace("empty", "main", serde_json::json!([])),
+                l3_workspace("live", "main", serde_json::json!([{"agent_id": "shell"}]))],
+            ..Default::default()
+        };
+        hold_loaded_workspaces(&registry, &data);
+        assert!(registry.held_workspace_ids().contains("live"));
+        assert!(!registry.held_workspace_ids().contains("empty"));
+        assert!(registry.workspace_ids_for_save().contains("empty"));
+        let mut on_disk = data.clone();
+        let visible = PersistentData { workspaces: vec![data.workspaces[1].clone()], ..Default::default() };
+        merge_persistent_data(&mut on_disk, visible, &registry.workspace_ids_for_save(), false);
+        assert!(on_disk.workspaces.iter().any(|row| row.id == "empty"));
+    }
+
+    #[test]
+    fn l3_fix2_03_empty_duplicate_cannot_change_the_owner_of_a_recoverable_startup_workspace() {
+        let registry = WindowRegistry::new();
+        let saved = l3_workspace("detached", "mycmux-w1", serde_json::json!([{
+            "agent_id": "codex", "tab_id": "tab", "agent_session_id": "conversation"
+        }]));
+        let data = PersistentData {
+            workspaces: vec![
+                l3_workspace("main", "main", serde_json::json!([{"agent_id": "shell"}])),
+                saved.clone(),
+                l3_workspace("detached", "mycmux-w1", serde_json::json!([])),
+            ],
+            ..Default::default()
+        };
+        hold_loaded_workspaces(&registry, &data);
+        registry.queue_adoption("mycmux-w1", vec![serde_json::to_value(saved).unwrap()]);
+        let rows = registry.release_all("mycmux-w1", "main");
+        registry.forget_window("mycmux-w1");
+
+        assert_eq!(rows[0]["preserve_workspace_identity"], serde_json::Value::Bool(true));
+        let mut row: storage::WorkspaceConfig = serde_json::from_value(rows[0].clone()).unwrap();
+        row.window_group = None;
+        let mut disk = data;
+        let next = PersistentData { workspaces: vec![disk.workspaces[0].clone(), row], ..Default::default() };
+        registry.publish_fragment(crate::window_registry::WindowFragment {
+            window_label: "main".into(),
+            workspaces: serde_json::to_value(&next.workspaces).unwrap().as_array().unwrap().clone(),
+            ..Default::default()
+        });
+        merge_persistent_data(&mut disk, next, &registry.workspace_ids_for_save(), false);
+        let restart: PersistentData = serde_json::from_slice(&serde_json::to_vec(&disk).unwrap()).unwrap();
+        assert_eq!(restart.workspaces.iter().filter(|row| row.id == "detached").count(), 1);
+        assert_eq!(restart.workspaces[1].panes[0].tabs.as_ref().unwrap()[0].agent_session_id.as_deref(), Some("conversation"));
+    }
+
+    #[test]
+    fn l3_fix3_01_last_window_close_keeps_the_saved_layout_on_restart() {
+        let _serial = storage::persistence_test_lock();
+        storage::reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let row = l3_workspace("saved", "main", serde_json::json!([{
+            "agent_id": "shell", "tab_id": "last-tab"
+        }]));
+        let saved = PersistentData {
+            workspaces: vec![row.clone()],
+            active_workspace_id: Some("saved".into()),
+            active_tab_id: Some("last-tab".into()),
+            ..Default::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let registry = WindowRegistry::new();
+        registry.publish_fragment(crate::window_registry::WindowFragment {
+            window_label: "main".into(),
+            workspaces: vec![serde_json::to_value(row).unwrap()],
+            ..Default::default()
+        });
+
+        registry.set_close_intent("main", true);
+        assert!(registry.take_close_intent("main"));
+        registry.forget_closed_window("main");
+
+        let restarted = storage::load(path.as_path()).unwrap();
+        assert_eq!(restarted.active_workspace_id.as_deref(), Some("saved"));
+        assert_eq!(restarted.active_tab_id.as_deref(), Some("last-tab"));
+        assert_eq!(restarted.workspaces[0].panes[0].tabs.as_ref().unwrap()[0].tab_id.as_deref(), Some("last-tab"));
+    }
+
+    #[test]
+    fn l3_fix2_15_later_explicit_selection_replaces_the_carried_startup_selection() {
+        let tabs = serde_json::json!([{"agent_id": "shell", "tab_id": "tab"}]);
+        let mut disk = PersistentData {
+            workspaces: vec![l3_workspace("child", "mycmux-w1", tabs.clone())],
+            active_workspace_id: Some("child".into()),
+            ..Default::default()
+        };
+        let mut save = PersistentData {
+            workspaces: vec![l3_workspace("initial", "main", tabs.clone()), l3_workspace("chosen", "main", tabs)],
+            active_workspace_id: Some("initial".into()),
+            ..Default::default()
+        };
+        let live = HashSet::from(["child".into()]);
+        merge_persistent_data(&mut disk, save.clone(), &live, false);
+        assert_eq!(disk.active_workspace_id.as_deref(), Some("child"));
+        save.active_workspace_id = Some("chosen".into());
+        merge_persistent_data(&mut disk, save, &live, true);
+        assert!(disk.workspaces.iter().any(|row| row.id == "child"));
+        assert_eq!(disk.active_workspace_id.as_deref(), Some("chosen"));
+    }
+
+    #[test]
+    fn l3_fix2_24_unsupported_tabs_are_metadata_without_a_live_startup_hold() {
+        let registry = WindowRegistry::new();
+        let input = PersistentData {
+            workspaces: vec![l3_workspace("future", "main", serde_json::json!([{
+                "agent_id": "shell", "tab_id": "future-tab", "lifecycle": "future-mode",
+            }]))],
+            ..Default::default()
+        };
+        hold_loaded_workspaces(&registry, &input);
+        assert!(!registry.held_workspace_ids().contains("future"));
+        let mut disk = input;
+        merge_persistent_data(&mut disk, PersistentData::default(), &registry.workspace_ids_for_save(), false);
+        assert_eq!(disk.workspaces[0].panes[0].tabs.as_ref().unwrap()[0].lifecycle.as_deref(), Some("future-mode"));
     }
 
     fn pane_with_session() -> PaneConfig {
@@ -602,14 +795,14 @@ mod tests {
             "id":"child","name":"Child","grid_template_id":"1x1","panes":[],"created_at":1,
             "window_group":{"label":"mycmux-w2","frame":{"x":-1000.0,"y":80.0,"width":800.0,"height":600.0},"active_workspace_id":"child"}
         })).unwrap()];
-        save_persistent_data_for(path.as_path(), data, HashSet::new, None).unwrap();
+        save_persistent_data_for(path.as_path(), data, None, None, false).unwrap();
         let first = std::fs::read(&path).unwrap();
         for _ in 0..6 {
             let envelope = load_persistent_data_for(path.as_path(), None).unwrap();
             assert_eq!(envelope.schema_version, 1);
             let data = envelope.data.unwrap();
             assert_eq!(data.workspaces[0].window_group.as_ref().unwrap().label, "mycmux-w2");
-            save_persistent_data_for(path.as_path(), data, HashSet::new, None).unwrap();
+            save_persistent_data_for(path.as_path(), data, None, None, false).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), first);
         }
     }
@@ -621,11 +814,7 @@ mod tests {
         let registry = WindowRegistry::new();
         let mut disk = PersistentData::default();
         for (id, label) in [("primary", "main"), ("one", "mycmux-w1"), ("two", "mycmux-w2")] {
-            let mut workspace = workspace_config(id);
-            workspace.window_group = Some(serde_json::from_value(serde_json::json!({
-                "label": label
-            })).unwrap());
-            disk.workspaces.push(workspace);
+            disk.workspaces.push(l3_workspace(id, label, serde_json::json!([{"agent_id": "shell"}])));
         }
         hold_loaded_workspaces(&registry, &disk);
         let first_child = serde_json::to_value(&disk.workspaces[1]).unwrap();
@@ -640,7 +829,7 @@ mod tests {
             ..Default::default()
         });
 
-        merge_persistent_data(&mut disk, incoming, &registry.held_workspace_ids());
+        merge_persistent_data(&mut disk, incoming, &registry.held_workspace_ids(), false);
 
         let owners: Vec<_> = disk.workspaces.iter().map(|workspace|
             workspace.window_group.as_ref().unwrap().label.as_str()).collect();
@@ -689,7 +878,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        save_persistent_data_for(path.as_path(), original, HashSet::new, None).unwrap();
+        save_persistent_data_for(path.as_path(), original, None, None, false).unwrap();
         load_persistent_data_for(path.as_path(), Some(&registry)).unwrap();
         let visible = PersistentData {
             workspaces: vec![make_workspace("visible", 1)],
@@ -701,7 +890,7 @@ mod tests {
             ..Default::default()
         });
 
-        save_persistent_data_for(path.as_path(), visible, || registry.held_workspace_ids(), None).unwrap();
+        save_persistent_data_for(path.as_path(), visible, Some(&registry), None, false).unwrap();
 
         let written = storage::load(path.as_path()).unwrap();
         let layout: Vec<_> = written.workspaces.iter().map(|workspace| (
@@ -724,7 +913,7 @@ mod tests {
         incoming.workspaces = vec![workspace_config("child-ws")];
         let live = HashSet::from(["main-ws".to_string(), "child-ws".to_string()]);
 
-        merge_persistent_data(&mut disk, incoming, &live);
+        merge_persistent_data(&mut disk, incoming, &live, false);
 
         let ids: Vec<&str> = disk.workspaces.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, vec!["child-ws", "main-ws"]);
@@ -739,7 +928,7 @@ mod tests {
         incoming.workspaces = vec![workspace_config("kept")];
         let live = HashSet::from(["kept".to_string()]);
 
-        merge_persistent_data(&mut disk, incoming, &live);
+        merge_persistent_data(&mut disk, incoming, &live, false);
 
         let ids: Vec<&str> = disk.workspaces.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, vec!["kept"]);
@@ -760,7 +949,7 @@ mod tests {
         incoming.settings.ailog_mirror_full_text_root = None;
         incoming.settings.font_size = 19;
 
-        merge_persistent_data(&mut disk, incoming, &HashSet::new());
+        merge_persistent_data(&mut disk, incoming, &HashSet::new(), false);
 
         assert!(disk.settings.dirty_save_mode);
         assert!(!disk.settings.osc7_tracking_enabled);

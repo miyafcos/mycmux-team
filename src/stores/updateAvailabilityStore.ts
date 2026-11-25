@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export interface UpdateAvailability {
-  state: "none" | "available" | "installing" | "error";
+  state: "none" | "available" | "installing" | "restarting" | "error";
   version: string;
   currentVersion: string;
   message: string;

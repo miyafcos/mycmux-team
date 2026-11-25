@@ -53,9 +53,11 @@ import {
 } from "../../src/stores/cliAccountStore";
 import {
   __resetCliLoginStoreForTests,
+  openGeminiLogin,
   useCliLoginStore,
 } from "../../src/stores/cliLoginStore";
 import { useUiStore } from "../../src/stores/uiStore";
+import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
@@ -155,6 +157,24 @@ beforeEach(() => {
   __resetCliLoginStoreForTests();
 });
 
+it("L12b opens a Codex home login from account management with no existing workspace", async () => {
+  useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
+  mocks.beginCliLogin.mockResolvedValue({ ...loginSession, provider: "codex" });
+  await useCliLoginStore.getState().startAccountHome("codex", "codex-fixture");
+  expect(useCliLoginStore.getState().byProvider.codex?.stage).toBe("waiting");
+  expect(currentTabs().some(tab => tab.launchEnv?.MYCMUX_CLI_LOGIN_ID === loginId)).toBe(true);
+});
+
+it("L12b brings the agy tab in front of the dashboard and workspace setup", async () => {
+  useDashboardViewStore.setState({ open: true });
+  useUiStore.getState().setWorkspaceSetupVisible(true);
+  expect(await openGeminiLogin()).toBe(true);
+  expect(useDashboardViewStore.getState().open).toBe(false);
+  expect(useUiStore.getState().workspaceSetupVisible).toBe(false);
+  expect(loginTab()?.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "agy" });
+  expect(useUiStore.getState().activePaneId).toBe(loginTab()?.sessionId);
+});
+
 describe("cliLoginStore.start", () => {
   it("refuses to start while the provider is already busy", async () => {
     useCliAccountStore.getState().setLoginBusy("claude", "capture:claude");
@@ -223,7 +243,8 @@ describe("cliLoginStore events", () => {
 
     expect(mocks.listCliAccounts).toHaveBeenCalled();
     expect(mocks.usageFetch).toHaveBeenCalled();
-    expect(mocks.pushToast).toHaveBeenCalledWith("「A」を登録しました。", "info");
+    expect(mocks.pushToast).toHaveBeenCalledWith("「A」を登録しました。", "info",
+      expect.objectContaining({ label: "このアカウントをタブ用にも登録" }));
     expect(liveSessionIds().has(sessionId ?? "")).toBe(false);
     expect(useCliAccountStore.getState().busyByProvider.claude).toBeNull();
     expect(useCliLoginStore.getState().byProvider.claude).toBeNull();
@@ -294,7 +315,7 @@ describe("cliLoginStore events", () => {
       .getState()
       .handleCompleted({ login_id: loginId, profile, updated_existing: true });
 
-    expect(mocks.pushToast).toHaveBeenCalledWith("「A」の登録を更新しました。", "info");
+    expect(mocks.pushToast).toHaveBeenCalledWith("「A」の登録を更新しました。", "info", undefined);
   });
 
   it("closes the tab and frees the provider on failure", async () => {
@@ -380,4 +401,48 @@ describe("cliLoginStore tab lifetime", () => {
       .handleFailed({ login_id: loginId, code: "cli_account.error.login_cancelled" });
     expect(mocks.pushToast).not.toHaveBeenCalled();
   });
+});
+
+it("does not close the next Codex home login when an older completion refresh finishes", async () => {
+  const oldLogin = { ...loginSession, provider: "codex" as const };
+  const nextLogin = { ...oldLogin, login_id: "home-login-fixture" };
+  mocks.beginCliLogin.mockResolvedValueOnce(oldLogin).mockResolvedValueOnce(nextLogin);
+  const store = useCliLoginStore.getState();
+  expect(await store.start("codex", "new")).toBe(true);
+  let finishRefresh!: (value: CliAccountsSnapshot) => void;
+  mocks.listCliAccounts.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+  const completed = store.handleCompleted({
+    login_id: loginId, profile: { ...profile, id: "codex-a", provider: "codex" }, updated_existing: false,
+  });
+  expect(finishRefresh).toBeDefined();
+  useWorkspaceLayoutStore.getState().removeTabFromPane(workspaceId, paneId, loginTab()!.id);
+  store.handleTabsChanged(liveSessionIds());
+  expect(await store.startAccountHome("codex", "codex-a")).toBe(true);
+  const next = loginTab()!;
+  expect(next.launchEnv?.MYCMUX_CLI_LOGIN_ID).toBe(nextLogin.login_id);
+  finishRefresh(snapshot);
+  await completed;
+  expect(currentTabs()).toContain(next);
+  expect(useCliLoginStore.getState().byProvider.codex?.loginId).toBe(nextLogin.login_id);
+  expect(useCliAccountStore.getState().busyByProvider.codex).toBe("login:codex");
+  expect(mocks.killSession).not.toHaveBeenCalledWith(next.sessionId);
+});
+
+it("completes a Codex home login while the separate Grok home login and tab stay active", async () => {
+  const codex = { ...loginSession, login_id: "codex-home-fixture", provider: "codex" as const };
+  const grok = { ...loginSession, login_id: "grok-home-fixture", provider: "grok" as const };
+  mocks.beginCliLogin.mockResolvedValueOnce(codex).mockResolvedValueOnce(grok);
+  const store = useCliLoginStore.getState();
+  expect(await store.startAccountHome("codex", "codex-a")).toBe(true);
+  expect(await store.startAccountHome("grok", "grok-a")).toBe(true);
+  const sessions = useCliLoginStore.getState().byProvider;
+  const payload = { login_id: codex.login_id, profile: { ...profile, id: "codex-a", provider: "codex" as const },
+    updated_existing: true, purpose: { kind: "account_home" as const, profile_id: "codex-a" } };
+  await store.handleCompleted(payload);
+  expect(useCliLoginStore.getState().byProvider).toMatchObject({
+    codex: null, grok: { loginId: grok.login_id, stage: "waiting", sessionId: sessions.grok?.sessionId },
+  });
+  expect(useCliAccountStore.getState().busyByProvider).toMatchObject({ codex: null, grok: "login:grok" });
+  expect(liveSessionIds().has(sessions.grok!.sessionId!)).toBe(true);
+  expect(mocks.killSession).toHaveBeenCalledExactlyOnceWith(sessions.codex?.sessionId);
 });

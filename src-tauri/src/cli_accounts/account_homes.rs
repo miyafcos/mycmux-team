@@ -66,6 +66,8 @@ struct PendingHomeLogin {
     cancelled: bool,
     launched: bool,
     initial_auth: Option<String>,
+    previous_registration: AccountHomeStatus,
+    recovery: Option<HomeRegistrationRecovery>,
     candidate: Option<String>,
 }
 #[derive(Default)]
@@ -207,6 +209,8 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
 }
 fn save_manifest(base: &Path, manifest: &Manifest) -> Result<(), String> {
     let path = root(base, true)?.join("manifest.json");
+    #[cfg(test)]
+    account_homes_tests::check_manifest_save(base)?;
     write_private(&path, &serde_json::to_vec_pretty(manifest).map_err(unavailable)?)
 }
 fn key(base: &Path, provider: CliProvider, id: &str) -> Result<HomeKey, String> {
@@ -311,7 +315,15 @@ pub fn list(base: &Path) -> Result<Vec<AccountHomeStatus>, String> {
     let profiles = registry::load(base).map_err(unavailable)?.profiles;
     Ok(read_manifest(base)?.homes.into_iter().filter(|h| profiles.iter().any(|p| p.id == h.status.profile_id && p.provider == h.status.provider)).map(|h| h.status).collect())
 }
-pub fn prepare_launch(base: &Path, provider: CliProvider, id: &str, session_id: &str, alive: impl Fn(&str) -> bool, source: &Path) -> Result<AccountLaunchContext, String> {
+#[cfg(test)]
+fn prepare_launch(base: &Path, provider: CliProvider, id: &str, session_id: &str, alive: impl Fn(&str) -> bool, source: &Path) -> Result<AccountLaunchContext, String> {
+    prepare_launch_notifying(base, provider, id, session_id, alive, source, || {})
+}
+
+pub(crate) fn prepare_launch_notifying(
+    base: &Path, provider: CliProvider, id: &str, session_id: &str,
+    alive: impl Fn(&str) -> bool, source: &Path, list_changed: impl FnOnce(),
+) -> Result<AccountLaunchContext, String> {
     let mut rt = runtime();
     let canonical_base = base.canonicalize().map_err(invalid)?;
     prune(&mut rt, &canonical_base, &alive);
@@ -327,8 +339,11 @@ pub fn prepare_launch(base: &Path, provider: CliProvider, id: &str, session_id: 
         Err(reason) => {
             if reason == ERR_HOME_PATH_INVALID { return Err(reason); }
             record.status.state = HomeState::NeedsLogin;
-            record.status.owner = "unverified".into(); record.updated_at = now();
+            record.status.owner = if reason == ERR_HOME_OWNER_MISMATCH { "mismatch" } else { "unverified" }.into();
+            record.updated_at = now();
             save_manifest(base, &manifest)?;
+            drop(rt);
+            list_changed();
             return Err(reason);
         }
     };
@@ -612,13 +627,28 @@ pub fn begin_login(base: &Path, provider: CliProvider, id: &str, alive: impl Fn(
     }
     let record = manifest.homes.iter_mut().find(|h| h.status.provider == provider && h.status.profile_id == id).expect("inserted");
     let settings = reflect_settings(provider, source, &home)?;
-    record.status.state = HomeState::AwaitingLogin; record.status.owner = "unverified".into();
-    record.last_settings_digest = Some(settings); record.updated_at = now();
-    let status = record.status.clone(); save_manifest(base, &manifest)?;
-    let login_id = uuid::Uuid::new_v4().simple().to_string();
     let initial_auth = read_optional(&home.join("auth.json"))?.map(|bytes| digest(&bytes));
+    let previous_registration = record.status.clone();
+    // Retain a confirmed owner mismatch until a successful login changes it.
+    if record.status.owner != "mismatch" {
+        record.status.state = HomeState::AwaitingLogin;
+        record.status.owner = "unverified".into();
+    }
+    record.last_settings_digest = Some(settings);
+    record.updated_at = now();
+    let status = record.status.clone();
+    save_manifest(base, &manifest)?;
+    // A successful start supersedes recovery for the old attempt, even if
+    // both attempts wrote the same public intermediate state.
+    for previous in rt.logins.values_mut().filter(|pending| pending.key == key) {
+        previous.recovery = None;
+    }
+    let login_id = uuid::Uuid::new_v4().simple().to_string();
     let status = HomeLoginStatus { login_id: login_id.clone(), provider, profile_id: id.into(), state: "pending".into(), reason: None, home: status };
-    rt.logins.insert(login_id, PendingHomeLogin { key, status: status.clone(), started: Instant::now(), session_id: None, cancelled: false, launched: false, initial_auth, candidate: None });
+    rt.logins.insert(login_id, PendingHomeLogin {
+        key, status: status.clone(), started: Instant::now(), session_id: None,
+        cancelled: false, launched: false, initial_auth, previous_registration, recovery: None, candidate: None,
+    });
     Ok(status)
 }
 pub fn login_status(base: &Path, login_id: &str) -> Result<HomeLoginStatus, String> {
@@ -646,55 +676,236 @@ pub fn finish_login_launch(login_id: &str, success: bool) {
         if !success { pending.cancelled = true; }
     }
 }
-fn poll_login(base: &Path, login_id: &str, alive: impl Fn(&str) -> bool) -> Result<HomeLoginStatus, String> {
+// A failed write after an owner decision must not restore a prior verified home.
+enum HomeLoginFailure { Read, AuthRead, Write, RetryWrite(AccountHomeStatus) }
+
+impl From<String> for HomeLoginFailure {
+    fn from(_: String) -> Self { Self::Read }
+}
+
+fn finish_interrupted_login(pending: &mut PendingHomeLogin, reason: &str) -> Result<HomeLoginStatus, HomeLoginFailure> {
+    let previous = &pending.previous_registration;
+    if previous.generation > 0 && pending.status.home.state == HomeState::AwaitingLogin {
+        let base = &pending.key.base;
+        let home = home_path(base, previous.provider, &previous.profile_id, false, false)?;
+        let auth = read_optional(&home.join("auth.json")).map_err(|_| HomeLoginFailure::AuthRead)?
+            .map(|bytes| digest(&bytes));
+        let mut manifest = read_manifest(base)?;
+        let record = manifest.homes.iter_mut()
+            .find(|record| record.status.provider == previous.provider && record.status.profile_id == previous.profile_id)
+            .ok_or_else(|| ERR_HOME_NOT_READY.to_string())?;
+        let unchanged_auth = auth == pending.initial_auth;
+        if unchanged_auth {
+            record.status = previous.clone();
+        } else {
+            let profile = profile(base, previous.provider, &previous.profile_id)?;
+            let owner = check_owner(&home, previous.provider, &profile.identity_key);
+            record.status.state = HomeState::NeedsLogin;
+            record.status.owner = if owner.is_err_and(|error| error == ERR_HOME_OWNER_MISMATCH) {
+                "mismatch".into()
+            } else {
+                "unverified".into()
+            };
+        }
+        record.updated_at = now();
+        let status = record.status.clone();
+        save_manifest(base, &manifest).map_err(|_| {
+            if unchanged_auth { HomeLoginFailure::RetryWrite(status.clone()) } else { HomeLoginFailure::Write }
+        })?;
+        pending.status.home = status;
+    }
+    pending.status.state = "failed".into();
+    pending.status.reason = Some(reason.into());
+    Ok(pending.status.clone())
+}
+
+enum HomeRegistrationRecovery {
+    RestoreAfterReadError,
+    Save(AccountHomeStatus),
+}
+
+fn recover_registration(
+    pending: &mut PendingHomeLogin,
+    recovery: &mut HomeRegistrationRecovery,
+    allow_unreadable_auth: bool,
+) -> Result<bool, String> {
+    let previous = &pending.previous_registration;
+    let mut target = match recovery {
+        HomeRegistrationRecovery::RestoreAfterReadError => {
+            if previous.generation == 0 || pending.status.home.state != HomeState::AwaitingLogin {
+                return Ok(false);
+            }
+            previous.clone()
+        }
+        HomeRegistrationRecovery::Save(target) => target.clone(),
+    };
+    let base = &pending.key.base;
+    let mut manifest = read_manifest(base)?;
+    // Compare the whole intermediate status, including the generation, before retrying.
+    let Some(record) = manifest.homes.iter_mut().find(|record| record.status == pending.status.home) else {
+        return Ok(false);
+    };
+    if target.state == HomeState::Ready && target.owner == "matched" {
+        let home = home_path(base, target.provider, &target.profile_id, false, false)?;
+        let profile = profile(base, target.provider, &target.profile_id)?;
+        match check_owner(&home, target.provider, &profile.identity_key) {
+            Ok(_) => {}
+            Err(reason) if reason == ERR_HOME_OWNER_MISMATCH => {
+                target.state = HomeState::NeedsLogin;
+                target.owner = "mismatch".into();
+                target.generation = record.status.generation;
+                // Retain the known mismatch if its own save also fails.
+                *recovery = HomeRegistrationRecovery::Save(target.clone());
+            }
+            // Preserve the immediate rollback for the original auth I/O failure.
+            // Every delayed retry must establish the current owner.
+            Err(reason) if allow_unreadable_auth
+                && matches!(reason.as_str(), ERR_HOME_PATH_INVALID | ERR_HOME_ISOLATION_UNAVAILABLE) => {}
+            Err(reason) => return Err(reason),
+        }
+    }
+    record.status = target.clone();
+    record.updated_at = now();
+    save_manifest(base, &manifest)?;
+    pending.status.home = target;
+    Ok(true)
+}
+
+enum HomeLoginPoll {
+    Status(HomeLoginStatus),
+    Restoring,
+    RestoreFinished(Option<String>),
+}
+
+fn poll_login_watch(base: &Path, login_id: &str, alive: impl Fn(&str) -> bool) -> Result<HomeLoginPoll, String> {
     let mut rt = runtime();
     let base = base.canonicalize().map_err(invalid)?;
     let pending = rt.logins.get_mut(login_id).filter(|p| p.key.base == base).ok_or_else(|| super::ERR_LOGIN_SESSION_NOT_FOUND.to_string())?;
-    if pending.status.state != "pending" { return Ok(pending.status.clone()); }
+    if let Some(mut recovery) = pending.recovery.take() {
+        let Ok(restored) = recover_registration(pending, &mut recovery, false) else {
+            pending.recovery = Some(recovery);
+            return Ok(HomeLoginPoll::Restoring);
+        };
+        return Ok(HomeLoginPoll::RestoreFinished(restored.then(|| pending.key.profile_id.clone())));
+    }
+    if pending.status.state != "pending" {
+        return Ok(HomeLoginPoll::Status(pending.status.clone()));
+    }
+    match poll_pending_login(pending, alive) {
+        Ok(status) => Ok(HomeLoginPoll::Status(status)),
+        Err(failure) => {
+            pending.status.state = "failed".into();
+            pending.status.reason = Some(ERR_HOME_ISOLATION_UNAVAILABLE.into());
+            match failure {
+                HomeLoginFailure::Read | HomeLoginFailure::AuthRead => {
+                    let mut recovery = HomeRegistrationRecovery::RestoreAfterReadError;
+                    let allow_unreadable_auth = matches!(failure, HomeLoginFailure::AuthRead);
+                    if recover_registration(pending, &mut recovery, allow_unreadable_auth).is_err() {
+                        pending.recovery = Some(recovery);
+                    }
+                }
+                HomeLoginFailure::RetryWrite(target) => {
+                    pending.recovery = Some(HomeRegistrationRecovery::Save(target));
+                }
+                HomeLoginFailure::Write => {}
+            }
+            if pending.recovery.is_some() {
+                return Ok(HomeLoginPoll::Restoring);
+            }
+            Ok(HomeLoginPoll::Status(pending.status.clone()))
+        }
+    }
+}
+
+fn poll_pending_login(pending: &mut PendingHomeLogin, alive: impl Fn(&str) -> bool) -> Result<HomeLoginStatus, HomeLoginFailure> {
     let fail = if pending.cancelled { Some(super::ERR_LOGIN_CANCELLED) }
         else if pending.started.elapsed() >= LOGIN_TIMEOUT { Some(super::ERR_LOGIN_TIMEOUT) } else { None };
-    if let Some(reason) = fail { pending.status.state = "failed".into(); pending.status.reason = Some(reason.into()); return Ok(pending.status.clone()); }
+    if let Some(reason) = fail { return finish_interrupted_login(pending, reason); }
     if pending.session_id.is_none() || !pending.launched { return Ok(pending.status.clone()); }
-    let home = home_path(&base, pending.key.provider, &pending.key.profile_id, false, false)?;
-    let stamp = read_optional(&home.join("auth.json"))?.map(|bytes| digest(&bytes));
+    let base = &pending.key.base;
+    let home = home_path(base, pending.key.provider, &pending.key.profile_id, false, false)?;
+    let stamp = read_optional(&home.join("auth.json")).map_err(|_| HomeLoginFailure::AuthRead)?
+        .map(|bytes| digest(&bytes));
     if stamp.is_none() || stamp == pending.initial_auth {
         pending.candidate = None;
         if pending.session_id.as_deref().is_some_and(|id| !alive(id)) {
-            pending.status.state = "failed".into(); pending.status.reason = Some(super::ERR_LOGIN_CANCELLED.into());
+            return finish_interrupted_login(pending, super::ERR_LOGIN_CANCELLED);
         }
         return Ok(pending.status.clone());
     }
     if pending.candidate != stamp { pending.candidate = stamp; return Ok(pending.status.clone()); }
-    let profile = profile(&base, pending.key.provider, &pending.key.profile_id)?;
-    if let Err(reason) = check_owner(&home, pending.key.provider, &profile.identity_key) {
-        pending.status.state = "failed".into(); pending.status.reason = Some(reason); return Ok(pending.status.clone());
-    }
-    let mut manifest = read_manifest(&base)?;
+    let profile = profile(base, pending.key.provider, &pending.key.profile_id)?;
+    let mut manifest = read_manifest(base)?;
     let record = manifest.homes.iter_mut().find(|h| h.status.provider == pending.key.provider && h.status.profile_id == pending.key.profile_id).ok_or_else(|| ERR_HOME_NOT_READY.to_string())?;
+    if let Err(reason) = check_owner(&home, pending.key.provider, &profile.identity_key) {
+        if matches!(reason.as_str(), ERR_HOME_PATH_INVALID | ERR_HOME_ISOLATION_UNAVAILABLE) {
+            return Err(HomeLoginFailure::AuthRead);
+        }
+        let mismatch = reason == ERR_HOME_OWNER_MISMATCH;
+        let unverified = reason == ERR_HOME_NOT_READY && record.status.state == HomeState::AwaitingLogin;
+        if record.status.generation > 0 && (mismatch || unverified) {
+            record.status.state = HomeState::NeedsLogin;
+            record.status.owner = if mismatch { "mismatch" } else { "unverified" }.into();
+            record.updated_at = now();
+            let status = record.status.clone();
+            save_manifest(base, &manifest).map_err(|_| HomeLoginFailure::Write)?;
+            pending.status.home = status;
+        }
+        pending.status.state = "failed".into();
+        pending.status.reason = Some(reason);
+        return Ok(pending.status.clone());
+    }
     record.status.state = HomeState::Ready; record.status.owner = "matched".into(); record.status.generation += 1; record.updated_at = now();
-    pending.status.home = record.status.clone(); save_manifest(&base, &manifest)?;
+    let status = record.status.clone();
+    save_manifest(base, &manifest).map_err(|_| HomeLoginFailure::RetryWrite(status.clone()))?;
+    pending.status.home = status;
     pending.status.state = "ready".into();
     Ok(pending.status.clone())
 }
+fn home_login_poll_delay(recovery_retries: u32) -> Duration {
+    // The normal poll and first recovery retry both keep the original interval.
+    let exponent = recovery_retries.saturating_sub(1).min(5);
+    Duration::from_secs((1_u64 << exponent).min(30))
+}
+
 pub fn spawn_login_watch(app: tauri::AppHandle, base: PathBuf, login_id: String) {
     use tauri::{Emitter, Manager};
     tauri::async_runtime::spawn(async move {
+        let mut recovery_retries: u32 = 0;
+        let report_unavailable = || {
+            let _ = app.emit(super::login_watch::EVENT_LOGIN_FAILED, super::login_watch::LoginFailedPayload {
+                login_id: login_id.clone(), code: ERR_HOME_ISOLATION_UNAVAILABLE.into(),
+            });
+        };
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(home_login_poll_delay(recovery_retries)).await;
             let poll_base = base.clone(); let poll_id = login_id.clone();
             let manager = app.state::<crate::AppState>().session_manager.clone();
-            let polled = tauri::async_runtime::spawn_blocking(move || poll_login(&poll_base, &poll_id, |id| manager.is_alive(id))).await;
+            let polled = tauri::async_runtime::spawn_blocking(move || poll_login_watch(&poll_base, &poll_id, |id| manager.is_alive(id))).await;
             let status = match polled {
-                Ok(Ok(status)) => status,
+                Ok(Ok(HomeLoginPoll::Restoring)) => {
+                    if recovery_retries == 0 { report_unavailable(); }
+                    recovery_retries = recovery_retries.saturating_add(1);
+                    continue;
+                }
+                Ok(Ok(HomeLoginPoll::RestoreFinished(profile_id))) => {
+                    if let Some(profile_id) = profile_id {
+                        let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": profile_id }));
+                    }
+                    return;
+                }
+                _ if recovery_retries > 0 => return,
+                Ok(Ok(HomeLoginPoll::Status(status))) => status,
                 _ => {
                     let mut rt = runtime();
                     if let Some(pending) = rt.logins.get_mut(&login_id) { pending.status.state = "failed".into(); pending.status.reason = Some(ERR_HOME_ISOLATION_UNAVAILABLE.into()); }
                     drop(rt);
-                    let _ = app.emit(super::login_watch::EVENT_LOGIN_FAILED, super::login_watch::LoginFailedPayload { login_id: login_id.clone(), code: ERR_HOME_ISOLATION_UNAVAILABLE.into() });
+                    report_unavailable();
                     return;
                 }
             };
             if status.state == "pending" { continue; }
+            let _ = app.emit("tab-account-evidence-updated", serde_json::json!({ "profile_id": status.profile_id }));
             if status.state == "ready" {
                 if let Ok(profile) = profile(&base, status.provider, &status.profile_id) {
                     let _ = app.emit(super::login_watch::EVENT_LOGIN_COMPLETED, super::login_watch::LoginCompletedPayload {

@@ -3,7 +3,7 @@ import { cliAccountMessage } from "../../lib/cliAccounts";
 
 export const tokenOwnerLabels: Record<CliLaunchTokenStatus["owner_check"], string> = {
   verified: "確認済み (サーバーで確認)",
-  org_matched: "確認済み (組織が一致)",
+  org_matched: "確認済み (組織が一致)・アカウントは未確認",
   org_shared: "組織だけ一致 (同じ組織のアカウントが複数)",
   unverified: "未確認",
   mismatch: "不一致 (このトークンでは起動しません)",
@@ -89,7 +89,9 @@ export function accountRecheckNotice(outcome: AccountRecheckOutcome): AccountRec
 export const accountRecheckFailure = "確かめられませんでした: サーバーにつながりませんでした。少し待ってから、もう一度押してください。";
 
 export const setupTokenStrings = {
-  useInTab: "タブでも使う",
+  useInTab: "タブ用に登録",
+  continueRegistration: "このアカウントをタブ用にも登録",
+  approvalBrowser: "OS の既定のブラウザで承認ページを開きます。",
   registerAgain: "登録し直す",
   confirm: (name: string) => `ブラウザで ${name} にログインしているか確かめてから承認してください。承認は 1 年に 1 回です。`,
   begin: "始める",
@@ -107,6 +109,7 @@ export const setupTokenStrings = {
   codeSent: "コードを送りました。ブラウザの承認が終わるまでお待ちください。",
   checking: "持ち主を確かめています…",
   saved: "登録しました。このアカウントをタブで使えます。",
+  ownerUnverified: "トークンの持ち主は未確認です。",
   busyElsewhere: "ほかのアカウントを登録しています。終わってから始めてください。",
   failures: {
     capture_failed: "取り込めませんでした。「詳しく」の貼り付け登録を使うか、もう一度始めてください。",
@@ -114,6 +117,7 @@ export const setupTokenStrings = {
     launch_failed: "Claude Code を起動できませんでした。インストールを確かめ、もう一度始めてください。",
     output_limit: "出力が上限を超えました。「詳しく」の貼り付け登録を使ってください。",
     save_failed: "保存できませんでした。もう一度始めるか、「詳しく」の貼り付け登録を使ってください。",
+    replacement_unverified: "新しいトークンの持ち主を確認できなかったため、登録済みのトークンを残しました。",
     owner_mismatch: "アカウントが一致しません。ブラウザで選んだアカウントにログインし直して、やり直してください。",
     timeout: "時間切れになりました。ブラウザのログインを確かめ、もう一度始めてください。",
     cancelled: "中止しました。もう一度始めることができます。",

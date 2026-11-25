@@ -30,13 +30,18 @@ interface RunUpdateCheckOptions {
   onStatus?: (status: UpdateStatusSnapshot) => void;
 }
 
+interface RestartPending {
+  version: string;
+  currentVersion: string;
+}
+
 const MIN_AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 let currentStatus: UpdateStatusSnapshot = { phase: "idle", message: "", updatedAt: Date.now() };
 let currentTask: Promise<UpdateCheckResult> | null = null;
 let currentTaskSource: UpdateSource | null = null;
 let installTask: Promise<UpdateCheckResult> | null = null;
 let availableUpdate: Update | null = null;
-const installedUpdates = new WeakSet<Update>();
+let installedUpdate: RestartPending | null = null;
 let lastAutoCheckAt: number | null = null;
 const statusListeners = new Set<(status: UpdateStatusSnapshot) => void>();
 
@@ -64,6 +69,11 @@ function releaseUpdate(update: Update | null): void {
   if (update) void update.close().catch(() => {});
 }
 
+async function readInstalledUpdate(): Promise<RestartPending | null> {
+  installedUpdate ??= await invoke<RestartPending | null>("update_restart_pending");
+  return installedUpdate;
+}
+
 async function executeAvailabilityCheck(source: UpdateSource): Promise<UpdateCheckResult> {
   const automatic = source !== "manual";
   if (automatic && import.meta.env.DEV) return skipped(source, updateStrings.developmentSkipped);
@@ -78,6 +88,17 @@ async function executeAvailabilityCheck(source: UpdateSource): Promise<UpdateChe
   setStatus({ phase: "checking", source, message: updateStrings.checking });
 
   try {
+    const pending = await readInstalledUpdate();
+    if (!hasWindowRole()) return skipped(source, updateStrings.unavailable);
+    if (pending) {
+      const { version, currentVersion } = pending;
+      const message = updateStrings.restartPending(version);
+      releaseUpdate(availableUpdate);
+      availableUpdate = null;
+      useUpdateAvailabilityStore.setState({ state: "error", version, currentVersion, message });
+      setStatus({ phase: "ready", source, version, message });
+      return { phase: "ready", updateInstalled: true, version };
+    }
     const update = await check();
     if (!hasWindowRole()) {
       releaseUpdate(update);
@@ -98,7 +119,7 @@ async function executeAvailabilityCheck(source: UpdateSource): Promise<UpdateChe
     return { phase: "available", updateInstalled: false, version };
   } catch (error) {
     if (automatic) lastAutoCheckAt = previousAutoCheckAt;
-    console.warn("[updater] Update check failed", error);
+    console.warn("[updater] Update check failed");
     // Automatic failures leave display data untouched and retry on schedule.
     setStatus({ phase: "error", source, message: updateStrings.checkError, error });
     return { phase: "error", updateInstalled: false, error };
@@ -142,24 +163,33 @@ export async function installAvailableUpdate(): Promise<UpdateCheckResult> {
   installTask = (async (): Promise<UpdateCheckResult> => {
     // An overlapping discovery must finish before its retained handle is used.
     await currentTask;
-    const update = availableUpdate;
-    if (!update || !await canUseUpdater()) return skipped("manual", updateStrings.unavailable);
-    const version = String(update.version);
-    useUpdateAvailabilityStore.setState({ state: "installing", message: "" });
-    setStatus({ phase: "downloading", source: "manual", version, message: updateStrings.downloading(version) });
+    if (!await canUseUpdater()) return skipped("manual", updateStrings.unavailable);
+    let version = useUpdateAvailabilityStore.getState().version;
     try {
-      if (!installedUpdates.has(update)) {
-        await update.downloadAndInstall();
-        installedUpdates.add(update);
+      const pending = await readInstalledUpdate();
+      if (!hasWindowRole()) return skipped("manual", updateStrings.unavailable);
+      if (!pending) {
+        if (!availableUpdate) return skipped("manual", updateStrings.unavailable);
+        version = String(availableUpdate.version);
+        useUpdateAvailabilityStore.setState({ state: "installing", message: "" });
+        setStatus({ phase: "downloading", source: "manual", version, message: updateStrings.downloading(version) });
+        installedUpdate = await invoke<RestartPending>("update_restart_pending", { installVersion: version });
       }
+      if (!installedUpdate) throw new Error("update_install_failed");
+      version = installedUpdate.version;
+      if (!hasWindowRole()) return { ...skipped("manual", updateStrings.unavailable), updateInstalled: true, version };
+      useUpdateAvailabilityStore.setState({ state: "restarting", version,
+        currentVersion: installedUpdate.currentVersion, message: "" });
       setStatus({ phase: "ready", source: "manual", version, message: updateStrings.restarting(version) });
       await relaunch();
       return { phase: "ready", updateInstalled: true, version };
     } catch (error) {
-      console.warn("[updater] Update installation or restart failed", error);
-      useUpdateAvailabilityStore.setState({ state: "error", message: updateStrings.installError });
-      setStatus({ phase: "error", source: "manual", version, message: updateStrings.installError, error });
-      return { phase: "error", updateInstalled: false, version, error };
+      const updateInstalled = installedUpdate !== null;
+      console.warn(updateInstalled ? "[updater] Update restart failed" : "[updater] Update installation failed");
+      const message = updateInstalled ? updateStrings.restartPending(version) : updateStrings.installError;
+      useUpdateAvailabilityStore.setState({ state: "error", message });
+      setStatus({ phase: "error", source: "manual", version, message, error });
+      return { phase: "error", updateInstalled, version, error };
     }
   })().finally(() => { installTask = null; });
   return await installTask;

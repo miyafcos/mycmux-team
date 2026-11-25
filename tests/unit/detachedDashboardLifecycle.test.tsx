@@ -3,7 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DetachedWorkspace } from "../../src/lib/detachedPane";
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?: unknown) => null) }));
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => null),
+}));
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<object>(), invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn(async () => {}), listen: vi.fn(async () => () => {}) }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
@@ -15,15 +17,16 @@ vi.mock("../../src/components/workspace/WorkspaceView", () => ({ default: () => 
 vi.mock("../../src/components/workspace/PaneDragOverlay", () => ({ default: () => null }));
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({ default: () => <div className="xterm"><textarea /></div> }));
 vi.mock("../../src/components/workspace/BrowserPane", () => ({ default: () => null }));
-vi.mock("../../src/components/workspace/LauncherPane", () => ({ default: () => null }));
 vi.mock("../../src/components/workspace/WebPaneController", () => ({ default: () => null, isChildWebviewPreview: () => false }));
 vi.mock("../../src/components/workspace/WebPaneStatusBar", () => ({ default: () => null }));
 vi.mock("../../src/lib/tearout/runtime", () => ({ useTearoutStore: vi.fn(), regrabTearoutWindow: vi.fn() }));
-vi.mock("../../src/components/dashboard/DashboardView", () => ({
-  DashboardView: ({ onClose }: { onClose: () => void }) => <div role="region" className="cmux-dashboard-view">
-    <button data-close-dashboard onClick={onClose}>close</button>
-  </div>,
-}));
+vi.mock("../../src/components/dashboard/DashboardView", () => {
+  return {
+    DashboardView: ({ onClose }: { onClose: () => void }) => <div role="region" className="cmux-dashboard-view">
+      <button data-close-dashboard onClick={onClose}>close</button>
+    </div>,
+  };
+});
 import NativePaneShell from "../../src/components/layout/NativePaneShell";
 import DetachedPaneShell from "../../src/components/layout/DetachedPaneShell";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
@@ -42,7 +45,7 @@ const tab = { id: "local-tab", sessionId: "local-session", agentId: "claude", ag
 const workspace: DetachedWorkspace = { id: "ws", name: "Fixture", gridTemplateId: "1x1", status: "running", createdAt: 0, detached: true,
   panes: [{ id: "pane", sessionId: tab.sessionId, agentId: "claude", activeTabId: tab.id, tabs: [tab] }] };
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); mocks.invoke.mockClear();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); mocks.invoke.mockReset().mockResolvedValue(null);
   Object.defineProperty(navigator, "platform", { configurable: true, value: "Win32" });
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
   useKeybindingStore.getState().resetAll();
@@ -86,6 +89,7 @@ describe.each(["native", "legacy"] as const)("%s detached dashboard lifecycle", 
     expect(useDashboardViewStore.getState()).toMatchObject({ open: true, selectedTabId: tab.id });
     expect(host.querySelector("[role=region]")).not.toBeNull();
     expect(host.querySelector<HTMLElement>("[data-detached-terminal]")!.style.visibility).toBe("hidden");
+    expect(input.closest("[inert]")).not.toBeNull();
     expect(host.querySelector<HTMLTextAreaElement>(".xterm textarea")).toBe(input);
     expect(isTerminalHistoryRequestCurrent(beginTerminalHistoryRequest(tab.sessionId))).toBe(false);
     expect(mocks.invoke.mock.calls.some(([command]) => command === "open_main_dashboard" || command === "focus_window")).toBe(false);
@@ -93,6 +97,7 @@ describe.each(["native", "legacy"] as const)("%s detached dashboard lifecycle", 
     await act(async () => host.querySelector<HTMLButtonElement>("[data-close-dashboard]")!.click());
     expect(useDashboardViewStore.getState().open).toBe(false); expect(host.querySelector("[role=region]")).toBeNull();
     expect(host.querySelector<HTMLElement>("[data-detached-terminal]")!.style.visibility).toBe("visible");
+    expect(input.closest("[inert]")).toBeNull();
     input.focus(); expect(isTerminalHistoryRequestCurrent(beginTerminalHistoryRequest(tab.sessionId))).toBe(true);
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true, bubbles: true })));
     expect(useDashboardViewStore.getState().open).toBe(true); expect(host.querySelector("[role=region]")).not.toBeNull();

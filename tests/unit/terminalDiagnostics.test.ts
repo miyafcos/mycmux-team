@@ -82,3 +82,102 @@ it("diagnostic detail stays bounded while every overflow reason/result is counte
   expect(summary.numbers.coalesced + rows.length - 1).toBe(events);
   expect(summary.numbers.count_paint_stall).toBe(3);
 });
+
+it("evicts and reports the oldest diagnostic window at the per-WebView cap", async () => {
+  vi.useFakeTimers();
+  const term = {};
+  const id = (index: number) => (0xfa000000 + index).toString(16);
+  for (let index = 0; index < 64; index++) {
+    reportTerminalDiagnostic("renderer", "retry", id(index), term);
+  }
+  await Promise.resolve();
+  reportTerminalDiagnostic("renderer", "retry", id(64), term);
+  const rows = invoke.mock.calls.map(([, args]) => args.diagnostic);
+  expect(rows.filter(row => row.numbers.count_window_evicted === 1)).toEqual([
+    expect.objectContaining({ session: id(0), event: "coalesced" }),
+  ]);
+  invoke.mockClear();
+  reportTerminalDiagnostic("renderer", "retry", id(64), term);
+  expect(invoke).not.toHaveBeenCalled();
+  reportTerminalDiagnostic("renderer", "retry", id(0), term);
+  expect(invoke.mock.calls.map(([, args]) => [args.diagnostic.session, args.diagnostic.event]))
+    .toEqual([[id(1), "coalesced"], [id(0), "retry"]]);
+  vi.advanceTimersByTime(TERMINAL_DIAGNOSTIC_WINDOW_MS);
+});
+
+it("keeps distinct WebGL exception classifications while coalescing repeats", () => {
+  vi.useFakeTimers();
+  for (const exception of ["type-error", "range-error", "type-error"] as const) {
+    reportTerminalDiagnostic("renderer", "dispose-result", "abcd0084", {}, { dispose_ok: 0 }, { exception });
+  }
+  vi.advanceTimersByTime(TERMINAL_DIAGNOSTIC_WINDOW_MS);
+  const rows = invoke.mock.calls.map(([, args]) => args.diagnostic);
+  expect(rows.slice(0, 2).map(row => row.exception)).toEqual(["type-error", "range-error"]);
+  expect(rows[2]).toMatchObject({ event: "coalesced", numbers: { coalesced: 1, count_dispose_failed: 1 } });
+});
+
+it("bounds unanswered diagnostic IPC across 65 tabs and reports the overflow once", async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  invoke.mockReturnValue(pending);
+  const term = {};
+  try {
+    for (let round = 0; round < 10; round++) {
+      for (let index = 0; index < 65; index++) {
+        reportTerminalDiagnostic("renderer", "retry", (0xfb000000 + index).toString(16), term);
+      }
+    }
+    const sent = invoke.mock.calls.length;
+    expect(sent).toBe(64);
+    expect(invoke.mock.calls.every(([, args]) => args.diagnostic.event === "retry")).toBe(true);
+    invoke.mockResolvedValue(undefined);
+    release();
+    await Promise.resolve();
+    const overflow = invoke.mock.calls.slice(sent).map(([, args]) => args.diagnostic);
+    expect(overflow).toEqual([expect.objectContaining({
+      session: "unknown", event: "coalesced", numbers: {
+        coalesced: 586, count_retry: 586, count_window_evicted: 586,
+      },
+    })]);
+  } finally {
+    invoke.mockResolvedValue(undefined);
+    release();
+    await vi.advanceTimersByTimeAsync(TERMINAL_DIAGNOSTIC_WINDOW_MS);
+  }
+});
+
+it("reports first WebGL exception classifications in one overflow line when IPC resumes", async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  invoke.mockReturnValue(pending);
+  const id = "fc000000";
+  const failure = (exception: "type-error" | "range-error") =>
+    reportTerminalDiagnostic("renderer", "dispose-result", id, {}, { dispose_ok: 0 }, { exception });
+  try {
+    for (let index = 0; index < 64; index++) {
+      reportTerminalDiagnostic("renderer", "retry", (0xfc000000 + index).toString(16), {});
+    }
+    failure("type-error");
+    failure("range-error");
+    expect(invoke).toHaveBeenCalledTimes(64);
+
+    invoke.mockResolvedValue(undefined);
+    release();
+    await Promise.resolve();
+    const overflow = invoke.mock.calls.slice(64).map(([, args]) => args.diagnostic);
+    failure("type-error");
+    await vi.advanceTimersByTimeAsync(TERMINAL_DIAGNOSTIC_WINDOW_MS);
+    expect(overflow).toEqual([expect.objectContaining({ event: "coalesced", numbers: {
+      coalesced: 2, count_dispose_failed: 2, count_exception_type_error: 1, count_exception_range_error: 1,
+    } })]);
+    expect(invoke.mock.calls.at(-1)?.[1].diagnostic).toMatchObject({
+      session: id, event: "coalesced", numbers: { coalesced: 1, count_dispose_failed: 1 },
+    });
+  } finally {
+    invoke.mockResolvedValue(undefined);
+    release();
+    await vi.advanceTimersByTimeAsync(TERMINAL_DIAGNOSTIC_WINDOW_MS);
+  }
+});

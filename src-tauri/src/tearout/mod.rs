@@ -498,6 +498,7 @@ pub async fn tearout_prepare(
     configs: Vec<serde_json::Value>,
     delivery_token: String,
     finalizer: Option<String>,
+    receiver_creation_id: Option<String>,
 ) -> Result<Option<NativeStartRefusal>, String> {
     if app.get_window(&receiver).is_none()
         || app
@@ -531,6 +532,13 @@ pub async fn tearout_prepare(
                     &session_id, &source_proof, app_state.session_manager.is_alive(&session_id),
                     published_session_owner(&app_state, &source_proof.label, &session_id))
             })?;
+        }
+        if let Some(creation_id) = receiver_creation_id.as_deref() {
+            if !receiver_proof.live() || !app_state.window_registry.matches_workspace_window(
+                &receiver, creation_id, &source_proof.label,
+            ) {
+                return Err("tearout_receiver_unavailable".into());
+            }
         }
         let mut transfer = transfer::Transfer::new(source_proof.label.clone(), receiver, configs, delivery_token, finalizer);
         transfer.attachment_source = Some(source_proof);
@@ -699,9 +707,10 @@ pub async fn tearout_warm(
             }
             #[cfg(target_os = "macos")]
             native::capture_mouse_down(true);
-            app.state::<crate::AppState>()
-                .window_registry
-                .set_close_intent(reservation.label(), true);
+            let app_state = app.state::<crate::AppState>();
+            let registry = &app_state.window_registry;
+            registry.set_close_intent(reservation.label(), true);
+            let publication_id = registry.register_fragment_publisher(reservation.label());
             let builder = tauri::WebviewWindowBuilder::new(
                 &app,
                 reservation.label(),
@@ -713,7 +722,8 @@ pub async fn tearout_warm(
             .visible(false)
             .inner_size(720.0, 520.0)
             .min_inner_size(240.0, 160.0)
-            .initialization_script("window.__MYCMUX_TEAROUT_WINDOW__ = true;");
+            .initialization_script("window.__MYCMUX_TEAROUT_WINDOW__ = true;")
+            .initialization_script(format!("window.__MYCMUX_LAYOUT_PUBLICATION_ID__ = {publication_id:?};"));
             // Windows must not retain tao's MARKER_DONT_FOCUS after first reveal.
             // Quiet first show is handled natively while the window is hidden.
             #[cfg(target_os = "windows")]
@@ -722,9 +732,8 @@ pub async fn tearout_warm(
             let builder = builder.focused(false);
             let window = builder.build()
             .map_err(|e| {
-                app.state::<crate::AppState>()
-                    .window_registry
-                    .set_close_intent(reservation.label(), false);
+                registry.unregister_fragment_publisher(reservation.label());
+                registry.set_close_intent(reservation.label(), false);
                 e.to_string()
             })?;
             crate::watchdog::register_process_failed(window.as_ref());
@@ -1354,10 +1363,13 @@ pub async fn tearout_retire(
     finalize_label: Option<String>,
     finalize_token: Option<String>,
     record: Option<serde_json::Value>,
+    creation_id: Option<String>,
 ) -> Result<(), String> {
     let caller = window.label().to_owned();
     #[cfg(target_os = "windows")]
-    app.state::<TearoutState>().stop_follower(&label);
+    if creation_id.is_none() {
+        app.state::<TearoutState>().stop_follower(&label);
+    }
     if let Some(id) = transfer_id.as_deref() {
         let state = app.state::<TearoutState>();
         let transfers = state.transfers.lock().map_err(|e| e.to_string())?;
@@ -1370,6 +1382,19 @@ pub async fn tearout_retire(
     }
     retire_with_record(on_ui(&app, move |app| {
         let state = app.state::<TearoutState>();
+        if let Some(id) = creation_id.as_deref() {
+            let app_state = app.state::<crate::AppState>();
+            let registry = &app_state.window_registry;
+            if !registry.matches_workspace_window(&label, id, &caller) {
+                return Ok(());
+            }
+            if app.get_window(&label).is_none() {
+                registry.cancel_workspace_window(&label, id, &caller);
+                return Ok(());
+            }
+            #[cfg(target_os = "windows")]
+            state.stop_follower(&label);
+        }
         state.activity();
         let mut transfers = state.transfers.lock().map_err(|e| e.to_string())?;
         if let Some(id) = transfer_id.as_deref() {
