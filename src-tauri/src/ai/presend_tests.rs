@@ -262,7 +262,7 @@ fn tab_owner(window: &str, session_id: &str) -> ReadingOwner {
 
 async fn read(service: &PresendService, id: &str, provider: Provider) -> Option<Reading> {
     service
-        .read(id.to_owned(), provider, tab_owner("main", "tab"), || id.to_owned(), || true, std::future::ready(true), None)
+        .read(id.to_owned(), provider, tab_owner("main", "tab"), || Some(id.to_owned()), || true, std::future::ready(true), None)
         .await
 }
 
@@ -391,7 +391,7 @@ async fn changed_pty_generation_is_rejected_before_writing_to_a_warm_child() {
             "retired".to_owned(),
             Provider::Claude,
             tab_owner("main", "tab"),
-            || "draft from the old PTY".to_owned(),
+            || Some("draft from the old PTY".to_owned()),
             || false,
             std::future::ready(true),
             None,
@@ -923,6 +923,360 @@ async fn direct_backend_request_scrubs_draft_and_excerpt_before_the_session_read
     service.configure(false, Provider::Claude).await;
 }
 
+const SYNTHETIC_STRUCTURED_CREDENTIAL: &str =
+    "credentials:\n  &toy-field password: dummy-head\n    dummy-continuation";
+
+#[tokio::test]
+async fn direct_backend_omits_drafts_with_ambiguous_structured_credentials() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    assert!(!fix5_read_draft(&service, "structured-draft", SYNTHETIC_STRUCTURED_CREDENTIAL).await);
+    assert!(stats.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_backend_omits_replies_with_ambiguous_structured_credentials() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    assert!(service
+        .read_request(
+            true,
+            "structured-reply".into(),
+            Provider::Claude,
+            tab_owner("main", "tab"),
+            "synthetic draft",
+            || SYNTHETIC_STRUCTURED_CREDENTIAL,
+            Workdir::Basename("folder"),
+            || true,
+            std::future::ready(true),
+            None,
+        )
+        .await
+        .is_none());
+    assert!(stats.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn lane_d_undecodable_quoted_keys_in_draft_or_reply_never_reach_the_session() {
+    let edited = String::from(r#"{"pass\u00G0word":"dummy-draft-value"}"#);
+    let reply = r#"{"pass\xG7ord":"dummy-reply-value"}"#;
+    let mut observed = Vec::new();
+    for (id, draft, excerpt) in [
+        ("draft", edited.as_str(), ""),
+        ("reply", "Keep this edited text", reply),
+    ] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let original = draft.to_owned();
+        let reading = service.read_request(
+            true, id.into(), Provider::Claude, tab_owner("main", "tab"),
+            draft, || excerpt, Workdir::Basename("folder"), || true,
+            std::future::ready(true), None,
+        ).await;
+        observed.push((id, stats.prompts.lock().unwrap().len(), reading.is_some()));
+        assert_eq!(draft, original);
+    }
+    assert_eq!(edited, r#"{"pass\u00G0word":"dummy-draft-value"}"#);
+    assert_eq!(observed, [("draft", 0, false), ("reply", 0, false)]);
+}
+
+#[tokio::test]
+async fn lane_d_ordinary_markdown_form_label_reaches_the_session() {
+    let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+    service.configure(true, Provider::Claude).await;
+    let draft = "**Form labels**\n\nPlease rename the password input field.";
+    assert!(fix5_read_draft(&service, "markdown", draft).await);
+    let prompts = stats.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 1);
+    let fields = wire_prompt_fields(&prompts[0]);
+    assert_eq!(fields["\u{66f8}\u{304d}\u{304b}\u{3051}\u{306e}\u{4f9d}\u{983c}"], draft);
+}
+
+#[test]
+fn lane_d_quoted_key_escapes_are_decoded_before_masking() {
+    for key in [
+        r#""\u0070assword""#, r"'pass\x77ord'", r#""pass\word""#,
+        r#""authoriz\u0061tion""#, r#""\uD83D\uDE42_password""#,
+    ] {
+        assert_eq!(
+            credentials::scrub_for_reading(&format!(r#"{key}: "dummy-field-value""#)),
+            Some(format!(r#"{key}: "{}""#, credentials::OMITTED)),
+        );
+    }
+    let prefix = ["sk-ant-", "fixture-key_"].concat();
+    let omitted = credentials::OMITTED;
+    assert_eq!(
+        credentials::scrub_for_reading(&format!(r#""\u0070assword_{prefix}": "dummy-field-value""#)),
+        Some(format!(r#""\u0070assword_{omitted}": "{omitted}""#)),
+    );
+}
+
+#[test]
+fn lane_d_yaml_node_properties_apply_only_to_their_node() {
+    for value in [
+        "creds: &toy\n  \"\\u0070assword\": dummy-value",
+        "creds: {password: *toy}",
+        "creds: !toy {password: dummy-value}",
+        "? password\n: dummy-value",
+        "?\n  - password\n: dummy-value",
+    ] {
+        assert_eq!(credentials::scrub_for_reading(value), None, "{value}");
+    }
+    let omitted = credentials::OMITTED;
+    assert_eq!(
+        credentials::scrub_for_reading("sample: &toy\n  label: hello\npassword: dummy-value"),
+        Some(format!("sample: &toy\n  label: hello\npassword: {omitted}")),
+    );
+    assert_eq!(
+        credentials::scrub_for_reading(r#"sample: [&toy hello, {password: "dummy-value"}]"#),
+        Some(format!(r#"sample: [&toy hello, {{password: "{omitted}"}}]"#)),
+    );
+}
+
+#[test]
+fn lane_d_yaml_alias_can_resolve_to_a_credential_field_name() {
+    for name in ["password", r#""\u0070assword""#] {
+        for key in ["? *sample-key\n:", "*sample-key :"] {
+            let input = format!("field-name: &sample-key {name}\n{key} dummy-field-value");
+            assert_eq!(credentials::scrub_for_reading(&input), None);
+        }
+    }
+    for ordinary in [
+        "field-name: &sample-key theme\n? *sample-key\n: rename the password label",
+        "old-name: &sample-key password\nnew-name: &sample-key theme\n? *sample-key\n: rename the label",
+        "? &password theme\n: rename the label",
+    ] {
+        assert_eq!(credentials::scrub_for_reading(ordinary).as_deref(), Some(ordinary));
+    }
+}
+
+#[tokio::test]
+async fn lane_f_escaped_environment_pairs_never_reach_the_session() {
+    let cases = [
+        ("name first", r#"{"name":"SAMPLE\u005fTOKEN","value":"fixture-label"}"#),
+        ("value first", r#"{"value":"fixture-label","name":"SAMPLE\u005fTOKEN"}"#),
+        ("undecodable name first", r#"{"name":"SAMPLE\u00GfTOKEN","value":"fixture-label"}"#),
+        ("undecodable value first", r#"{"value":"fixture-label","name":"SAMPLE\u00GfTOKEN"}"#),
+    ];
+    let mut observed = Vec::new();
+    for (label, input) in cases {
+        for (draft, excerpt) in [(input, ""), ("Keep this edited text", input)] {
+            let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+            service.configure(true, Provider::Claude).await;
+            let reading = service.read_request(
+                true, "escaped-env".into(), Provider::Claude, tab_owner("main", "tab"),
+                draft, || excerpt, Workdir::Basename("folder"), || true,
+                std::future::ready(true), None,
+            ).await;
+            observed.push((label, excerpt.is_empty(), stats.prompts.lock().unwrap().len(), reading.is_some()));
+        }
+    }
+    assert_eq!(observed, cases.into_iter().flat_map(|(label, _)| [
+        (label, true, 0, false),
+        (label, false, 0, false),
+    ]).collect::<Vec<_>>());
+    let ordinary = r#"{"name":"SAMPLE\u005fTHEME","value":"dark"}"#;
+    assert_eq!(credentials::scrub_for_reading(ordinary).as_deref(), Some(ordinary));
+}
+
+#[tokio::test]
+async fn lane_g_environment_names_gate_drafts_and_replies_before_session_input() {
+    let cases = [
+        ("alias", "*fixture-name", "fixture-name: &fixture-name PATH\n", false),
+        ("tag", "!!str PATH", "", false),
+        ("anchor", "&fixture-name PATH", "", false),
+        ("literal block", "|-\n      PATH", "", false),
+        ("folded block", ">-\n      PATH", "", false),
+        ("plain name", "PATH", "", true),
+        ("quoted name", "\"PATH\"", "", true),
+    ];
+    let mut observed = Vec::new();
+    let mut expected = Vec::new();
+    for (label, name, prefix, readable) in cases {
+        let name_field = format!("name: {name}");
+        let value_field = "value: fixture-bin";
+        for (name_first, first, second) in [
+            (true, name_field.as_str(), value_field),
+            (false, value_field, name_field.as_str()),
+        ] {
+            let input = format!("{prefix}env:\n  - {first}\n    {second}");
+            for (from_draft, draft, excerpt) in [
+                (true, input.as_str(), "Synthetic reply"),
+                (false, "Keep this draft in the composer", input.as_str()),
+            ] {
+                let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+                service.configure(true, Provider::Claude).await;
+                let reading = service.read_request(
+                    true, "environment-name".into(), Provider::Claude, tab_owner("main", "tab"),
+                    draft, || excerpt, Workdir::Basename("folder"), || true,
+                    std::future::ready(true), None,
+                ).await;
+                let prompts = stats.prompts.lock().unwrap();
+                if let (true, Some(prompt)) = (readable, prompts.first()) {
+                    let fields = wire_prompt_fields(prompt);
+                    assert_eq!(fields["\u{66f8}\u{304d}\u{304b}\u{3051}\u{306e}\u{4f9d}\u{983c}"], draft);
+                    assert_eq!(fields["\u{76f4}\u{524d}\u{306e}\u{3084}\u{308a}\u{3068}\u{308a}"], excerpt);
+                }
+                observed.push((label, name_first, from_draft, prompts.len(), reading.is_some()));
+                expected.push((label, name_first, from_draft, readable as usize, readable));
+            }
+        }
+    }
+    assert_eq!(observed, expected);
+}
+
+async fn assert_lane_g2_environment_reading(cases: &[(&str, &str, bool)]) {
+    let mut observed = Vec::new();
+    let mut expected = Vec::new();
+    for &(label, input, readable) in cases {
+        for (from_draft, draft, excerpt) in [
+            (true, input, "Synthetic reply"),
+            (false, "Keep this draft in the composer", input),
+        ] {
+            let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+            service.configure(true, Provider::Claude).await;
+            let reading = service.read_request(
+                true, "g2-environment-name".into(), Provider::Claude, tab_owner("main", "tab"),
+                draft, || excerpt, Workdir::Basename("folder"), || true,
+                std::future::ready(true), None,
+            ).await;
+            let prompts = stats.prompts.lock().unwrap();
+            if let (true, Some(prompt)) = (readable, prompts.first()) {
+                let fields = wire_prompt_fields(prompt);
+                assert_eq!(fields["書きかけの依頼"], draft);
+                assert_eq!(fields["直前のやりとり"], excerpt);
+            }
+            observed.push((label, from_draft, prompts.len(), reading.is_some()));
+            expected.push((label, from_draft, readable as usize, readable));
+        }
+    }
+    assert_eq!(observed, expected);
+}
+
+#[tokio::test]
+async fn lane_g2_environment_flow_comment_boundaries() {
+    assert_lane_g2_environment_reading(&[
+        ("alias name first", "fixture-name: &fixture-name PATH\nenv: [{ name: *fixture-name # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", false),
+        ("alias value first", "fixture-name: &fixture-name PATH\nenv: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: *fixture-name }]", false),
+        ("tag name first", "env: [{ name: !!str PATH # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", false),
+        ("tag value first", "env: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: !!str PATH }]", false),
+        ("plain PATH name first", "env: [{ name: PATH # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", true),
+        ("plain PATH value first", "env: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: PATH }]", true),
+        ("quoted delimiters name first", "env: [{ name: \"PATH\" # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: \"fixture # still text, } ]\" }]", true),
+        ("quoted delimiters value first", "env: [{ value: \"fixture # still text, } ]\" # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: \"PATH\" }]", true),
+        ("nested value name first", "fixture-name: &fixture-name PATH\nenv: [{ name: *fixture-name # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: [first # brackets and comma, ] }\n    , second] }]", false),
+        ("nested value value first", "fixture-name: &fixture-name PATH\nenv: [{ value: [first # brackets and comma, ] }\n    , second] # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: *fixture-name }]", false),
+    ]).await;
+}
+
+#[tokio::test]
+async fn lane_g2_environment_empty_block_names() {
+    assert_lane_g2_environment_reading(&[
+        ("empty name first at EOF", "env:\n  - name:\n    value: fixture-label", false),
+        ("empty name first before a sibling key", "env:\n  - name:\n    value: fixture-label\n    note: hint", false),
+        ("empty name first before a shallower key", "env:\n  - name:\n    value: fixture-label\nnote: hint", false),
+        ("indented PATH name first", "env:\n  - name:\n      PATH\n    value: fixture-label", true),
+        ("empty name, value first at EOF", "env:\n  - value: fixture-label\n    name:", false),
+        ("empty name, value first before a sibling key", "env:\n  - value: fixture-label\n    name:\n    note: hint", false),
+        ("empty name, value first before a shallower key", "env:\n  - value: fixture-label\n    name:\nnote: hint", false),
+        ("indented PATH value first", "env:\n  - value: fixture-label\n    name:\n      PATH", true),
+    ]).await;
+}
+
+
+#[test]
+fn lane_g3_environment_flow_note_boundaries() {
+    let cases = [
+        ("plain note with a mid-value quote (name first)", "env: [{name: API_TOKEN, note: say \"hello, value: fixture-label}]", Some("env: [{name: API_TOKEN, note: say \"hello, value: [credential omitted]}]")),
+        ("quoted note with a delimiter (name first)", "env: [{name: API_TOKEN, note: \"say, hello\", value: fixture-label}]", Some("env: [{name: API_TOKEN, note: \"say, hello\", value: [credential omitted]}]")),
+        ("an unterminated quoted note (name first)", "env: [{name: API_TOKEN, note: \"unfinished, value: fixture-label}]", None),
+        ("plain note with a mid-value quote (value first)", "env: [{value: fixture-label, note: say \"hello, name: API_TOKEN}]", Some("env: [{value: [credential omitted], note: say \"hello, name: API_TOKEN}]")),
+        ("quoted note with a delimiter (value first)", "env: [{value: fixture-label, note: \"say, hello\", name: API_TOKEN}]", Some("env: [{value: [credential omitted], note: \"say, hello\", name: API_TOKEN}]")),
+        ("an unterminated quoted note (value first)", "env: [{value: fixture-label, note: \"unfinished, name: API_TOKEN}]", None),
+    ];
+    for (label, input, expected) in cases {
+        assert_eq!(credentials::scrub_for_reading(input).as_deref(), expected, "G2-001: {label}");
+    }
+}
+
+#[test]
+fn lane_g3_environment_flow_mask_coverage() {
+    let cases = [
+        ("tagged neighbor and a comment on a structured value", "cfg: {a: !t [1] # note\n , password: {p: alpha # }\n  , q: fixture-label}}", None),
+        ("tagged neighbor and a multiline plain value", "cfg: {a: !t [1] # note\n , password: alpha\n    fixture-label, mode: demo}", None),
+        ("a closing bracket in a sequence comment", "cfg: {password: [alpha # ]\n    , fixture-label], mode: demo}", None),
+        ("a completely covered flow value", "cfg: {password: {p: alpha, q: fixture-label}, mode: demo}", Some("cfg: {password: [credential omitted], mode: demo}")),
+        ("a split record whose value continues (name first)", "env: [{name: API_TOKEN, value: [alpha # ]\n    , fixture-label]}]", None),
+        ("a split record whose value continues (value first)", "env: [{value: [alpha # ]\n    , fixture-label], name: API_TOKEN}]", None),
+    ];
+    for (label, input, expected) in cases {
+        assert_eq!(credentials::scrub_for_reading(input).as_deref(), expected, "G2-002: {label}");
+    }
+}
+
+#[test]
+fn lane_g3_environment_comment_separated_names() {
+    let cases = [
+        ("flow PATH after a leading comment (name first)", "env: [{name: # search path\n \n PATH, value: /usr/bin}]", Some("env: [{name: # search path\n \n PATH, value: /usr/bin}]")),
+        ("deep block PATH after a leading comment (name first)", "env:\n  - name: # search path\n\n        PATH\n    value: fixture-label", Some("env:\n  - name: # search path\n\n        PATH\n    value: fixture-label")),
+        ("flow credential name after a comment (name first)", "env: [{name: # setting\n API_TOKEN, value: /usr/bin}]", Some("env: [{name: # setting\n API_TOKEN, value: [credential omitted]}]")),
+        ("deep block credential name after a comment (name first)", "env:\n  - name: # setting\n\n        API_TOKEN\n    value: fixture-label", Some("env:\n  - name: # setting\n\n        API_TOKEN\n    value: [credential omitted]")),
+        ("block comment followed by a same-depth key (name first)", "env:\n  - name: # intentionally blank\n    value: fixture-label", None),
+        ("flow PATH after a leading comment (value first)", "env: [{value: /usr/bin, name: # search path\n \n PATH}]", Some("env: [{value: /usr/bin, name: # search path\n \n PATH}]")),
+        ("deep block PATH after a leading comment (value first)", "env:\n  - value: fixture-label\n    name: # search path\n\n        PATH", Some("env:\n  - value: fixture-label\n    name: # search path\n\n        PATH")),
+        ("flow credential name after a comment (value first)", "env: [{value: /usr/bin, name: # setting\n API_TOKEN}]", Some("env: [{value: [credential omitted], name: # setting\n API_TOKEN}]")),
+        ("deep block credential name after a comment (value first)", "env:\n  - value: fixture-label\n    name: # setting\n\n        API_TOKEN", Some("env:\n  - value: [credential omitted]\n    name: # setting\n\n        API_TOKEN")),
+        ("block comment followed by a same-depth key (value first)", "env:\n  - value: fixture-label\n    name: # intentionally blank", None),
+    ];
+    for (label, input, expected) in cases {
+        assert_eq!(credentials::scrub_for_reading(input).as_deref(), expected, "G2-003: {label}");
+    }
+}
+
+#[test]
+fn lane_g3_environment_empty_block_members() {
+    let cases = [
+        ("an empty middle member (name first)", "env:\n  - name:\n    note:\n    value: fixture-label", None),
+        ("adjacent members (name first)", "env:\n  - name:\n    value: fixture-label", None),
+        ("an empty middle member (value first)", "env:\n  - value: fixture-label\n    note:\n    name:", None),
+        ("adjacent members (value first)", "env:\n  - value: fixture-label\n    name:", None),
+    ];
+    for (label, input, expected) in cases {
+        assert_eq!(credentials::scrub_for_reading(input).as_deref(), expected, "G2-004: {label}");
+    }
+}
+
+#[tokio::test]
+async fn lane_f_uncertain_yaml_alias_keys_never_reach_the_session() {
+    let input = "field-name: &sample-key |-\n  password\n? *sample-key\n: fixture-label";
+    let mut observed = Vec::new();
+    for (draft, excerpt) in [(input, ""), ("Keep this edited text", input)] {
+        let (service, stats) = fake(Ok(valid_output()), Duration::ZERO, None);
+        service.configure(true, Provider::Claude).await;
+        let reading = service.read_request(
+            true, "uncertain-alias".into(), Provider::Claude, tab_owner("main", "tab"),
+            draft, || excerpt, Workdir::Basename("folder"), || true,
+            std::future::ready(true), None,
+        ).await;
+        observed.push((stats.prompts.lock().unwrap().len(), reading.is_some()));
+    }
+    assert_eq!(observed, [(0, false), (0, false)]);
+    for node in [
+        "|-\n  password",
+        ">-\n  password",
+        "[theme, language]",
+        "\"two\n  lines\"",
+        "theme # heading\n  continuation",
+    ] {
+        for key in ["? *sample-key\n:", "*sample-key :"] {
+            let input = format!("field-name: &sample-key {node}\n{key} fixture-label");
+            assert_eq!(credentials::scrub_for_reading(&input), None, "{node} / {key}");
+        }
+        let ordinary = format!("field-name: &sample-key {node}\nlabel: fixture-label");
+        assert_eq!(credentials::scrub_for_reading(&ordinary).as_deref(), Some(ordinary.as_str()));
+    }
+}
+
 async fn fix5_read_draft(service: &PresendService, id: &str, draft: &str) -> bool {
     service.read_request(
         true, id.into(), Provider::Claude, tab_owner("main", "tab"), draft, || "",
@@ -1190,14 +1544,14 @@ async fn l5_attempt_is_recorded_when_the_helper_returns_invalid_output() {
     let progress = ReadProgress::default();
     assert!(service.read(
         "invalid".into(), Provider::Claude, tab_owner("main", "tab"),
-        || "synthetic draft".into(), || true, std::future::ready(true), Some(&progress),
+        || Some("synthetic draft".into()), || true, std::future::ready(true), Some(&progress),
     ).await.is_none());
     assert!(!progress.attempted.load(Ordering::Relaxed));
 
     service.configure(true, Provider::Claude).await;
     assert!(service.read(
         "valid-attempt".into(), Provider::Claude, tab_owner("main", "tab"),
-        || "synthetic draft".into(), || true, std::future::ready(true), Some(&progress),
+        || Some("synthetic draft".into()), || true, std::future::ready(true), Some(&progress),
     ).await.is_none());
     assert_eq!(stats.write_sessions.lock().unwrap().len(), 1);
     assert!(progress.attempted.load(Ordering::Relaxed));

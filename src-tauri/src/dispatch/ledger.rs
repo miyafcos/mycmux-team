@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn slugify_matches_python_regex() {
-        assert_eq!(slugify_cwd(r"C:\Users\miyaz\work"), "C--Users-miyaz-work");
+        assert_eq!(slugify_cwd(r"C:\Users\example\work"), "C--Users-example-work");
         // python: re.sub(r"[^A-Za-z0-9]", "-", cwd) replaces each non-ASCII-alphanumeric
         // code point with one hyphen, so the 8 code points collapse to "C" + 7 hyphens.
         assert_eq!(slugify_cwd(r"C:\仕事\算数"), "C-------");

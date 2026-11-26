@@ -1123,10 +1123,112 @@ fn realdata_fingerprint(conn: &Connection) -> String {
     format!("{:x}", hash.finalize())
 }
 
+fn realdata_repair_options(
+    prefix: &str,
+    root_value: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<repair::RepairOptions, String> {
+    // The ignored acceptance checks must resolve all source roots before
+    // open_db, which can migrate the independent database copy.
+    let directory = |suffix: &str| {
+        let variable = format!("{prefix}_{suffix}");
+        let path = root_value(&variable)
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| format!("{variable} must name an input directory"))?;
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(format!("{variable} must be an existing absolute directory"));
+        }
+        Ok(path)
+    };
+    Ok(repair::RepairOptions {
+        claude_root: Some(directory("CLAUDE_ROOT")?),
+        codex_root: Some(directory("CODEX_ROOT")?),
+        claude_codex_root: Some(directory("CLAUDE_CODEX_ROOT")?),
+        fallback_root: Some(directory("FALLBACK_ROOT")?),
+        archive_root: Some(directory("ARCHIVE_ROOT")?),
+    })
+}
+
+#[test]
+fn lane_d_realdata_options_use_transcripts_in_the_explicit_fixture_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("fixture-home");
+    let roots = [
+        ("CLAUDE_ROOT", home.join("claude-projects")),
+        ("CODEX_ROOT", home.join("codex-sessions")),
+        ("CLAUDE_CODEX_ROOT", home.join("claude-codex-projects")),
+        ("FALLBACK_ROOT", home.join("restored-projects")),
+        ("ARCHIVE_ROOT", home.join("archive")),
+    ];
+    for (_, root) in &roots {
+        std::fs::create_dir_all(root).unwrap();
+    }
+    let transcript = roots[0].1.join("sample.jsonl");
+    std::fs::write(&transcript, b"{\"type\":\"assistant\"}\n").unwrap();
+    for prefix in ["AILOG_R1_REALDATA", "AILOG_R2_REALDATA"] {
+        let options = realdata_repair_options(prefix, |name| {
+            roots.iter().find_map(|(suffix, path)| {
+                (name == format!("{prefix}_{suffix}")).then(|| path.clone().into_os_string())
+            })
+        }).unwrap();
+        assert_eq!(repair::resolve_source(&transcript, KIND_CLAUDE, &options), Some(transcript.clone()));
+        assert_eq!(
+            [options.claude_root, options.codex_root, options.claude_codex_root, options.fallback_root, options.archive_root],
+            roots.clone().map(|(_, path)| Some(path)),
+        );
+    }
+}
+
+#[test]
+fn lane_d_realdata_options_reject_missing_roots_before_opening_the_db_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    for value in [None, Some(dir.path().join("missing").into_os_string())] {
+        let options = realdata_repair_options("AILOG_R1_REALDATA", |name| {
+            if name == "AILOG_R1_REALDATA_CODEX_ROOT" {
+                value.clone()
+            } else {
+                Some(dir.path().as_os_str().to_owned())
+            }
+        });
+        assert!(options.unwrap_err().contains("AILOG_R1_REALDATA_CODEX_ROOT"));
+    }
+}
+
+fn restore_done_present(options: &repair::RepairOptions) -> bool {
+    options.fallback_root.as_deref().and_then(std::path::Path::parent)
+        .is_some_and(|root| root.join("RESTORE_DONE.json").is_file())
+}
+
+#[test]
+fn lane_f_restore_done_uses_only_the_specified_fallback_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let completed = dir.path().join("completed-restore");
+    let incomplete = dir.path().join("incomplete-restore");
+    let complete_fallback = completed.join("projects");
+    let incomplete_fallback = incomplete.join("projects");
+    for path in [&complete_fallback, &incomplete_fallback] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(completed.join("RESTORE_DONE.json"), b"{\"complete\":true}\n").unwrap();
+    assert!(!incomplete.join("RESTORE_DONE.json").exists());
+
+    let options = |input: &std::path::Path| {
+        realdata_repair_options("AILOG_R1_REALDATA", |name| {
+            let path = if name.ends_with("_FALLBACK_ROOT") { input } else { dir.path() };
+            Some(path.as_os_str().to_owned())
+        }).unwrap()
+    };
+    // In the second case the marker belongs only to the previous restore.
+    assert_eq!([
+        restore_done_present(&options(&complete_fallback)),
+        restore_done_present(&options(&incomplete_fallback)),
+    ], [true, false]);
+}
+
 #[test]
 #[ignore = "explicit offline DB-copy acceptance; never opens a live profile"]
 fn stage1_realdata_repair() {
     assert_eq!(std::env::var("AILOG_R1_REALDATA").as_deref(), Ok("1"));
+    let options = realdata_repair_options("AILOG_R1_REALDATA", |name| std::env::var_os(name)).unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
@@ -1145,25 +1247,6 @@ fn stage1_realdata_repair() {
         .iter()
         .map(|row| row[2].as_f64().unwrap())
         .sum();
-    let options = repair::RepairOptions {
-        // Unit tests deliberately redirect dirs::home_dir(). This explicit,
-        // ignored DB-copy check must resolve the source paths in the spec.
-        claude_root: Some(std::path::PathBuf::from(
-            "C:/Users/miyaz/.claude/projects",
-        )),
-        codex_root: Some(std::path::PathBuf::from(
-            "C:/Users/miyaz/.codex/sessions",
-        )),
-        claude_codex_root: Some(std::path::PathBuf::from(
-            "C:/Users/miyaz/.claude-codex/config/projects",
-        )),
-        fallback_root: Some(std::path::PathBuf::from(
-            "D:/ailog-rawlog-restore/claude-projects",
-        )),
-        archive_root: Some(std::path::PathBuf::from(
-            "C:/Users/miyaz/.mycmux/ailog-archive",
-        )),
-    };
     let first = repair::run(&mut conn, &options, &AtomicBool::new(false)).unwrap();
     let after = total(&conn);
     let fingerprint = realdata_fingerprint(&conn);
@@ -1200,7 +1283,7 @@ fn stage1_realdata_repair() {
         "second_run_identical":fingerprint==second_fingerprint,
         "original_claude_root":options.claude_root,"original_codex_root":options.codex_root,
         "original_claude_codex_root":options.claude_codex_root,"archive_root":options.archive_root,
-        "fallback_root":options.fallback_root,"restore_done_present":std::path::Path::new("D:/ailog-rawlog-restore/RESTORE_DONE.json").is_file(),
+        "fallback_root":options.fallback_root,"restore_done_present":restore_done_present(&options),
         "sessions_resplit":scalar(&conn,"SELECT COUNT(*) FROM (SELECT kind,legacy_session_id FROM session_identity_alias
             WHERE kind IN ('claude','claude-codex') GROUP BY kind,legacy_session_id HAVING COUNT(DISTINCT execution_session_id)>1)"),
         "sessions_still_legacy":first.sessions_still_legacy,"repair_invocation_before_usd":invocation_before,

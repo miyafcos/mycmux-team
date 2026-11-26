@@ -707,7 +707,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\miyaz\"}}}}\n"
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\example\"}}}}\n"
             ),
         )
         .unwrap();
@@ -729,7 +729,7 @@ mod tests {
         std::fs::write(
             &matching,
             format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\miyaz\"}}}}\n"
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\example\"}}}}\n"
             ),
         )
         .unwrap();
@@ -755,7 +755,7 @@ mod tests {
 
         assert!(claude_session_exists_in_projects_dir(
             &projects_dir,
-            Some(r"C:\Users\miyaz\expected-project"),
+            Some(r"C:\Users\example\expected-project"),
             session_id,
         ));
     }
@@ -804,7 +804,7 @@ mod tests {
 
         assert!(!claude_session_exists_in_projects_dir(
             &claude_projects,
-            Some(r"C:\Users\miyaz\expected-project"),
+            Some(r"C:\Users\example\expected-project"),
             session_id,
         ));
         assert!(!codex_session_exists_in_dir(&codex_sessions, session_id));
@@ -821,7 +821,7 @@ mod tests {
 
         assert!(!claude_session_exists_in_projects_dir(
             &projects_dir,
-            Some(r"C:\Users\miyaz\expected-project"),
+            Some(r"C:\Users\example\expected-project"),
             session_id,
         ));
     }
@@ -1036,7 +1036,7 @@ mod tests {
 
         let found = find_claude_session_file(
             &projects_dir,
-            Some(r"C:\Users\miyaz\expected-project"),
+            Some(r"C:\Users\example\expected-project"),
             EFFORT_SESSION_ID,
         );
         assert_eq!(found.as_deref(), Some(transcript.as_path()));

@@ -12,8 +12,8 @@
 #   powershell -ExecutionPolicy Bypass -File tools\cleanup-backups.ps1 -KeepLast 5 -DryRun
 #
 # Targets (both apps unless -Target is specified):
-#   personal: C:\Users\miyaz\mycmux-app\mycmux.exe.bak-*
-#   lite:     C:\Users\miyaz\mycmux-lite-app\mycmux-lite.exe.bak-*
+#   personal: $env:USERPROFILE\mycmux-app\mycmux.exe.bak-*
+#   lite:     $env:USERPROFILE\mycmux-lite-app\mycmux-lite.exe.bak-*
 
 param(
     [int]$KeepLast = 3,

@@ -8,7 +8,7 @@ that machine no matter where the CLI was installed.
 
 | | |
 |---|---|
-| Upstream | `https://github.com/miyafcos/crsm` (working copy: `C:\Users\miyaz\crsm`) |
+| Upstream | `https://github.com/miyafcos/crsm` (working copy: `~\crsm`) |
 | Crate | `crates/crsm-core` |
 | Commit | `b5f5be2` ("fix(list): hide headless exec and handoff sessions from the default list") |
 | Imported | 2026-09-17 |

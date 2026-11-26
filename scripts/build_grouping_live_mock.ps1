@@ -7,7 +7,10 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $configPath = Join-Path $repoRoot 'vite.mock.config.ts'
-$outputParent = 'C:\Users\miyaz\reports\_quick\2026-08'
+$outputParent = $env:MYCMUX_LIVE_MOCK_DIR
+if (-not $outputParent) {
+  $outputParent = Join-Path $env:USERPROFILE 'reports\_quick\2026-08'
+}
 $stamp = Get-Date -Format 'yyMMdd-HHmmss'
 $folderPrefix = -join ([char[]]@(0x30BF, 0x30D6, 0x518D, 0x914D, 0x7F6E, 0x005F, 0x52D5, 0x304F, 0x30E2, 0x30C3, 0x30AF, 0x005F))
 $outputDirectory = Join-Path $outputParent "$folderPrefix$stamp"

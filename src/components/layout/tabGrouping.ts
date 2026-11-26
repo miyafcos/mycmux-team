@@ -303,7 +303,7 @@ export function sanitizeGroupingName(value: string, maxLength = TAB_GROUPING_NAM
   const collapsed = kept.replace(/\s+/gu, " ").trim();
   // A folder like "work_hikarista_rika" is a real name carrying one banned
   // generic word. Drop that token rather than the whole candidate, which would
-  // otherwise push the caller up to a meaningless parent folder ("miyaz").
+  // otherwise push the caller up to a meaningless parent folder ("example").
   const tokens = collapsed.split(/\s+/u).filter(Boolean);
   const specific = tokens.filter((token) => !(
     /^[A-Za-z]+$/.test(token) && GENERIC_ENGLISH_WORDS.has(token.toLowerCase())

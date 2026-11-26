@@ -66,6 +66,26 @@
   cursor: default;
 }
 
+.cmux-composer-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 2px 6px;
+  color: var(--cmux-text-secondary);
+  font-size: var(--cmux-font-size-xs);
+}
+
+.cmux-composer-recovery button {
+  padding: 2px 6px;
+  border: 1px solid var(--cmux-border);
+  border-radius: var(--cmux-radius-lg);
+  background: var(--cmux-surface);
+  color: var(--cmux-text);
+  font: inherit;
+  cursor: pointer;
+}
+
 .cmux-composer-hint {
   display: flex;
   justify-content: flex-end;

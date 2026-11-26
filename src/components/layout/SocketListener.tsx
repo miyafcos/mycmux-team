@@ -7,8 +7,11 @@ import { evictTerminalCache, registerTerminalCacheEvictionCleanup } from "../ter
 import { useEffect, useRef } from "react";
 import { cancelAppConfirmations, confirm } from "../../lib/appConfirmation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listenForDetachedDock, takeDetachedPlacements, DETACHED_DOCK_REQUEST_EVENT } from "../../stores/detachedDockStore";
+import { listenForDetachedDock, awaitDetachedDockDraftReceiver, takeDetachedPlacements, DETACHED_DOCK_REQUEST_EVENT } from "../../stores/detachedDockStore";
+import { useComposerStore } from "../../stores/composerStore";
+import { confirmFeedbackWindowClose } from "../feedback/feedbackWindowClose";
 import { installTearoutRuntime } from "../../lib/tearout/runtime";
+import { terminalTransferSessions } from "../../lib/tearout/transferSessions";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   useWorkspaceListStore,
@@ -32,6 +35,7 @@ import {
   publishWindowFragment,
   releaseWorkspaces,
   takePendingAdoption,
+  confirmDetachedDockAdoptions,
   openWorkspaceWindow,
   quitPrepared,
   quitSaved,
@@ -46,6 +50,7 @@ import {
   type PaneConfig,
   type PaneTabConfig,
   type WindowAdoptPayload,
+  type PendingWorkspaceConfig,
   type WindowOpenFailure,
   type WindowFragment,
   type WorkspaceConfig,
@@ -1479,6 +1484,8 @@ async function continueWindowCloseAfterTimeout<T>(pending: Promise<T>, step: str
 }
 
 let windowClosing = false;
+let legacyDockReturned = false;
+let legacyDockDestroying: Promise<void> | undefined;
 let windowSaveInFlight: Promise<unknown> = Promise.resolve();
 let windowPublishInFlight: Promise<unknown> = Promise.resolve();
 
@@ -1486,6 +1493,8 @@ let windowPublishInFlight: Promise<unknown> = Promise.resolve();
 export function __resetWindowCloseStateForTests(): void {
   resetLayoutQuitForTests();
   windowClosing = false;
+  legacyDockReturned = false;
+  legacyDockDestroying = undefined;
   windowSaveInFlight = Promise.resolve();
   windowPublishInFlight = Promise.resolve();
   persistLoaded = createPersistLoaded();
@@ -1554,6 +1563,14 @@ export async function reopenSavedWindows(windows: readonly SavedWindow[]): Promi
   }
 }
 
+function pendingWorkspaceLayouts(configs: PendingWorkspaceConfig[]): WorkspaceConfig[] {
+  return configs.map(config => {
+    if (!config.detached_dock_receipt) return config;
+    const { detached_dock_receipt: _escrow, ...workspace } = config;
+    return workspace;
+  });
+}
+
 function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
   const restorable = filterAlreadyRestoredConfigs(configs)
     .map(dropEmptyTabPanesFromConfig)
@@ -1590,6 +1607,36 @@ function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
     });
   }
   return restoredWorkspaceIds;
+}
+
+const detachedDockAdoptionsInFlight = new Set<string>();
+
+/** Legacy dock adoption: layout and a held copy must be present before confirmation. */
+async function adoptPendingWindowWorkspaces(configs: PendingWorkspaceConfig[]): Promise<boolean> {
+  adoptWorkspaceConfigs(pendingWorkspaceLayouts(configs));
+  const offers = configs.flatMap(config => config.detached_dock_receipt ? [config.detached_dock_receipt] : []);
+  if (offers.length === 0) return false;
+  const owned = new Set(useWorkspaceListStore.getState().workspaces.flatMap(workspace => workspace.panes
+    .flatMap(pane => pane.tabs.filter(tabHasPty).map(tab => tab.sessionId))));
+  const received = offers.flatMap(receipt => {
+    if (detachedDockAdoptionsInFlight.has(receipt.token) ||
+      !receipt.sends.every(draft => owned.has(draft.sessionId))) return [];
+    detachedDockAdoptionsInFlight.add(receipt.token);
+    return [{ token: receipt.token, finish: useComposerStore.getState().stagePaneSends(receipt.sends) }];
+  });
+  if (received.length === 0) return false;
+
+  let accepted = new Set<string>();
+  try {
+    await publishWindowFragment(buildWindowFragment());
+    accepted = new Set(await confirmDetachedDockAdoptions(windowLabel(), received.map(row => row.token)));
+    return true;
+  } finally {
+    for (const { token, finish } of received) {
+      finish(accepted.has(token));
+      detachedDockAdoptionsInFlight.delete(token);
+    }
+  }
 }
 
 export async function publishPersistentSchemaAfterHydration(
@@ -1749,9 +1796,7 @@ async function hydrateChildWindow(): Promise<void> {
   void loadPetCatalog();
 
   const adopted = await takePendingAdoption(windowLabel());
-  if (adopted.length > 0) {
-    adoptWorkspaceConfigs(adopted);
-  }
+  if (adopted.length > 0) await adoptPendingWindowWorkspaces(adopted);
   });
 }
 
@@ -2459,7 +2504,7 @@ export function useWorkspacePersist() {
               const generation = windowFragmentGeneration.current;
               const pending = windowPublishInFlight.then(async () => {
                 if (!ready()) return false;
-                await publishWindowFragment(buildWindowFragment(), true);
+                await publishWindowFragment(buildWindowFragment());
                 return true;
               });
               windowPublishInFlight = pending.catch(() => {});
@@ -2635,6 +2680,11 @@ export function useWorkspacePersist() {
         hideMainWindow();
         return;
       }
+      if (legacyDockReturned) {
+        event.preventDefault();
+        await destroyLegacyDockSource().catch(error => console.warn("[detached-dock] Could not close the returned window:", error));
+        return;
+      }
       if (cancelAppConfirmations()) {
         event.preventDefault();
         return;
@@ -2647,6 +2697,7 @@ export function useWorkspacePersist() {
       let shouldQuitAfterSave = false;
       try {
         closePromptOpen = true;
+        if (!await confirmFeedbackWindowClose()) return;
         try {
           await flushPtyMetadataSnapshotForPersistence();
         } catch (err) {
@@ -2775,7 +2826,8 @@ export function useWorkspacePersist() {
       } finally {
         try {
           if (shouldQuitAfterSave) {
-            await closeWindowWorkspacesAndDestroy();
+            shouldQuitAfterSave = await confirmFeedbackWindowClose();
+            if (shouldQuitAfterSave) await closeWindowWorkspacesAndDestroy();
           }
         } catch (error) {
           console.warn("[window-close] Failed to close this window:", error);
@@ -2832,11 +2884,8 @@ export function useWorkspacePersist() {
         if (disposed || windowClosing || (quitting.current && !duringQuit)) return;
         try {
           const fragment = buildWindowFragment();
-          if (duringQuit) await publishWindowFragment(fragment, true);
-          else {
-            retryAccountManagementRegistration();
-            await publishWindowFragment(fragment);
-          }
+          if (!duringQuit) retryAccountManagementRegistration();
+          await publishWindowFragment(fragment);
         } catch (err) {
           console.warn("[persist] Failed to publish window fragment:", err);
         }
@@ -2927,8 +2976,7 @@ export function useWorkspacePersist() {
       try {
         const adopted = await takePendingAdoption(windowLabel());
         if (!disposed && !windowClosing && adopted.length > 0) {
-          adoptWorkspaceConfigs(adopted);
-          await publishWindowFragment(buildWindowFragment());
+          if (!await adoptPendingWindowWorkspaces(adopted)) await publishWindowFragment(buildWindowFragment());
           await emit(DOCK_SAVE_EVENT);
           recordPerf("dock.adopted", windowLabel());
           requestAnimationFrame(() => requestAnimationFrame(() => recordPerf("dock.main.painted", windowLabel())));
@@ -3030,35 +3078,75 @@ export default function SocketListener() {
 }
 
 
+function destroyLegacyDockSource(): Promise<void> {
+  return legacyDockDestroying ??= (async () => {
+    try {
+      await setWindowCloseIntent(true);
+      await setWindowCloseIntent(true, true);
+    } catch (error) {
+      useToastStore.getState().pushToast(
+        "タブは移動しました。このウィンドウを閉じられませんでした。閉じる操作をやり直してください。", "warning",
+      );
+      throw error;
+    } finally { legacyDockDestroying = undefined; }
+  })();
+}
+
 /** Drag-only transfer. It preserves PTYs and targets the receiving window. */
 export async function transferWindowWorkspacesAndClose(toLabel: string): Promise<void> {
   if (toLabel === windowLabel() || windowClosing) return;
   const finish = beginLayoutOperation();
   if (!finish) return;
-  recordPerf("dock.return.request", windowLabel());
+  const source = windowLabel();
+  recordPerf("dock.return.request", source);
   windowClosing = true;
   setAppShellClosing(true);
+  const sessions = terminalTransferSessions(buildWindowFragment("transfer").workspaces);
+  const sendTransfer = useComposerStore.getState().startPaneSendTransfer(sessions);
   try {
     await windowSaveInFlight;
     await windowPublishInFlight;
-    await publishWindowFragment(buildWindowFragment("transfer"));
-    const workspaceIds = useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.id);
-    if (workspaceIds.length > 0) await releaseWorkspaces(windowLabel(), workspaceIds, toLabel);
-    recordPerf("dock.release.resolved", windowLabel());
-    await setWindowCloseIntent(true);
-    await getCurrentWindow().destroy();
+    const fragment = buildWindowFragment("transfer");
+    const workspaceIds = fragment.workspaces.map(workspace => workspace.id);
+    const currentSessions = terminalTransferSessions(fragment.workspaces);
+    if (currentSessions.length !== sessions.length || !currentSessions.every(id => sessions.includes(id))) {
+      throw new Error("detached_dock_source_changed");
+    }
+    await publishWindowFragment(fragment);
+    if (sendTransfer.drafts().length) await awaitDetachedDockDraftReceiver(toLabel, source);
+    const drafts = sendTransfer.drafts();
+    if (workspaceIds.length && await (drafts.length
+      ? releaseWorkspaces(source, workspaceIds, toLabel, drafts)
+      : releaseWorkspaces(source, workspaceIds, toLabel)) !== workspaceIds.length) {
+      throw new Error("detached_dock_release_incomplete");
+    }
+
+    // The backend has handed off the sessions. A failed close must not put
+    // any of those tabs back under this window's close button.
+    legacyDockReturned = true;
+    const list = useWorkspaceListStore.getState();
+    for (const id of workspaceIds) list.removeWorkspace(id);
+    useUiStore.setState({ activePaneId: null, zoomedPaneId: null });
+    sendTransfer.finish(true);
+    recordPerf("dock.release.resolved", source);
+    await destroyLegacyDockSource();
   } catch (error) {
-    windowClosing = false;
-    await setWindowCloseIntent(false).catch(() => {});
-    setAppShellClosing(false);
+    if (!legacyDockReturned) {
+      windowClosing = false;
+      await setWindowCloseIntent(false).catch(() => {});
+      setAppShellClosing(false);
+    }
     throw error;
   } finally {
+    sendTransfer.finish(false);
     finish();
   }
 }
 
 /** Confirmation belongs to the caller; only this webview's PTYs are victims. */
 export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
+  if (legacyDockReturned) return destroyLegacyDockSource();
+  if (windowClosing) return;
   const finish = beginLayoutOperation();
   if (!finish) return;
   windowClosing = true;
@@ -3070,7 +3158,7 @@ export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
     // Handoffs committed before close intent belong to this window too. A late
     // read after the deadline must not repopulate a window already destroyed.
     const pending = await continueWindowCloseAfterTimeout(takePendingAdoption(windowLabel()), "pending adoption", []);
-    if (pending.length > 0) adoptWorkspaceConfigs(pending);
+    if (pending.length > 0) adoptWorkspaceConfigs(pendingWorkspaceLayouts(pending));
     const workspaces = [...useWorkspaceListStore.getState().workspaces];
     const sessions = new Set<string>();
     for (const workspace of workspaces) {
@@ -3094,7 +3182,7 @@ export async function closeWindowWorkspacesAndDestroy(): Promise<void> {
       usePaneMetadataStore.getState().removeMetadata(sessionId);
     }
     for (const workspace of workspaces) useWorkspaceListStore.getState().removeWorkspace(workspace.id);
-    await waitForWindowClose(getCurrentWindow().destroy(), "destroy window");
+    await waitForWindowClose(setWindowCloseIntent(true, true), "destroy window");
   } catch (error) {
     // A timed-out destroy may still finish later. Keep its explicit-close
     // intent so the registry does not misclassify it as a crash and rescue it.

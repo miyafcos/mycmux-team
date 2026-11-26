@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tabGroupingStrings } from "../../src/components/dashboard/dashboardStrings";
@@ -11,7 +12,7 @@ import { tabGroupingStrings } from "../../src/components/dashboard/dashboardStri
 // only test itself and say nothing about what the build produces, so none is
 // shipped; the repository is mirrored publicly and must not carry the real
 // report either.
-const outputParent = process.env.MYCMUX_LIVE_MOCK_DIR ?? "C:\\Users\\miyaz\\reports\\_quick\\2026-08";
+const outputParent = process.env.MYCMUX_LIVE_MOCK_DIR ?? join(homedir(), "reports", "_quick", "2026-08");
 const GUIDE_HEADINGS = ["① 案を比較する", "② 内容を編集する", "③ 適用前に確認する", "④ 適用して元に戻す"];
 
 function latestGeneratedHtml(): string | null {

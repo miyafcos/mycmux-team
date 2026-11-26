@@ -309,7 +309,7 @@ def test_window_registry_commands_are_exposed() -> None:
 
     for snippet in [
         'invoke<string>("open_workspace_window", {',
-        'invoke<void>("publish_window_fragment", { fragment, requirePublished, publicationId })',
+        'invoke<void>("publish_window_fragment", { fragment, publicationId })',
         'invoke<void>("quit_prepared", { fragmentPublished, ...(sealed ? { sealed } : {}) })',
         'invoke<WorkspaceConfig[]>("take_pending_adoption", { label })',
         'invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel })',

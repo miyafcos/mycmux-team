@@ -22,7 +22,7 @@ describe("normalizeCwd", () => {
   it("strips decorative trailing separators", () => {
     expect(normalizeCwd("C:/work/repo/")).toBe("C:/work/repo");
     expect(normalizeCwd("C:\\work\\repo\\\\")).toBe("C:\\work\\repo");
-    expect(normalizeCwd("/home/miyaz/")).toBe("/home/miyaz");
+    expect(normalizeCwd("/home/example/")).toBe("/home/example");
   });
 
   it("keeps filesystem roots intact", () => {
@@ -45,10 +45,10 @@ describe("normalizeCwd", () => {
 
 describe("workspaceNameFromCwd", () => {
   it("uses the last path segment", () => {
-    expect(workspaceNameFromCwd("C:\\Users\\miyaz\\cmux-for-linux-dev-master")).toBe(
+    expect(workspaceNameFromCwd("C:\\Users\\example\\cmux-for-linux-dev-master")).toBe(
       "cmux-for-linux-dev-master",
     );
-    expect(workspaceNameFromCwd("/home/miyaz/projects/mycmux/")).toBe("mycmux");
+    expect(workspaceNameFromCwd("/home/example/projects/mycmux/")).toBe("mycmux");
   });
 
   it("falls back to the default name when there is no segment", () => {

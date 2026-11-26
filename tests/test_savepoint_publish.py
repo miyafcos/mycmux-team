@@ -161,9 +161,9 @@ def run_publish(tmp_path: Path, **overrides: str) -> dict:
 
 
 def test_sanitize_matches_observed_claude_behavior() -> None:
-    assert sp.sanitize_project_dir("C:\\Users\\miyaz") == "C--Users-miyaz"
-    assert sp.sanitize_project_dir("C:\\Users\\miyaz\\tmp_phase0_savepoint\\a") == (
-        "C--Users-miyaz-tmp-phase0-savepoint-a"
+    assert sp.sanitize_project_dir("C:\\Users\\example") == "C--Users-example"
+    assert sp.sanitize_project_dir("C:\\Users\\example\\tmp_phase0_savepoint\\a") == (
+        "C--Users-example-tmp-phase0-savepoint-a"
     )
 
 

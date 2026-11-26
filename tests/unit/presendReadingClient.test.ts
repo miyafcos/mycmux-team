@@ -125,6 +125,23 @@ beforeEach(async () => {
   requestPresendReading = (await import("../../src/lib/presendReadingClient")).requestPresendReading;
 });
 describe("presend provider input", () => {
+  const structuredCredential = "credentials:\n  &toy-field password: dummy-head\n    dummy-continuation";
+
+  it("keeps a draft with an ambiguous structured credential out of the provider request", async () => {
+    await expect(requestPresendReading("structured-draft", "tab-a", structuredCredential, "claude", () => true))
+      .resolves.toBeNull();
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "run_presend_reading")).toBe(false);
+  });
+
+  it("keeps an ambiguous structured reply out of the provider request", async () => {
+    const events = [...replyBatch.events.slice(0, -1), {
+      occurredAt: 10_000, kind: { type: "agentMessage", text: structuredCredential },
+    }];
+    mockReplyContext({ batch: { ...replyBatch, events } });
+    await expect(requestPresendReading("structured-reply", "tab-a", "Synthetic draft", "claude", () => true))
+      .resolves.toBeNull();
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "run_presend_reading")).toBe(false);
+  });
 
   it.each([
     [99_982, false, false], [99_983, false, false], [99_995, false, false],

@@ -320,7 +320,7 @@ it("F4-02 sends explicit close first and leaves the detached terminal out of mai
       if (name === "publish_window_fragment" && args && "readAccountManagementDocument" in args) {
         closeCalls.push("read_document");
       } else if (name === "set_window_close_intent" || name === "kill_session") {
-        closeCalls.push(name);
+        closeCalls.push(name === "set_window_close_intent" && args && "destroy" in args && args.destroy ? "destroy_with_close_intent" : name);
       }
     }
     return invokeBase(name, args, options);
@@ -362,7 +362,7 @@ it("F4-02 sends explicit close first and leaves the detached terminal out of mai
     }
     const mainTabs = useWorkspaceListStore.getState().workspaces
       .flatMap(ws => ws.panes.flatMap(pane => pane.tabs.map(tab => tab.id)));
-    expect.soft(closeCalls).toEqual(["set_window_close_intent", "take_pending_adoption", "kill_session"]);
+    expect.soft(closeCalls).toEqual(["set_window_close_intent", "take_pending_adoption", "kill_session", "destroy_with_close_intent"]);
     expect(mainTabs).not.toContain("detached-terminal");
   } finally {
     vi.useRealTimers();

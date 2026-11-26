@@ -1,6 +1,6 @@
 # AIログ分析: モデル・単価更新 (2026-09-30)
 
-対象: `C:\Users\miyaz\cmux-for-linux-dev-master` / mycmux 0.80.5.
+対象: `~\cmux-for-linux-dev-master` / mycmux 0.80.5.
 各社の公式資料を当日確認し、ローカル実装のモデル識別・参考単価・配色を更新。
 
 ## 公式出典
@@ -77,7 +77,7 @@ Gemini は既存の対応ログ形式に記録されたモデルの分析対応�
 Rust の検証コマンド:
 
 ```powershell
-$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER='python -X utf8 C:\Users\miyaz\_work\ailog_models_260930\rust-test-runner.py'
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER="python -X utf8 `"$env:USERPROFILE\_work\ailog_models_260930\rust-test-runner.py`""
 cargo test --offline --manifest-path src-tauri/Cargo.toml --lib ailog:: -- --test-threads=2 --skip smoke_real_database_efficiency_and_rule_check_are_read_only
 ```
 
@@ -88,8 +88,8 @@ ignored 8件は既存の明示実行用検査 (実 CLI / 実 DB / 性能計測)�
 
 詳細ログと修正前の復元用コピー:
 
-- `C:\Users\miyaz\_work\ailog_models_260930\rust-tests-uot8k3q5\tests.log`
-- `C:\Users\miyaz\_work\ailog_models_260930\frontend-tests-final.log`
-- `C:\Users\miyaz\_work\ailog_models_260930\contract-tests.log`
-- `C:\Users\miyaz\_work\ailog_models_260930\frontend-build-final.log`
-- `C:\Users\miyaz\_work\ailog_models_260930\before`
+- `~\_work\ailog_models_260930\rust-tests-uot8k3q5\tests.log`
+- `~\_work\ailog_models_260930\frontend-tests-final.log`
+- `~\_work\ailog_models_260930\contract-tests.log`
+- `~\_work\ailog_models_260930\frontend-build-final.log`
+- `~\_work\ailog_models_260930\before`

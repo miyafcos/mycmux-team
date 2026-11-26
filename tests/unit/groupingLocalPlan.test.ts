@@ -25,7 +25,7 @@ function tab(id: string, overrides: Partial<GroupingTab> = {}): GroupingTab {
     id,
     sessionId: `session-${id}`,
     label: id,
-    cwd: "C:/Users/miyaz",
+    cwd: "C:/Users/example",
     agentKind: "claude",
     workspaceId: "ws-a",
     workspaceName: "母艦",
@@ -63,20 +63,20 @@ function scanOf(tabs: GroupingTab[], workspaceNames: Record<string, string> = { 
 
 function projectTabs(): GroupingTab[] {
   return [
-    tab("m1", { cwd: "C:/Users/miyaz/work/hikarista/math", label: "数学 監視" }),
-    tab("m2", { cwd: "C:/Users/miyaz/work/hikarista/science", label: "理科 量産" }),
-    tab("d1", { cwd: "C:/Users/miyaz/dev/mycmux", label: "配置図" }),
-    tab("d2", { cwd: "C:/Users/miyaz/dev/mycmux/src", label: "受入判定" }),
+    tab("m1", { cwd: "C:/Users/example/work/hikarista/math", label: "数学 監視" }),
+    tab("m2", { cwd: "C:/Users/example/work/hikarista/science", label: "理科 量産" }),
+    tab("d1", { cwd: "C:/Users/example/dev/mycmux", label: "配置図" }),
+    tab("d2", { cwd: "C:/Users/example/dev/mycmux/src", label: "受入判定" }),
   ];
 }
 
 describe("localProjectKeys", () => {
   it("cuts at the deepest folder two tabs share", () => {
     const keys = localProjectKeys(projectTabs());
-    expect(keys.get("m1")).toBe("C:/Users/miyaz/work/hikarista");
-    expect(keys.get("m2")).toBe("C:/Users/miyaz/work/hikarista");
-    expect(keys.get("d1")).toBe("C:/Users/miyaz/dev/mycmux");
-    expect(keys.get("d2")).toBe("C:/Users/miyaz/dev/mycmux");
+    expect(keys.get("m1")).toBe("C:/Users/example/work/hikarista");
+    expect(keys.get("m2")).toBe("C:/Users/example/work/hikarista");
+    expect(keys.get("d1")).toBe("C:/Users/example/dev/mycmux");
+    expect(keys.get("d2")).toBe("C:/Users/example/dev/mycmux");
   });
 
   it("drops a tab that shares nothing onto the common root", () => {
@@ -95,13 +95,13 @@ describe("localProjectKeys", () => {
 describe("localBuckets", () => {
   it("keeps a lineage together even when the child sits in another folder", () => {
     const tabs = [
-      tab("parent", { cwd: "C:/Users/miyaz/work/hikarista/math" }),
-      tab("sibling", { cwd: "C:/Users/miyaz/work/hikarista/science" }),
+      tab("parent", { cwd: "C:/Users/example/work/hikarista/math" }),
+      tab("sibling", { cwd: "C:/Users/example/work/hikarista/science" }),
       tab("child", {
-        cwd: "C:/Users/miyaz/dev/mycmux",
+        cwd: "C:/Users/example/dev/mycmux",
         origin: { kind: "agent", parentTabId: "parent" },
       }),
-      tab("other", { cwd: "C:/Users/miyaz/dev/mycmux" }),
+      tab("other", { cwd: "C:/Users/example/dev/mycmux" }),
     ];
     const buckets = localBuckets(tabs, {});
     const withChild = buckets.find((bucket) => bucket.tabs.some((entry) => entry.id === "child"));
@@ -162,14 +162,14 @@ describe("buildLocalGroupingPlan", () => {
 
   it("names groups after the shared folder, dropping characters and generic words the rules ban", () => {
     const scan = scanOf([
-      tab("a", { cwd: "C:/Users/miyaz/work_hikarista_rika/one" }),
-      tab("b", { cwd: "C:/Users/miyaz/work_hikarista_rika/two" }),
-      tab("c", { cwd: "C:/Users/miyaz/dev/mycmux" }),
-      tab("d", { cwd: "C:/Users/miyaz/dev/mycmux" }),
+      tab("a", { cwd: "C:/Users/example/work_hikarista_rika/one" }),
+      tab("b", { cwd: "C:/Users/example/work_hikarista_rika/two" }),
+      tab("c", { cwd: "C:/Users/example/dev/mycmux" }),
+      tab("d", { cwd: "C:/Users/example/dev/mycmux" }),
     ]);
     const titles = buildLocalGroupingPlan(scan, attention)!.groups.map((group) => group.title);
     // "work" is on the banned generic-word list, so the name keeps the part
-    // that actually identifies the folder instead of falling back to "miyaz".
+    // that actually identifies the folder instead of falling back to "example".
     expect(titles).toContain("hikarista rika");
     expect(titles).toContain("mycmux");
   });
@@ -204,10 +204,10 @@ describe("buildLocalGroupingPlan", () => {
 
   it("returns null when every group would stay exactly where it is", () => {
     const settled = [
-      tab("a", { cwd: "C:/Users/miyaz/work/hikarista", workspaceId: "ws-a" }),
-      tab("b", { cwd: "C:/Users/miyaz/work/hikarista", workspaceId: "ws-a" }),
-      tab("c", { cwd: "C:/Users/miyaz/dev/mycmux", workspaceId: "ws-b" }),
-      tab("d", { cwd: "C:/Users/miyaz/dev/mycmux", workspaceId: "ws-b" }),
+      tab("a", { cwd: "C:/Users/example/work/hikarista", workspaceId: "ws-a" }),
+      tab("b", { cwd: "C:/Users/example/work/hikarista", workspaceId: "ws-a" }),
+      tab("c", { cwd: "C:/Users/example/dev/mycmux", workspaceId: "ws-b" }),
+      tab("d", { cwd: "C:/Users/example/dev/mycmux", workspaceId: "ws-b" }),
     ];
     expect(buildLocalGroupingPlan(scanOf(settled, { "ws-a": "母艦", "ws-b": "開発" }), attention)).toBeNull();
   });
@@ -227,7 +227,7 @@ describe("buildLocalGroupingScan", () => {
       sessionId: `session-${id}`,
       type: "terminal",
       label: id,
-      cwd: "C:/Users/miyaz/work/hikarista",
+      cwd: "C:/Users/example/work/hikarista",
       ...overrides,
     } as PaneTab;
   }
@@ -237,7 +237,7 @@ describe("buildLocalGroupingScan", () => {
       id: "pane-1",
       sessionId: "session-a",
       tabs: [paneTab("a"), paneTab("b")],
-      cwd: "C:/Users/miyaz/work/hikarista",
+      cwd: "C:/Users/example/work/hikarista",
     } as unknown as Pane;
     const workspaces = [{
       id: "ws-a",

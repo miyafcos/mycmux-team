@@ -15,6 +15,9 @@ vi.mock("../../src/components/feedback/feedbackApi", () => ({
 vi.mock("../../src/components/feedback/feedbackImages", () => ({ normalizeFeedbackImage: mocks.normalize }));
 vi.mock("../../src/stores/toastStore", () => ({ useToastStore: { getState: () => ({ pushToast: mocks.toast }) } }));
 import { FeedbackButton } from "../../src/components/feedback/FeedbackButton";
+import { FeedbackDialog } from "../../src/components/feedback/FeedbackDialog";
+import { feedbackStrings } from "../../src/components/feedback/feedbackStrings";
+import { confirmFeedbackWindowClose } from "../../src/components/feedback/feedbackWindowClose";
 import { FeedbackDestinationSection } from "../../src/components/feedback/FeedbackDestinationSection";
 
 let host: HTMLDivElement;
@@ -28,35 +31,35 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function button(text: string) {
-  const found = [...document.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === text);
+function button(text: string, scope: ParentNode = document) {
+  const found = [...scope.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === text);
   expect(found, text).toBeDefined();
   return found!;
 }
-function field(label: string) {
-  const found = document.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[aria-label="${label}"]`);
+function field(label: string, scope: ParentNode = document) {
+  const found = scope.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[aria-label="${label}"]`);
   expect(found, label).not.toBeNull();
   return found!;
 }
-async function setField(label: string, value: string) {
-  const element = field(label);
+async function setField(label: string, value: string, scope: ParentNode = document) {
+  const element = field(label, scope);
   const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
     : element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value);
   await act(async () => { element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); });
 }
-async function click(text: string) { await act(async () => { button(text).click(); }); }
+async function click(text: string, scope: ParentNode = document) { await act(async () => { button(text, scope).click(); }); }
 async function open() {
   await act(async () => { root.render(createElement(FeedbackButton)); });
   await act(async () => { document.querySelector<HTMLButtonElement>('button[aria-label="改善の要望を送る"]')!.click(); });
 }
-async function fill(omit = "") {
-  if (omit !== "種類") await click("不具合");
-  if (omit !== "どの機能か") await setField("どの機能か", "dashboard");
-  if (omit !== "困っていること") await setField("困っていること", "表示が重なって読めません。");
-  await setField("こうしてほしい", "文字を読めるようにしてほしい。");
-  if (omit !== "急ぎ度") await click("できれば");
-  if (omit !== "送った人") await setField("送った人", "北斗 太郎");
+async function fill(omit = "", scope: ParentNode = document) {
+  if (omit !== "種類") await click("不具合", scope);
+  if (omit !== "どの機能か") await setField("どの機能か", "dashboard", scope);
+  if (omit !== "困っていること") await setField("困っていること", "表示が重なって読めません。", scope);
+  await setField("こうしてほしい", "文字を読めるようにしてほしい。", scope);
+  if (omit !== "急ぎ度") await click("できれば", scope);
+  if (omit !== "送った人") await setField("送った人", "北斗 太郎", scope);
 }
 async function paste(files: File[], target: Element = document.querySelector('[role="dialog"]')!, types: string[] = []) {
   const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -88,6 +91,39 @@ afterEach(async () => {
 });
 
 describe("feedback entry and draft", () => {
+  it.each(["cancel", "send separately"])("recovers the first window's failed request after the second window chooses to %s", async action => {
+    await open();
+    const first = document.querySelector('[role="dialog"]')!;
+    const secondWindow = createRoot(document.createElement("div"));
+    try {
+      await act(async () => {
+        secondWindow.render(createElement(FeedbackDialog, {
+          initialImages: [], captureMessage: "", onClose: () => secondWindow.render(null),
+        }));
+      });
+      const second = [...document.querySelectorAll('[role="dialog"]')].find(dialog => dialog !== first)!;
+      expect(field("困っていること", second).value).toBe("");
+      mocks.send.mockRejectedValueOnce(new Error("synthetic send failure"));
+      await fill("", first);
+      await click("送る", first);
+      await click("取消", first);
+
+      if (action === "cancel") await click("取消", second);
+      else {
+        await fill("", second);
+        await setField("困っていること", "別の要望です。", second);
+        await click("送る", second);
+        expect(mocks.send).toHaveBeenLastCalledWith(expect.objectContaining({ problem: "別の要望です。" }));
+      }
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await open();
+      expect(field("困っていること").value).toBe("表示が重なって読めません。");
+      expect(field("こうしてほしい").value).toBe("文字を読めるようにしてほしい。");
+    } finally {
+      await act(async () => { secondWindow.unmount(); });
+    }
+  });
+
   it("places the mail button immediately before settings with the existing icon scale", () => {
     const source = readFileSync("src/components/layout/TitleBar.tsx", "utf8");
     const mail = source.indexOf("<FeedbackButton");
@@ -175,6 +211,60 @@ describe("feedback entry and draft", () => {
     expect(persisted).not.toContain(image.data);
     expect(persisted).not.toContain("images");
   });
+  it.each([false, true])("keeps the latest failed feedback on quota exhaustion (existing draft: %s)", async hadDraft => {
+    mocks.send.mockRejectedValue(new Error("synthetic send failure"));
+    await open();
+    await fill();
+    if (hadDraft) await click("送る");
+    const originalSetItem = Storage.prototype.setItem;
+    const quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key.startsWith("mycmux.feedback.draft.")) throw new DOMException("Storage is full", "QuotaExceededError");
+      originalSetItem.call(this, key, value);
+    });
+    try {
+      await setField("困っていること", "保存できていない最新の本文です。");
+      if (!hadDraft) await click("送る");
+      await click("取消");
+
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(field("困っていること").value).toBe("保存できていない最新の本文です。");
+      expect(document.body.textContent).toContain("控えを保存できませんでした");
+      const clipboard = vi.fn(async (_text: string) => {});
+      vi.stubGlobal("navigator", { platform: navigator.platform, clipboard: { writeText: clipboard } });
+      await click("本文をコピー");
+      expect(clipboard).toHaveBeenCalledWith("保存できていない最新の本文です。\n\n文字を読めるようにしてほしい。");
+      expect(field("困っていること").value).toBe("保存できていない最新の本文です。");
+      await click("未保存の本文を破棄して閉じる");
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+      await open();
+      expect(field("困っていること").value).toBe(hadDraft ? "表示が重なって読めません。" : "");
+    } finally {
+      quota.mockRestore();
+    }
+  });
+
+  it.each([false, true])("opens an older failed request by key and keeps both on cancel (clock rolled back: %s)", async clockRolledBack => {
+    const firstKey = "mycmux.feedback.draft.v2.first-id";
+    const secondKey = "mycmux.feedback.draft.v2.second-id";
+    const first = JSON.stringify({ problem: "先に書いた要望", failed: true, savedAt: clockRolledBack ? 900 : 100 });
+    const second = JSON.stringify({ problem: "後に書いた要望", failed: true, savedAt: clockRolledBack ? 100 : 900 });
+    localStorage.setItem(firstKey, first);
+    localStorage.setItem(secondKey, second);
+
+    await open();
+    const picker = field("送れなかった要望") as HTMLSelectElement;
+    expect([...picker.options].map(option => option.value)).toEqual(clockRolledBack ? [firstKey, secondKey] : [secondKey, firstKey]);
+    const chosen = clockRolledBack ? secondKey : firstKey;
+    await setField("送れなかった要望", chosen);
+    expect(field("困っていること").value).toBe(clockRolledBack ? "後に書いた要望" : "先に書いた要望");
+    await click("取消");
+
+    expect(localStorage.getItem(firstKey)).toBe(first);
+    expect(localStorage.getItem(secondKey)).toBe(second);
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
   it("sends once, disables controls in flight, closes on success and remembers the sender", async () => {
     const sending = deferred<void>();
     mocks.send.mockReturnValue(sending.promise);
@@ -222,6 +312,244 @@ describe("feedback entry and draft", () => {
     expect(field("こうしてほしい").getAttribute("maxlength")).toBe("2000");
     expect(button("送る").disabled).toBe(false);
   });
+});
+
+
+function saveRequest(key: string, problem: string, savedAt: number) {
+  localStorage.setItem(key, JSON.stringify({
+    category: "bug", feature: "dashboard", problem, want: "", urgency: "soon", sender: "北斗 太郎", failed: true, savedAt,
+  }));
+}
+const savedA = "mycmux.feedback.draft.v2.request-a";
+const savedB = "mycmux.feedback.draft.v2.request-b";
+
+it.each([true, false])("switches to another window's saved request only after keeping a new body (edited: %s)", async edited => {
+  await open();
+  expect(document.querySelector('[aria-label="送れなかった要望"]')).toBeNull();
+  const problem = "書きかけの要望\nまだ入力しています。";
+  const want = "本文を残してほしい。";
+  if (edited) {
+    await setField("困っていること", problem);
+    await setField("こうしてほしい", want);
+  }
+  for (const [key, text] of [[savedA, "要望 A"], [savedB, "要望 B"]]) {
+    saveRequest(key, text, key === savedA ? 100 : 200);
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue: localStorage.getItem(key), storageArea: localStorage }));
+    });
+  }
+  const picker = field("送れなかった要望") as HTMLSelectElement;
+  const savedRequests = () => Object.keys(localStorage).filter(key => key.startsWith("mycmux.feedback.draft.v2."));
+  await setField("送れなかった要望", savedA);
+  if (edited) {
+    expect(field("困っていること").value).toBe(problem);
+    expect(field("こうしてほしい").value).toBe(want);
+    expect(picker.value).toBe("");
+    expect(document.body.textContent).toContain("書きかけ");
+    expect(savedRequests().sort()).toEqual([savedA, savedB]);
+
+    const clipboard = vi.fn(async (_text: string) => {});
+    vi.stubGlobal("navigator", { platform: navigator.platform, clipboard: { writeText: clipboard } });
+    await click("本文をコピー");
+    expect(clipboard).toHaveBeenCalledExactlyOnceWith(problem + "\n\n" + want);
+    expect(field("困っていること").value).toBe(problem);
+    expect(savedRequests().sort()).toEqual([savedA, savedB]);
+
+    await click("別の要望として控えを残す");
+    const newKey = savedRequests().find(key => key !== savedA && key !== savedB);
+    expect(newKey).toBeDefined();
+    expect(JSON.parse(localStorage.getItem(newKey!)!)).toMatchObject({ problem, want });
+    const entry = [...picker.options].find(option => option.value === newKey);
+    expect(entry?.textContent).toContain("書きかけの要望");
+    await setField("送れなかった要望", savedA);
+  }
+  expect(field("困っていること").value).toBe("要望 A");
+  expect(field("こうしてほしい").value).toBe("");
+  expect(picker.value).toBe(savedA);
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+async function announcePeerFeedbackRequests() {
+  saveRequest(savedA, "要望 A", 100);
+  saveRequest(savedB, "要望 B", 200);
+  await act(async () => {
+    for (const key of [savedA, savedB]) {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue: localStorage.getItem(key), storageArea: localStorage }));
+    }
+  });
+}
+
+it.each([
+  { origin: "legacy unsent", legacy: true, edited: true },
+  { origin: "new", legacy: false, edited: true },
+  { origin: "legacy untouched", legacy: true, edited: false },
+])("G2-003 treats a $origin request as unselected until a failed draft is kept", async ({ legacy, edited }) => {
+  const legacyKey = "mycmux.feedback.draft.v1";
+  const legacyDraft = JSON.stringify({ problem: "", want: "", failed: false });
+  if (legacy) localStorage.setItem(legacyKey, legacyDraft);
+  await open();
+  const problem = "控えを選ぶ前に書いた本文";
+  const want = "こちらにも入力した文";
+  if (edited) {
+    await setField("困っていること", problem);
+    await setField("こうしてほしい", want);
+  }
+
+  await announcePeerFeedbackRequests();
+  const picker = field("送れなかった要望") as HTMLSelectElement;
+  await setField("送れなかった要望", savedA);
+  if (edited) {
+    expect.soft(field("困っていること").value).toBe(problem);
+    expect.soft(field("こうしてほしい").value).toBe(want);
+    expect.soft(picker.value).toBe("");
+    expect.soft(picker.options[0]?.value).toBe("");
+    expect(document.body.textContent).toContain(feedbackStrings.draftSwitchBlocked);
+    expect(button(feedbackStrings.copyDraft)).toBeDefined();
+    await click(feedbackStrings.keepAsSeparateRequest);
+    const kept = Object.entries(localStorage).filter(([key]) =>
+      key.startsWith("mycmux.feedback.draft.v2.") && key !== savedA && key !== savedB);
+    expect(kept).toHaveLength(1);
+    expect(JSON.parse(kept[0][1])).toMatchObject({ problem, want, failed: true });
+    await setField("送れなかった要望", savedA);
+  }
+  expect(field("困っていること").value).toBe("要望 A");
+  expect(picker.value).toBe(savedA);
+  if (legacy) expect(localStorage.getItem(legacyKey)).toBe(legacyDraft);
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("G2-011 switches a legacy failed draft only after its edited body is kept (temporary read failure: %s)", async unavailable => {
+  const legacyKey = "mycmux.feedback.draft.v1";
+  saveRequest(legacyKey, "最初に保存された要望", 300);
+  saveRequest(savedA, "要望 A", 100);
+  saveRequest(savedB, "要望 B", 200);
+  const stored = localStorage.getItem(legacyKey);
+  await open();
+  const picker = field("送れなかった要望") as HTMLSelectElement;
+  expect(picker.value).toBe(legacyKey);
+
+  const problem = "保存の照合が済んでいない編集";
+  const want = "続けて入力した本文";
+  const originalRead = Storage.prototype.getItem;
+  const read = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+    if (unavailable && key === legacyKey) throw new Error("synthetic temporary read failure");
+    return originalRead.call(this, key);
+  });
+  try {
+    await setField("困っていること", problem);
+    await setField("こうしてほしい", want);
+  } finally {
+    read.mockRestore();
+  }
+  await announcePeerFeedbackRequests();
+  expect(picker.disabled).toBe(false);
+
+  const keptEdits = () => Object.entries(localStorage).filter(([key]) =>
+    key.startsWith("mycmux.feedback.draft.v2.") && key !== savedA && key !== savedB);
+  await setField("送れなかった要望", savedA);
+  if (unavailable) {
+    expect.soft(field("困っていること").value).toBe(problem);
+    expect.soft(field("こうしてほしい").value).toBe(want);
+    expect.soft(picker.value).toBe(legacyKey);
+    expect(keptEdits()).toHaveLength(0);
+    expect(localStorage.getItem(legacyKey)).toBe(stored);
+    expect(document.body.textContent).toContain(feedbackStrings.draftSwitchBlocked);
+    const clipboard = vi.fn(async (_text: string) => {});
+    vi.stubGlobal("navigator", { platform: navigator.platform, clipboard: { writeText: clipboard } });
+    await click(feedbackStrings.copyDraft);
+    expect(clipboard).toHaveBeenCalledExactlyOnceWith(problem + "\n\n" + want);
+    expect(keptEdits()).toHaveLength(0);
+    await click(feedbackStrings.keepAsSeparateRequest);
+    expect(localStorage.getItem(legacyKey)).toBe(stored);
+    await setField("送れなかった要望", savedA);
+  }
+  expect(keptEdits()).toHaveLength(1);
+  expect(JSON.parse(keptEdits()[0][1])).toMatchObject({ problem, want });
+  expect(field("困っていること").value).toBe("要望 A");
+  expect(picker.value).toBe(savedA);
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+it("G2-007 hides the switch advice only while window close is being confirmed", async () => {
+  await open();
+  await setField("困っていること", "切り替えずに残す本文");
+  await announcePeerFeedbackRequests();
+  await setField("送れなかった要望", savedA);
+  expect(document.body.textContent).toContain(feedbackStrings.draftSwitchBlocked);
+
+  let close!: Promise<boolean>;
+  await act(async () => { close = confirmFeedbackWindowClose(); });
+  expect.soft(document.body.textContent).not.toContain(feedbackStrings.draftSwitchBlocked);
+  expect(document.body.textContent).toContain(feedbackStrings.keepUnsavedDraft);
+  expect([...document.querySelectorAll("button")].some(item => item.textContent === feedbackStrings.keepAsSeparateRequest))
+    .toBe(false);
+  await click("取消");
+  await expect(close).resolves.toBe(false);
+  expect(document.body.textContent).toContain(feedbackStrings.draftSwitchBlocked);
+  expect(document.body.textContent).not.toContain(feedbackStrings.keepUnsavedDraft);
+  expect(button(feedbackStrings.copyDraft)).toBeDefined();
+  expect(button(feedbackStrings.keepAsSeparateRequest)).toBeDefined();
+  expect(field("困っていること").value).toBe("切り替えずに残す本文");
+  expect(mocks.send).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("never carries B's image to A when the selected request changes (normalizing: %s)", async normalizing => {
+  saveRequest(savedA, "要望 A", 100);
+  saveRequest(savedB, "要望 B", 200);
+  mocks.capture.mockRejectedValue("unavailable");
+  await open();
+  expect(field("困っていること").value).toBe("要望 B");
+  const conversion = deferred<typeof image>();
+  if (normalizing) mocks.normalize.mockReturnValueOnce(conversion.promise);
+  await paste([new File(["synthetic"], "request-b.png", { type: "image/png" })]);
+  expect(previews()).toHaveLength(normalizing ? 0 : 1);
+
+  await setField("送れなかった要望", savedA);
+  expect(field("困っていること").value).toBe("要望 A");
+  expect(document.body.textContent).toContain("要望を切り替えたため、前の画像を外しました。");
+  await act(async () => { conversion.resolve(image); });
+  await click("送る");
+
+  expect(mocks.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ problem: "要望 A", images: [] }));
+});
+
+it.each(["select", "submit"])("does not send an already sent saved revision after a second window tries to %s it", async action => {
+  saveRequest(savedA, "要望 A", 100);
+  saveRequest(savedB, "要望 B", 200);
+  await open();
+  const first = document.querySelector('[role="dialog"]')!;
+  await setField("送れなかった要望", savedA, first);
+  const secondRoot = createRoot(document.createElement("div"));
+  try {
+    await act(async () => { secondRoot.render(createElement(FeedbackDialog, {
+      initialImages: [], captureMessage: "", onClose: () => secondRoot.render(null),
+    })); });
+    const second = [...document.querySelectorAll('[role="dialog"]')].find(dialog => dialog !== first)!;
+    expect(field("困っていること", second).value).toBe("要望 B");
+    if (action === "submit") await setField("送れなかった要望", savedA, second);
+    await click("送る", first);
+    expect(localStorage.getItem(savedA)).toBeNull();
+    if (action === "select") {
+      // Model the interval before the other window's storage event is delivered.
+      await setField("送れなかった要望", savedA, second);
+      expect(field("困っていること", second).value).toBe("要望 B");
+    } else {
+      await click("送る", second);
+      expect(field("困っていること", second).value).toBe("要望 A");
+      expect(button("本文をコピー", second)).toBeDefined();
+      await setField("困っていること", "要望 A の編集を保つ", second);
+      expect(Object.keys(localStorage).filter(key => key.startsWith("mycmux.feedback.draft.v2."))).toEqual([savedB]);
+      await click("別の要望として控えを残す", second);
+      const otherKey = Object.keys(localStorage).find(key => key !== savedA && key !== savedB
+        && key.startsWith("mycmux.feedback.draft.v2."));
+      expect(otherKey).toBeDefined();
+      expect(JSON.parse(localStorage.getItem(otherKey!)!).problem).toBe("要望 A の編集を保つ");
+    }
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(savedB)).not.toBeNull();
+  } finally {
+    await act(async () => secondRoot.unmount());
+  }
 });
 
 describe("feedback review regressions", () => {

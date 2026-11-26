@@ -30,6 +30,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { applyExternalStoreUpdate } from "../../stores/syncedPersist";
 import { useUiStore } from "../../stores/uiStore";
 import { evictTerminalCache } from "../../components/terminal/terminalCache";
+import { useComposerStore, type PaneSendDraft, type PaneSendTransfer } from "../../stores/composerStore";
 import { focusController } from "../focusController";
 import { detachedDockTarget, useDetachedDockStore, type DockTarget } from "../../stores/detachedDockStore";
 import { TearoutReleaseReceiver, afterReleasePaint, type ReleasePoint, type ReleaseFrame, type ReleaseApproval } from "./release";
@@ -59,7 +60,18 @@ const FINALIZE = "mycmux://tearout-finalize";
 const HIGHLIGHT = "mycmux://tearout-highlight";
 const PROGRESS = "mycmux://tearout-progress";
 type Approval = ReleaseApproval;
-interface Delivery { token: string; source: string; configs: WorkspaceConfig[]; placement?: DetachedReturnTarget; approval?: Approval; activeSessionId?: string | null; liveSessions?: string[]; pendingPresendPauses?: string[]; dock?: { requester: string } }
+interface Delivery {
+  token: string;
+  source: string;
+  configs: WorkspaceConfig[];
+  placement?: DetachedReturnTarget;
+  approval?: Approval;
+  activeSessionId?: string | null;
+  liveSessions?: string[];
+  pendingPresendPauses?: string[];
+  composerSends?: PaneSendDraft[];
+  dock?: { requester: string };
+}
 interface DockReservationRefusal { kind: "reservation"; pre_ownership: true; source: string; deliveryToken: string;
   refusalSource?: TearoutRefusalSource; blockerId?: string | null }
 type DockRefusal = DockReservationRefusal | {
@@ -93,7 +105,8 @@ let spareRefill: { request: () => void; activity: () => void } | null = null;
 const receipts = new Map<string, (receipt: Receipt) => void>();
 interface Incoming { delivery: Delivery; before: Workspace[]; revoked: boolean; workspace: string | null; session: string | null;
   zoom: string | null; remembered: Record<string, string>; settled: Promise<void>; settle: () => void; addedIds: Set<string>;
-  failed: boolean; cancel: () => void; receiving: boolean; finalized: boolean; notices: Set<string> }
+  failed: boolean; cancel: () => void; receiving: boolean; finalized: boolean; notices: Set<string>;
+  finishComposerSends?: (committed: boolean) => void }
 const incoming = new Map<string, Incoming>();
 let incomingCheckTimer: number | null = null;
 let incomingCheckEpoch = 0;
@@ -323,6 +336,8 @@ function sessions(configs: WorkspaceConfig[]): string[] {
 }
 
 function removeReceived(entry: Incoming): void {
+  entry.finishComposerSends?.(false);
+  entry.finishComposerSends = undefined;
   const ids = entry.addedIds;
   const list = useWorkspaceListStore.getState();
   if (!list.workspaces.some((workspace) => workspace.panes.some((pane) => pane.tabs.some((tab) => ids.has(tab.id))))) return;
@@ -509,7 +524,14 @@ async function receive(delivery: Delivery & { receiverCreationId?: string }): Pr
     const ownedIds = useWorkspaceListStore.getState().workspaces.flatMap((ws) => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)));
     if (!expected.every((id) => ownedIds.includes(id))) throw new Error("tearout_session_identity_changed");
     checkpoint = "other";
-    stage("publish_wait"); await wait(adapter!.publish()); stage("published"); stage("receipt");
+    stage("publish_wait"); await wait(adapter!.publish()); stage("published");
+    // This receipt is provisional. Only finalization can expose the recovery copy.
+    if (delivery.composerSends?.length) {
+      const drafts = delivery.composerSends.filter(draft =>
+        allSessionIds.includes(draft.sessionId) && ownedIds.includes(draft.sessionId));
+      entry.finishComposerSends = useComposerStore.getState().stagePaneSends(drafts);
+    }
+    stage("receipt");
     await wait(emitTo(delivery.source, RECEIPT, { token: delivery.token, ok: true, ...(delivery.dock ? details : {}) }));
   } catch (error) {
     if (entry.revoked) return;
@@ -533,6 +555,7 @@ async function receive(delivery: Delivery & { receiverCreationId?: string }): Pr
 function releaseIncomingReservation(token: string, entry: Incoming | undefined, reason: string, log = true): boolean {
   if (incoming.get(token) !== entry || entry?.receiving) return false;
   if (entry && (entry.failed || entry.revoked)) removeReceived(entry);
+  else entry?.finishComposerSends?.(entry.finalized || reason === "sender_gone_settled");
   incoming.delete(token); finishIncomingTearout(token);
   if (log) console.warn("[tearout] incoming reservation released", { token, reason });
   if (!incoming.size && !incomingTearoutTokens().length && incomingCheckTimer !== null) {
@@ -627,13 +650,19 @@ const emitToReceiver = (target: string, event: string, payload: Delivery & { rec
 
 async function send(label: string, configs: WorkspaceConfig[], placement?: DetachedReturnTarget, approval?: Approval,
   token: string = crypto.randomUUID(), activeSessionId?: string | null, liveSessions?: string[],
-  dock?: { requester: string; details: DockDiagnostics }, receiverCreationId?: string): Promise<string> {
+  dock?: { requester: string; details: DockDiagnostics }, receiverCreationId?: string,
+  claimedComposerSends?: PaneSendDraft[]): Promise<string> {
   const emitTo = (target: string, event: string, payload: Delivery) =>
     emitToReceiver(target, event, receiverCreationId ? { ...payload, receiverCreationId } : payload);
   const receipt = new Promise<Receipt>((resolve) => receipts.set(token, resolve));
   try {
-    const pendingPresendPauses = sessions(configs).filter(id => presendTab(id)?.paused);
+    const sessionIds = sessions(configs);
+    const pendingPresendPauses = sessionIds.filter(id => presendTab(id)?.paused);
+    const paneSends = useComposerStore.getState().paneSendsBySession;
+    const composerSends = claimedComposerSends ?? sessionIds.flatMap(id =>
+      (paneSends[id] ?? []).filter(draft => draft.provisional === undefined).map(({ sessionId, id, text }) => ({ sessionId, id, text })));
     await emitTo(label, DELIVERY, { token, source: windowLabel(), configs, placement, approval, activeSessionId, liveSessions, pendingPresendPauses,
+      ...(composerSends.length ? { composerSends } : {}),
       ...(dock ? { dock: { requester: dock.requester } } : {}) });
     if (dock) {
       dockStage(token, dock.details, "child", "delivery_sent", [dock.requester]);
@@ -691,8 +720,9 @@ export async function waitForTearoutReceiver(label: string, creationId: string, 
   finally { window.clearInterval(timer); receipts.delete(token); signal.removeEventListener("abort", cancel); }
 }
 export async function sendTearoutWorkspaces(label: string, configs: WorkspaceConfig[], liveSessions: string[],
-  activeSessionId?: string | null, token = crypto.randomUUID(), receiverCreationId?: string): Promise<string> {
-  return send(label, configs, undefined, undefined, token, activeSessionId, liveSessions, undefined, receiverCreationId);
+  activeSessionId?: string | null, token = crypto.randomUUID(), receiverCreationId?: string,
+  composerSends?: PaneSendDraft[]): Promise<string> {
+  return send(label, configs, undefined, undefined, token, activeSessionId, liveSessions, undefined, receiverCreationId, composerSends);
 }
 export function visitTearoutLocation(workspaceId: string, sessionId: string | null, label = windowLabel()): void {
   if (label !== windowLabel()) { void WebviewWindow.getByLabel(label).then(view => view?.setFocus()).catch(() => {}); return; }
@@ -812,10 +842,13 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
   let preOwnershipRefused = false;
   let removed = false;
   let delivered: string | undefined;
+  let sendTransfer: PaneSendTransfer | undefined;
+  let transferCommitted = false;
   let recoveryError: unknown;
   try {
     stage("prepare_wait");
     configs = before.map(workspace => adapter!.serialize(workspace));
+    sendTransfer = useComposerStore.getState().startPaneSendTransfer(sessions(configs));
     liveSessions = await liveTransferSessions(configs);
     details.transferred_session_ids = sessions(configs);
     if (configs.length !== 1 || !nativeDropAllowed(configs[0].panes.length, request.approval.target)) throw new Error("tearout_dock_shape_unsupported");
@@ -846,7 +879,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
     const target = request.approval.target;
     const placement: DetachedReturnTarget = target.kind === "tab-index" ? { ...target, kind: "pane" } : target;
     delivered = await send(request.approval.receiver, configs, placement, request.approval, request.deliveryToken, selection.session, liveSessions,
-      { requester: request.requester, details });
+      { requester: request.requester, details }, undefined, sendTransfer.drafts());
     await invoke("tearout_phase", { id, phase: "received" });
     await invoke("tearout_phase", { id, phase: "cleaned" });
     const selfRequested = request.requester === windowLabel();
@@ -857,6 +890,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       record: request.record ? { ...request.record, ...activeTearoutRecords.get(request.record.drag_id)?.forRetire(target, request.approval.receiver),
         dock_stages: details.dock_stages ?? [], transferred_session_ids: details.transferred_session_ids ?? [],
         receiver_window: request.approval.receiver } : null });
+    transferCommitted = true;
   } catch (error) {
     mergeDockDiagnostics(details, diagnosticsOf(error));
     details.failure_checkpoint = failureCheckpoint(error, details.failure_checkpoint);
@@ -919,6 +953,7 @@ async function dockOutgoing(request: DockRequest): Promise<void> {
       reason: reasonOf(error), ...details,
       ...(recoveryError ? { failedSessions: recoveryError instanceof TransferFailure ? recoveryError.sessionIds : liveSessions } : {}) });
   } finally {
+    sendTransfer?.finish(transferCommitted);
     setTearoutDisplayActivity(`outgoing:${id}`, false);
     if (ownsOperation) endTearoutOperation();
     finishLayout();
@@ -1429,6 +1464,7 @@ export async function performNativePaneMove(
   let ended = false;
   let stopNative = () => {};
   let delivery: Promise<string> | null = null;
+  let sendTransfer: PaneSendTransfer | undefined;
   let published: Promise<void> = Promise.resolve();
   const checkCancelled = () => { if (cancelled) throw new Error("tearout_esc_cancelled"); };
   const escape = (event: KeyboardEvent) => {
@@ -1540,6 +1576,8 @@ export async function performNativePaneMove(
         await published;
         await invoke("tearout_settle", { label });
         await invoke("tearout_finalize", { id, token: deliveryToken });
+        sendTransfer?.finish(true);
+        sendTransfer = undefined;
         for (const tab of movedTabs) clearPresendAttempts(tab.sessionId);
         result = "kept_window";
       }
@@ -1550,6 +1588,7 @@ export async function performNativePaneMove(
     } finally { complete(); }
   };
   try {
+    sendTransfer = options.sendTransfer ?? useComposerStore.getState().startPaneSendTransfer(sessions([config]));
     const pending = await checkTearoutTransferReservation(id);
     if (pending) {
       refusedBeforeOwnership = true;
@@ -1614,7 +1653,8 @@ export async function performNativePaneMove(
       focusController.clearSession(tab.sessionId);
     }
     published = adapter.publish();
-    delivery = send(label, [config], undefined, undefined, deliveryToken, selectedSession, liveSessions).then(async (token) => {
+    delivery = send(label, [config], undefined, undefined, deliveryToken, selectedSession, liveSessions,
+      undefined, undefined, sendTransfer.drafts()).then(async (token) => {
       if (!restore) {
         await invoke("tearout_phase", { id, phase: "received" });
         execution.mark("received", label);
@@ -1642,6 +1682,7 @@ export async function performNativePaneMove(
     await rollback().catch(() => {});
     throw error;
   } finally {
+    sendTransfer?.finish(false);
     window.removeEventListener("keydown", escape, true);
     stopNative();
     useTearoutStore.setState({ gap: null });

@@ -1,7 +1,7 @@
 # build-personal.ps1 — mycmux (personal / private) build
 #
 # Requirements:
-#   * MUST be run from the master worktree (typically C:\Users\miyaz\cmux-for-linux-dev-master).
+#   * MUST be run from the master worktree.
 #   * Current branch MUST be `master`.
 #   * Working tree must be clean.
 #   * Smart App Control 制約: build は必ずこの worktree 内で実行。別 worktree (lite 側)
@@ -9,10 +9,10 @@
 #
 # Produces:
 #   * <worktree>\src-tauri\target\release\mycmux.exe
-#   * Deploys to C:\Users\miyaz\mycmux-app\mycmux.exe (with timestamped backup).
+#   * Deploys to $env:USERPROFILE\mycmux-app\mycmux.exe (with timestamped backup).
 #
 # Usage:
-#   cd C:\Users\miyaz\cmux-for-linux-dev-master
+#   Set-Location (Join-Path $env:USERPROFILE 'cmux-for-linux-dev-master')
 #   powershell -ExecutionPolicy Bypass -File build-personal.ps1
 #   # Pass -Force to auto-kill a running mycmux.exe instead of aborting.
 
@@ -26,7 +26,7 @@ param(
 # terminating error and the build aborts before npm even runs.
 $ErrorActionPreference = "Continue"
 $repoRoot = $PSScriptRoot
-$distDir  = "C:\Users\miyaz\mycmux-app"
+$distDir  = Join-Path $env:USERPROFILE "mycmux-app"
 $expectedBranch = "master"
 $exeName = "mycmux.exe"
 

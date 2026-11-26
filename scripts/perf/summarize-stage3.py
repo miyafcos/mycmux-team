@@ -93,7 +93,9 @@ def derive(root):
             f=Path(row['detailsFile']).parent/f"fake-{d['before']['app']['pid']}.json"
             if f.exists():
                 for fake in json.loads(f.read_bytes()):
-                    transcript=Path.home()/'.claude/projects/C--Users-miyaz--work-mycmux-perf3-260924-fixtures'/f"{fake['transcriptId']}.jsonl"
+                    fixture_root = Path.home() / "_work" / "mycmux-perf3-260924-fixtures"
+                    project_slug = re.sub(r"[^A-Za-z0-9]", "-", str(fixture_root))
+                    transcript = Path.home() / ".claude" / "projects" / project_slug / f"{fake['transcriptId']}.jsonl"
                     timestamps=[datetime.fromisoformat(re.sub(r'(\.\d{6})\d+', r'\1', json.loads(line)['timestamp']).replace('Z','+00:00')).timestamp()*1000 for line in transcript.read_text(encoding='utf-8').splitlines()]
                     inside=[t for t in timestamps if start<=t<=end]
                     coverage.append({'run':row['run'],'sessionId':fake['sessionId'],'linesDuringWindow':len(inside),'gapMs':stats([b-a for a,b in zip(inside,inside[1:])]),'firstAt':min(timestamps),'lastAt':max(timestamps),'windowStart':start,'windowEnd':end})

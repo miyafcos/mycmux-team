@@ -92,14 +92,35 @@ def test_invalid_cli_hash_history_is_refused(tmp_path, monkeypatch, history):
 
 
 def test_no_excluded_or_personal_content_and_utf8_lf():
+    user = Path.home().name
     for path in PACK.rglob("*"):
-        assert not sync.excluded(path.relative_to(PACK)), path
+        relative = path.relative_to(PACK)
+        assert not sync.excluded(relative), path
         if path.is_file():
             data = path.read_bytes()
             assert not data.startswith(b"\xef\xbb\xbf") and b"\r" not in data, path
             text = data.decode("utf-8")
             assert "\ufffd" not in text, path
-            assert not re.search(r"Users[/\\]+miyaz", text), path
+            assert not sync.has_personal_home_path(relative.as_posix(), text, user), path
+
+
+@pytest.mark.parametrize("user", ["example", "separate-fixture-user"])
+def test_lane_d_public_examples_pass_when_the_home_name_matches_or_differs(tmp_path, monkeypatch, user):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / user))
+    test_no_excluded_or_personal_content_and_utf8_lf()
+    skill = "session-dispatch"
+    shipped = sync.files(PACK / skill)
+    assert dict(sync.portable(skill, rel, data, user) for rel, data in shipped.items()) == shipped
+
+
+@pytest.mark.parametrize("user", ["example", "separate-fixture-user"])
+def test_lane_d_refuses_an_actual_home_in_unapproved_pack_input(tmp_path, monkeypatch, user):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / user))
+    # A new path in the already approved fixture file has no fixture exemption.
+    rel = "scripts/tests/test_dispatch_ledger.py" if user == "example" else "scripts/run.py"
+    private = rf'fixture = r"D:\Users\{user}\local-work\private.md"' + "\n"
+    with pytest.raises(ValueError, match="personal path remains"):
+        sync.portable("session-dispatch", rel, private.encode("utf-8"), user)
 
 
 def test_pack_text_files_are_lf_only():
@@ -358,13 +379,14 @@ def test_guard_example_uses_private_substitutions_and_portable_paths(tmp_path, m
     rules = tmp_path / "sample-substitutions.txt"
     rules.write_text(sample_owner + "\tExample user\n", encoding="utf-8")
     monkeypatch.setattr(sync, "PRIVATE_SUBSTITUTIONS", rules)
-    personal_home = "C:/" + "/".join(("Users", "miyaz", "example"))
+    source_user = "sample-owner"
+    personal_home = "C:/" + "/".join(("Users", source_user, "example"))
     original = {"_comment": sample_owner + "; home=" + personal_home,
                 "deny_roots": ["/private-example"], "enabled": True,
                 "nested": {"limit": 3}}
     guard.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
 
-    incoming = sync.live_view(live, "oracmux")
+    incoming = sync.live_view(live, "oracmux", source_user)
 
     assert set(incoming) == {"scripts/guard.example.json"}
     data = incoming["scripts/guard.example.json"]
@@ -383,9 +405,10 @@ def test_guard_example_refuses_remaining_personal_paths(tmp_path, monkeypatch, s
     rules = tmp_path / "sample-substitutions.txt"
     rules.write_text(sample_owner + "\tExample user\n", encoding="utf-8")
     monkeypatch.setattr(sync, "PRIVATE_SUBSTITUTIONS", rules)
-    personal_path = "D:" + separator + separator.join(("Users", "miyaz", "example"))
+    source_user = "sample-owner"
+    personal_path = "D:" + separator + separator.join(("Users", source_user, "example"))
     guard.write_text(json.dumps({"_comment": sample_owner + ": " + personal_path,
                                 "deny_roots": ["/private-example"]}, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"personal path remains: oracmux/scripts/guard\.example\.json"):
-        sync.live_view(live, "oracmux")
+        sync.live_view(live, "oracmux", source_user)

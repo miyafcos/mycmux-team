@@ -4,7 +4,8 @@ import { getFeedbackDestinationStatus, sendFeedback } from "./feedbackApi";
 import { useToastStore } from "../../stores/toastStore";
 import { OverlayShell } from "../common/OverlayShell";
 import { dialogButtonStyle } from "../settings/tabStyles";
-import { clearFeedbackDraft, loadFeedbackDraft, saveFeedbackDraft, hasFailedFeedbackDraft, rememberFeedbackSender, type FeedbackDraft } from "./feedbackDraft";
+import { clearFeedbackDraft, feedbackRevisionStatus, isFeedbackDraftKey, loadFeedbackDraft, saveFeedbackDraft, rememberFeedbackSender, type FeedbackDraft } from "./feedbackDraft";
+import { registerFeedbackWindowCloseGuard } from "./feedbackWindowClose";
 import { normalizeFeedbackImage } from "./feedbackImages";
 import { feedbackCategories, feedbackFeatures, feedbackUrgencies, feedbackErrorMessage, feedbackStrings as strings } from "./feedbackStrings";
 import { feedbackInputStyle, feedbackLabelStyle } from "./feedbackStyles";
@@ -15,8 +16,19 @@ const choicesStyle: CSSProperties = { display: "flex", gap: 6, flexWrap: "wrap",
 const dataUrl = (image: FeedbackImage) => `data:${image.mime};base64,${image.data}`;
 
 export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props) {
-  const [draft, setDraft] = useState(loadFeedbackDraft);
-  const [failed, setFailed] = useState(hasFailedFeedbackDraft);
+  const [initial] = useState(loadFeedbackDraft);
+  const [draft, setDraft] = useState(initial.draft);
+  const currentDraft = useRef(draft);
+  const recovery = useRef(initial.recovery);
+  const [failedDrafts, setFailedDrafts] = useState(initial.failedDrafts);
+  const [unsaved, setUnsaved] = useState(false);
+  const unsavedRef = useRef(false);
+  const editedBody = useRef(false);
+  const [revisionIssue, setRevisionIssue] = useState("");
+  const [draftSwitchBlocked, setDraftSwitchBlocked] = useState(false);
+  const [offerDiscard, setOfferDiscard] = useState(false);
+  const [windowClosePrompt, setWindowClosePrompt] = useState(false);
+  const pendingWindowClose = useRef<{ promise: Promise<boolean>; resolve: (allow: boolean) => void } | null>(null);
   const [images, setImages] = useState(() => initialImages.slice(0, 3));
   const [configured, setConfigured] = useState<boolean | undefined>(undefined);
   const [sending, setSending] = useState(false);
@@ -28,9 +40,10 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
   const formRef = useRef<HTMLFormElement>(null);
   const imagesRef = useRef(images);
   const submitting = useRef(false);
+  const submissionSettled = useRef<Promise<void> | null>(null);
   const addingRef = useRef(false);
+  const imageSelection = useRef(0);
   const active = useRef(true);
-  const sent = useRef(false);
 
   useEffect(() => {
     active.current = true;
@@ -42,11 +55,26 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
   }, []);
   useEffect(() => {
     rememberFeedbackSender(draft.sender);
-    if (failed && !sent.current) saveFeedbackDraft(draft);
-  }, [draft, failed]);
+  }, [draft.sender]);
   useEffect(() => {
     document.addEventListener("paste", paste);
     return () => document.removeEventListener("paste", paste);
+  }, []);
+
+  useEffect(() => {
+    const syncDrafts = (event: StorageEvent) => {
+      if (!isFeedbackDraftKey(event.key)) return;
+      setFailedDrafts(loadFeedbackDraft().failedDrafts);
+      checkSelectedRevision();
+    };
+    window.addEventListener("storage", syncDrafts);
+    const unregister = registerFeedbackWindowCloseGuard(confirmWindowClose);
+    return () => {
+      window.removeEventListener("storage", syncDrafts);
+      unregister();
+      pendingWindowClose.current?.resolve(false);
+      pendingWindowClose.current = null;
+    };
   }, []);
 
   const missing = [
@@ -54,17 +82,114 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
     !draft.problem.trim() && strings.problem, !draft.urgency && strings.urgency, !draft.sender.trim() && strings.sender,
   ].flatMap(value => value ? [value] : []);
   const tooLong = Array.from(draft.problem).length > 4000 || Array.from(draft.want).length > 2000 || Array.from(draft.sender).length > 120;
-  const canSend = configured === true && missing.length === 0 && !tooLong && !sending && !adding;
-  function update(key: keyof FeedbackDraft, value: string) { setDraft(current => ({ ...current, [key]: value })); }
+  const canSend = configured === true && missing.length === 0 && !tooLong && !sending && !adding && !revisionIssue && !windowClosePrompt;
+  const selectedFailedRecovery = recovery.current?.failed ? recovery.current : null;
+  function preserveDraft(next: FeedbackDraft, previous = recovery.current) {
+    const result = saveFeedbackDraft(next, previous);
+    if (result.saved) {
+      recovery.current = result.recovery;
+      editedBody.current = false;
+    }
+    unsavedRef.current = !result.saved;
+    if (!active.current) return;
+    setUnsaved(!result.saved);
+    if (result.saved) {
+      setFailedDrafts(loadFeedbackDraft().failedDrafts);
+      setOfferDiscard(false);
+      setRevisionIssue("");
+      setDraftSwitchBlocked(false);
+    }
+  }
+  function checkSelectedRevision(): boolean {
+    const selected = recovery.current;
+    const status = selected?.failed ? feedbackRevisionStatus(selected) : "present";
+    setRevisionIssue(status === "missing" ? strings.savedRequestChanged
+      : status === "unavailable" ? strings.savedRequestNotVerified : "");
+    return status === "present";
+  }
+  function update(key: keyof FeedbackDraft, value: string) {
+    const next = { ...currentDraft.current, [key]: value };
+    currentDraft.current = next;
+    if (key === "problem" || key === "want") editedBody.current = true;
+    if ((recovery.current?.failed || unsavedRef.current) && checkSelectedRevision()) preserveDraft(next);
+    setDraft(next);
+  }
+  function openFailedDraft(key: string) {
+    if (unsavedRef.current || submitting.current || !checkSelectedRevision()) return;
+    const selected = failedDrafts.find(entry => entry.recovery.key === key);
+    if (!selected || selected.recovery.key === recovery.current?.key) return;
+    if (feedbackRevisionStatus(selected.recovery) !== "present") {
+      setFailedDrafts(loadFeedbackDraft().failedDrafts);
+      setError(strings.savedRequestChanged);
+      return;
+    }
+    if (editedBody.current) {
+      setDraftSwitchBlocked(true);
+      return;
+    }
+    const hadImages = imagesRef.current.length > 0 || addingRef.current;
+    imageSelection.current++;
+    imagesRef.current = [];
+    addingRef.current = false;
+    setImages([]);
+    setAdding(false);
+    setPreview(null);
+    setImageMessage(hadImages ? strings.imagesClearedOnSwitch : "");
+    recovery.current = selected.recovery;
+    currentDraft.current = selected.draft;
+    setDraft(selected.draft);
+    setDraftSwitchBlocked(false);
+    setError("");
+  }
+  async function confirmWindowClose(): Promise<boolean> {
+    await submissionSettled.current;
+    if (!active.current) return true;
+    const { problem, want } = currentDraft.current;
+    const selected = recovery.current;
+    if ((!problem && !want) || (!unsavedRef.current && !editedBody.current
+      && selected && feedbackRevisionStatus(selected) === "present")) return true;
+    if (pendingWindowClose.current) return pendingWindowClose.current.promise;
+    let resolve!: (allow: boolean) => void;
+    const promise = new Promise<boolean>(done => { resolve = done; });
+    pendingWindowClose.current = { promise, resolve };
+    setPreview(null);
+    setWindowClosePrompt(true);
+    return promise;
+  }
+  function answerWindowClose(allow: boolean) {
+    const pending = pendingWindowClose.current;
+    pendingWindowClose.current = null;
+    setWindowClosePrompt(false);
+    pending?.resolve(allow);
+  }
+  function discardUnsavedDraft() {
+    if (submitting.current) return;
+    if (pendingWindowClose.current) answerWindowClose(true);
+    onClose();
+  }
   function close() {
-    if (!submitting.current) {
-      if (!failed) clearFeedbackDraft();
-      onClose();
+    if (submitting.current) return;
+    if (pendingWindowClose.current) { answerWindowClose(false); return; }
+    if (unsavedRef.current || !checkSelectedRevision()) {
+      setOfferDiscard(true);
+      return;
+    }
+    if (!recovery.current?.failed) clearFeedbackDraft(recovery.current);
+    onClose();
+  }
+  async function copyUnsavedDraft() {
+    const { problem, want } = currentDraft.current;
+    try {
+      await navigator.clipboard.writeText([problem, want].filter(Boolean).join("\n\n"));
+      useToastStore.getState().pushToast(strings.copiedDraft, "info");
+    } catch {
+      useToastStore.getState().pushToast(strings.copyDraftFailed, "warning");
     }
   }
   async function addImages(sources: File[]) {
     if (submitting.current || addingRef.current || !sources.length) return;
     addingRef.current = true; setAdding(true); setImageMessage("");
+    const selection = imageSelection.current;
     const next = [...imagesRef.current];
     const overflow = sources.length + next.length > 3;
     let message = overflow ? strings.imageLimit : "";
@@ -74,9 +199,12 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
         const value = reason instanceof Error ? reason.message : reason;
         message = value === strings.imageTooLarge ? strings.imageTooLarge : strings.errors.invalidImage;
       }
-      if (!active.current) { addingRef.current = false; return; }
+      if (!active.current || selection !== imageSelection.current) return;
     }
-    if (active.current) { imagesRef.current = next; setImages(next); setImageMessage(message); setAdding(false); }
+    imagesRef.current = next;
+    setImages(next);
+    setImageMessage(message);
+    setAdding(false);
     addingRef.current = false;
   }
   function paste(event: globalThis.ClipboardEvent) {
@@ -96,19 +224,25 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!canSend || submitting.current) return;
+    if (!canSend || submitting.current || addingRef.current || pendingWindowClose.current || !checkSelectedRevision()) return;
+    const submittedRecovery = recovery.current;
+    const submittedDraft = currentDraft.current;
+    let settle!: () => void;
+    submissionSettled.current = new Promise<void>(done => { settle = done; });
     submitting.current = true; setSending(true); setError("");
     try {
-      await sendFeedback({ ...draft, images: imagesRef.current });
-      sent.current = true; clearFeedbackDraft();
+      await sendFeedback({ ...submittedDraft, images: imagesRef.current });
+      clearFeedbackDraft(submittedRecovery);
       useToastStore.getState().pushToast(strings.sent, "info");
       onClose();
     } catch (reason) {
-      saveFeedbackDraft(draft);
-      if (active.current) { setFailed(true); setError(feedbackErrorMessage(reason)); }
+      if (checkSelectedRevision()) preserveDraft(submittedDraft, submittedRecovery);
+      if (active.current) setError(feedbackErrorMessage(reason));
     }
     finally {
       submitting.current = false;
+      submissionSettled.current = null;
+      settle();
       if (active.current) setSending(false);
     }
   }
@@ -133,6 +267,18 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
         {configured === undefined && !error && <p>{strings.checking}</p>}
         {configured === false && <p style={{ marginTop: 0 }}>{strings.errors.notConfigured}</p>}
         <fieldset disabled={sending} style={{ ...groupStyle, display: "grid", gap: 16 }}>
+          {failedDrafts.length > 1 && <label style={feedbackLabelStyle}>{strings.failedDrafts}
+            <select aria-label={strings.failedDrafts} value={selectedFailedRecovery?.key ?? ""} disabled={unsaved || !!revisionIssue || windowClosePrompt}
+              onChange={event => openFailedDraft(event.currentTarget.value)} style={feedbackInputStyle}>
+              {!selectedFailedRecovery && <option value="" disabled>{strings.choose}</option>}
+              {failedDrafts.map(entry => {
+                const body = entry.draft.problem.trim() || entry.draft.want.trim();
+                const summary = Array.from(body.replace(/\s+/g, " ")).slice(0, 48).join("") || strings.open;
+                const date = entry.savedAt === null ? "" : ` (${new Date(entry.savedAt).toLocaleString("ja-JP")})`;
+                return <option key={entry.recovery.key} value={entry.recovery.key}>{summary}{date}</option>;
+              })}
+            </select>
+          </label>}
           <section aria-label={strings.screenshots}>
             <div>{strings.screenshots} ({strings.optional})</div>
             <p style={{ margin: "6px 0", lineHeight: 1.5 }}>{strings.reviewImages}</p>
@@ -149,7 +295,7 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
               onClick={() => imageInput.current?.click()}>{strings.addImage}</button>
             <input ref={imageInput} type="file" aria-label={strings.addImage} accept="image/*" multiple hidden
               onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; void addImages(files); }} />
-            {captureMessage && <p style={{ fontSize: 11, marginBottom: 0 }}>{captureMessage}</p>}
+            {captureMessage && imageSelection.current === 0 && <p style={{ fontSize: 11, marginBottom: 0 }}>{captureMessage}</p>}
             {imageMessage && <p role="alert">{imageMessage}</p>}
           </section>
           {choices(feedbackCategories, "category", strings.category)}
@@ -177,6 +323,21 @@ export function FeedbackDialog({ initialImages, captureMessage, onClose }: Props
         <p role="status" style={{ marginBottom: 0 }}>{tooLong ? strings.tooLong : missing.length ? strings.missing(missing) : ""}</p>
         {error && <p role="alert" style={{ color: "var(--cmux-red)" }}>{error}</p>}
       </div>
+      {(unsaved || revisionIssue || windowClosePrompt || draftSwitchBlocked) && <div style={{ padding: "0 20px 12px" }}>
+        {unsaved && <p role="alert" style={{ color: "var(--cmux-red)", margin: "8px 0" }}>{strings.draftNotSaved}</p>}
+        {revisionIssue && <p role="alert" style={{ margin: "8px 0" }}>{revisionIssue}</p>}
+        {draftSwitchBlocked && !windowClosePrompt && <p role="alert" style={{ margin: "8px 0" }}>{strings.draftSwitchBlocked}</p>}
+        {(offerDiscard || windowClosePrompt || revisionIssue || draftSwitchBlocked) && <>
+          {(offerDiscard || windowClosePrompt) && <p>{strings.keepUnsavedDraft}</p>}
+          <div style={choicesStyle}>
+            <button type="button" style={dialogButtonStyle} disabled={sending} onClick={() => { void copyUnsavedDraft(); }}>{strings.copyDraft}</button>
+            {(revisionIssue || draftSwitchBlocked) && !windowClosePrompt && <button type="button" style={dialogButtonStyle} disabled={sending}
+              onClick={() => preserveDraft(currentDraft.current, null)}>{strings.keepAsSeparateRequest}</button>}
+            {(offerDiscard || windowClosePrompt) && <button type="button" style={dialogButtonStyle} disabled={sending}
+              onClick={discardUnsavedDraft}>{strings.discardUnsavedDraft}</button>}
+          </div>
+        </>}
+      </div>}
       <div style={{ padding: "12px 20px", display: "flex", gap: 8, justifyContent: "flex-end", borderTop: "1px solid var(--cmux-border)" }}>
         <button type="submit" style={dialogButtonStyle} disabled={!canSend}>{sending ? strings.sending : strings.send}</button>
         <button type="button" style={dialogButtonStyle} disabled={sending} onClick={close}>{strings.cancel}</button>

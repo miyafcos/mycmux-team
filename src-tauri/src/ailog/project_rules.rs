@@ -54,7 +54,7 @@ pub fn is_attribution_noise(path: &str) -> bool {
     parts.last().is_some_and(|file| !file.contains('.'))
 }
 
-fn path_rule(path: &str, allow_home_repo: bool) -> Option<ProjectAttribution> {
+fn path_rule(path: &str, home: &[String]) -> Option<ProjectAttribution> {
     let parts = parts(path);
     let office = parts.iter().position(|part| part == "事務関係");
     if let Some(index) = office {
@@ -91,14 +91,8 @@ fn path_rule(path: &str, allow_home_repo: bool) -> Option<ProjectAttribution> {
             return Some(ProjectAttribution::new("Claude環境", "claude_environment"));
         }
     }
-    if allow_home_repo
-        && parts.len() >= 4
-        && parts[0].eq_ignore_ascii_case("C:")
-        && parts[1].eq_ignore_ascii_case("Users")
-        && parts[2].eq_ignore_ascii_case("miyaz")
-    {
-        let repo = &parts[3];
-        if !repo.starts_with('.') {
+    if has_home_prefix(&parts, home) {
+        if let Some(repo) = parts.get(home.len()).filter(|repo| !repo.starts_with('.')) {
             return Some(ProjectAttribution::new(repo, "home_repository"));
         }
     }
@@ -110,9 +104,17 @@ fn is_numbered_folder(value: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2] == b'_'
 }
 
-fn is_home_root(cwd: &str) -> bool {
-    let normalized = cwd.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    normalized == "c:/users/miyaz"
+fn has_home_prefix(path: &[String], home: &[String]) -> bool {
+    let windows_drive = home.first().is_some_and(|part| part.ends_with(':'));
+    !home.is_empty()
+        && path.len() >= home.len()
+        && path.iter().zip(home).all(|(actual, expected)| {
+            if windows_drive {
+                actual.eq_ignore_ascii_case(expected)
+            } else {
+                actual == expected
+            }
+        })
 }
 
 fn absolute_touch(cwd: &str, touch: &str) -> String {
@@ -126,8 +128,37 @@ fn absolute_touch(cwd: &str, touch: &str) -> String {
 }
 
 pub fn derive_project(cwd: &str, touched_paths: &[&str]) -> ProjectAttribution {
-    if !is_home_root(cwd) {
-        if let Some(attribution) = path_rule(cwd, true) {
+    let home = dirs::home_dir().map_or_else(Vec::new, |home| parts(&home.to_string_lossy()));
+    #[cfg(test)]
+    let home = FIXTURE_HOME.lock().unwrap().as_ref()
+        .filter(|(fixture_cwd, _)| *fixture_cwd == cwd)
+        .map(|(_, fixture_home)| parts(fixture_home))
+        .unwrap_or(home);
+    derive_project_for_home(cwd, touched_paths, &home)
+}
+
+#[cfg(test)]
+static FIXTURE_HOME: std::sync::Mutex<Option<(&str, &str)>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn with_fixture_home<R>(cwd: &'static str, home: &'static str, run: impl FnOnce() -> R) -> R {
+    // The DB writer runs on a blocking thread. Scope the override to this
+    // fixture's exact cwd so concurrent tests still use the normal home.
+    struct RestoreHome;
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            *FIXTURE_HOME.lock().unwrap() = None;
+        }
+    }
+    assert!(FIXTURE_HOME.lock().unwrap().replace((cwd, home)).is_none());
+    let _restore = RestoreHome;
+    run()
+}
+
+fn derive_project_for_home(cwd: &str, touched_paths: &[&str], home: &[String]) -> ProjectAttribution {
+    let cwd_parts = parts(cwd);
+    if cwd_parts.len() != home.len() || !has_home_prefix(&cwd_parts, home) {
+        if let Some(attribution) = path_rule(cwd, home) {
             return attribution;
         }
     }
@@ -138,7 +169,7 @@ pub fn derive_project(cwd: &str, touched_paths: &[&str]) -> ProjectAttribution {
         if is_attribution_noise(&path) {
             continue;
         }
-        if let Some(attribution) = path_rule(&path, true) {
+        if let Some(attribution) = path_rule(&path, home) {
             let entry = votes
                 .entry(attribution.key.clone())
                 .or_insert((0, attribution));
@@ -163,7 +194,7 @@ mod tests {
     #[test]
     fn derives_all_path_rules_and_normalizes_key() {
         assert_eq!(
-            derive_project(r"C:\Users\miyaz\Dropbox\事務関係\北斗学院\ひかりスタ\数学", &[]).label,
+            derive_project(r"C:\Users\example\Dropbox\事務関係\北斗学院\ひかりスタ\数学", &[]).label,
             "北斗学院/ひかりスタ"
         );
         assert_eq!(
@@ -175,14 +206,33 @@ mod tests {
             "案件A"
         );
         assert_eq!(
-            derive_project(r"C:\Users\miyaz\cmux-for-linux-dev-master", &[]).label,
+            derive_project_for_home(
+                r"C:\Users\example\cmux-for-linux-dev-master",
+                &[],
+                &parts(r"C:\Users\Example"),
+            ).label,
             "cmux-for-linux-dev-master"
         );
         assert_eq!(
-            derive_project(r"C:\Users\miyaz\.claude\skills\x", &[]).label,
+            derive_project(r"C:\Users\example\.claude\skills\x", &[]).label,
             "Claude環境"
         );
         assert_eq!(normalize_key("北斗学院\\ひかりスタ"), "北斗学院/ひかりスタ");
+    }
+
+
+    #[test]
+    fn lane_d_home_repository_attribution_preserves_the_windows_shape() {
+        for (home, cwd, file) in [
+            (r"C:\Users\Example", r"c:\users\EXAMPLE\ProjectX", r"c:\users\EXAMPLE\ProjectX\file.rs"),
+            ("/Users/sample-owner", "/Users/sample-owner/ProjectX", "/Users/sample-owner/ProjectX/file.rs"),
+        ] {
+            let home_parts = parts(home);
+            let from_cwd = derive_project_for_home(cwd, &[], &home_parts);
+            let from_file = derive_project_for_home(home, &[file], &home_parts);
+            assert_eq!(from_cwd, ProjectAttribution::new("ProjectX", "home_repository"));
+            assert_eq!((from_file.key, from_file.label), (from_cwd.key, from_cwd.label));
+        }
     }
 
     #[test]
@@ -190,10 +240,10 @@ mod tests {
         let touches = [
             r"C:\dropbox\事務関係\北斗学院\ひかりスタ\a.md",
             r"C:\dropbox\事務関係\北斗学院\ひかりスタ\b.md",
-            r"C:\Users\miyaz\AppData\Local\Temp\scratch.tmp",
+            r"C:\Users\example\AppData\Local\Temp\scratch.tmp",
         ];
         assert_eq!(
-            derive_project(r"C:\Users\miyaz", &touches).label,
+            derive_project_for_home(r"C:\Users\example", &touches, &parts(r"C:\Users\example")).label,
             "北斗学院/ひかりスタ"
         );
         assert_eq!(
@@ -205,7 +255,7 @@ mod tests {
     #[test]
     fn noise_is_excluded_and_empty_votes_fall_back() {
         assert!(is_attribution_noise(
-            r"C:\Users\miyaz\AppData\Roaming\x.txt"
+            r"C:\Users\example\AppData\Roaming\x.txt"
         ));
         assert!(is_attribution_noise(r"C:\repo\.git\HEAD"));
         assert!(is_attribution_noise(r"C:\tmp\scratch"));

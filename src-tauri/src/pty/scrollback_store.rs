@@ -1,13 +1,42 @@
 use crc32fast::hash;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAGIC: &[u8; 4] = b"MSBK";
 const VERSION: u16 = 1;
 const HEADER_LEN: usize = 32;
+
+// Only remember writes while the startup sweep can race their first layout save.
+type StartupPublications = HashMap<PathBuf, HashSet<String>>;
+static STARTUP_PUBLICATIONS: OnceLock<Mutex<StartupPublications>> = OnceLock::new();
+
+fn startup_publications() -> MutexGuard<'static, StartupPublications> {
+    STARTUP_PUBLICATIONS.get_or_init(Default::default).lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+pub(crate) struct StartupPublicationGuard(PathBuf);
+
+pub(crate) fn protect_startup_publications(dir: &Path) -> StartupPublicationGuard {
+    startup_publications().entry(dir.to_owned()).or_default();
+    StartupPublicationGuard(dir.to_owned())
+}
+
+impl Drop for StartupPublicationGuard {
+    fn drop(&mut self) {
+        startup_publications().remove(&self.0);
+    }
+}
+
+fn record_startup_publication(dir: &Path, storage_id: &str) {
+    if let Some(published) = startup_publications().get_mut(dir) {
+        published.insert(storage_id.to_owned());
+    }
+}
 
 pub struct PersistedScrollback {
     pub start_offset: u64,
@@ -145,6 +174,7 @@ pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
     let legacy_path = unique_legacy_scrollback_path(dir, tab_id)?;
     let persisted = parse_persisted_scrollback(&fs::read(&legacy_path).ok()?)?;
     fs::rename(legacy_path, path).ok()?;
+    record_startup_publication(dir, storage_id);
     Some(persisted)
 }
 
@@ -182,7 +212,8 @@ pub fn save(
     end_offset: u64,
     data: &[u8],
 ) -> io::Result<()> {
-    let file_name = session_file_name(scrollback_storage_id(session_id))?;
+    let storage_id = scrollback_storage_id(session_id);
+    let file_name = session_file_name(storage_id)?;
     let data_len = u32::try_from(data.len()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -213,7 +244,9 @@ pub fn save(
         file.write_all(data)?;
         sync_scrollback(&file)?;
         let _activity = lock_layout_directory(dir)?;
-        fs::rename(&tmp_path, &path)
+        fs::rename(&tmp_path, &path)?;
+        record_startup_publication(dir, storage_id);
+        Ok(())
     })();
 
     if write_result.is_err() {
@@ -286,7 +319,12 @@ where
     };
 
     // The same name can be used by a different spelling on a case-insensitive volume.
-    let keep: HashSet<_> = keep.iter().map(|key| key.to_ascii_lowercase()).collect();
+    // The startup sweep holds the layout activity lock while reading this
+    // set, so a publish either precedes this snapshot or happens after GC.
+    let mut keep: HashSet<_> = keep.iter().map(|key| key.to_ascii_lowercase()).collect();
+    if let Some(published) = startup_publications().get(dir) {
+        keep.extend(published.iter().map(|key| key.to_ascii_lowercase()));
+    }
     let legacy_suffixes: Vec<_> = keep.iter().map(|key| format!("-{key}")).collect();
     for entry in entries {
         let entry = entry?;

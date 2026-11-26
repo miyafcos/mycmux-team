@@ -82,8 +82,10 @@ struct DataJsonFingerprint {
 
 pub fn run_startup_retention(
     profile_dir: Option<PathBuf>, mycmux_dir: Option<PathBuf>, scrollback_startup_cutoff: SystemTime,
+    startup_publications: Option<crate::pty::scrollback_store::StartupPublicationGuard>,
 ) {
     let _retention_task = tauri::async_runtime::spawn_blocking(move || {
+        let _startup_publications = startup_publications;
         let Some(profile_dir) = profile_dir else {
             eprintln!("[session_retention] skipped: app data directory was not resolved");
             return;
@@ -957,6 +959,35 @@ mod tests {
         fs::rename(temporarily_unavailable, backups).unwrap();
         assert!(backup.is_file());
         assert_eq!(scrollback_store::load(&scrollback, &session).unwrap().data, b"output");
+    }
+
+    #[test]
+    fn lane_a_history_published_during_clock_rollback_survives_startup() {
+        use crate::pty::scrollback_store;
+        let temp = tempfile::tempdir().unwrap();
+        let mut roots = roots(&temp);
+        let tab = "aaaaaaaa-0000-4000-8000-000000000016";
+        let session = make_session_id("pending", "pane", tab);
+        write_data_json(&roots, APP_DATA_DIR_PREFIX, &[]);
+        let path = scrollback_path(&roots, APP_DATA_DIR_PREFIX, tab);
+        let directory = path.parent().unwrap();
+        let cutoff = SystemTime::now();
+        roots.scrollback_startup_cutoff = cutoff;
+
+        let _publications = scrollback_store::protect_startup_publications(directory);
+        run_retention_once_with_before_reprobe(&roots, cutoff + Duration::from_secs(1), || {
+            let mut written = None;
+            assert!(scrollback_store::save_if_changed(directory, &session, 0, 6, b"output", &mut written).unwrap());
+            fs::OpenOptions::new().write(true).open(&path).unwrap()
+                .set_modified(cutoff - Duration::from_secs(60)).unwrap();
+            assert!(path.metadata().unwrap().modified().unwrap() < cutoff);
+            Ok(())
+        }).unwrap();
+
+        assert_eq!(
+            scrollback_store::load(directory, &session).map(|history| history.data),
+            Some(b"output".to_vec())
+        );
     }
 
     #[test]

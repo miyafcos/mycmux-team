@@ -2710,7 +2710,7 @@ mod tests {
     fn injects_no_color_for_antigravity_and_gemini_leaves_too() {
         let mut e = env(&[]);
         inject_no_color_for_agy(
-            "C:\\Users\\miyaz\\AppData\\Local\\agy\\bin\\antigravity.exe",
+            "C:\\Users\\example\\AppData\\Local\\agy\\bin\\antigravity.exe",
             &mut e,
         );
         assert_eq!(e.get("NO_COLOR"), Some(&"1".to_string()));

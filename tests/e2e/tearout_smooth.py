@@ -17,7 +17,9 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-DISPATCH = Path(r"C:\Users\miyaz\.claude\dispatch\261003-mycmux-smooth\t1")
+DISPATCH = Path(os.environ["MYCMUX_TEAROUT_SMOOTH_DISPATCH"]).expanduser() if "MYCMUX_TEAROUT_SMOOTH_DISPATCH" in os.environ else (
+    Path.home() / ".claude" / "dispatch" / "261003-mycmux-smooth" / "t1"
+)
 sys.path.insert(0, str(DISPATCH / "e2e"))
 import drive
 import tmctl

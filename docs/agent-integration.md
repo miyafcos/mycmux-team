@@ -166,11 +166,11 @@ Claude harness の `ListAgents` は harness registry、mycmux の `pane.list_all
 共有 skill の入口:
 
 ```
-python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py list
-python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py read --session <PTY-sessionId> --lines 400
-python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py status --session <PTY-sessionId>
-python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py send --session <PTY-sessionId> --text "<message>"
-python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answer-ask --session <PTY-sessionId> --answers-json '{"<question>": 2}'
+python "$HOME/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" list
+python "$HOME/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" read --session <PTY-sessionId> --lines 400
+python "$HOME/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" status --session <PTY-sessionId>
+python "$HOME/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" send --session <PTY-sessionId> --text "<message>"
+python "$HOME/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py" answer-ask --session <PTY-sessionId> --answers-json '{"<question>": 2}'
 ```
 
 - `read` / `status` / `send` / `answer-ask` の ID は、`pane.list_all` の `tabs[].sessionId` にある PTY session ID だけを使う。workspace ID、pane ID、tab ID、agentSessionId、claudeSessionId は別物

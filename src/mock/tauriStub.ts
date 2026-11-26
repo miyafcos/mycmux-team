@@ -77,7 +77,7 @@ export async function emit(): Promise<void> {
 }
 
 export async function homeDir(): Promise<string> {
-  return "C:\\Users\\miyaz";
+  return "C:\\Users\\example";
 }
 
 export function convertFileSrc(path: string): string {

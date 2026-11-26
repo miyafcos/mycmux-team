@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ kill: vi.fn(), destroy: vi.fn(async () => {}),
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<object>(), invoke: vi.fn(async () => undefined) }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "mycmux-w1", destroy: mocks.destroy, setTitle: async () => {} }) }));
 vi.mock("../../src/lib/ipc", async original => ({ ...await original<object>(), killSession: mocks.kill,
-  setWindowCloseIntent: async () => {}, takePendingAdoption: async () => [] }));
+  setWindowCloseIntent: async (_closing: boolean, destroy: boolean) => { if (destroy) await mocks.destroy(); }, takePendingAdoption: async () => [] }));
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.confirm }));
 vi.mock("../../src/lib/paneCloseLifecycle", () => ({ beforePaneClose: vi.fn() }));
 vi.mock("../../src/lib/focusController", async original => ({ ...await original<object>(), focusController: { request: vi.fn(), clearSession: vi.fn() } }));

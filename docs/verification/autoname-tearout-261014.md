@@ -18,4 +18,4 @@ Windows は start_dragging の直前に現在のカーソルから掴み点を�
 
 Windows の全 Vitest を通すため、既存の試験ヘルパーも2か所補正しています。narrowBasePlugin は共有モジュールのパスを / にそろえ、仮想モジュールにも実際の作業ツリーのドライブを付けます。Codex restore の Bash fixture は Git Bash の DLL が解決できる PATH を使い、そのディレクトリに本物の Codex が無いことを検査します。アプリの launcher.sh と復元の引数は変更していません。
 
-実行結果・命名の実データ比較・試験機の確認手順は、C:\Users\miyaz\.claude\dispatch\261014-mycmux-v088-follow\fix0882\DONE.md、naming_before_after.md、manual_check.md にまとめます。
+実行結果・命名の実データ比較・試験機の確認手順は、~\.claude\dispatch\261014-mycmux-v088-follow\fix0882\DONE.md、naming_before_after.md、manual_check.md にまとめます。

@@ -159,7 +159,33 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new)
 
 
-def portable(name: str, rel: str, data: bytes) -> tuple[str, bytes]:
+# Exact fixture lines already shipped in the portable pack. Their source
+# locations and literal text both matter when the maintainer is named example.
+_PUBLIC_HOME_FIXTURES = {
+    "session-dispatch/scripts/tests/test_dispatch_ledger.py": (
+        r'''            "spec": r"C:\Users\example\.claude\dispatch\260813-foo\spec.md",''',
+        r'''        '"spec":"C:\\Users\\example\\.claude\\dispatch\\260810-newbook\\spec.md",''' + "'",
+    ),
+    "session-dispatch/scripts/tests/fixtures/screens/normal_working.txt": (
+        r'''"C:\Users\example\AppData\Local\Temp\claude\C--Users-example\d5233577-2d63-481e-a
+609-55687129a0cd\scratchpad\canary_spec.md" and continue from where it left''',
+    ),
+}
+
+
+def personal_home_pattern(source_user: str) -> re.Pattern[str]:
+    return re.compile(r"Users([/\\]+)" + re.escape(source_user) + r"(?![\w.-])", re.I)
+
+
+def has_personal_home_path(pack_path: str, text: str, source_user: str) -> bool:
+    if source_user.casefold() == "example":
+        text = "\n" + text + "\n"
+        for fixture in _PUBLIC_HOME_FIXTURES.get(pack_path, ()):
+            text = text.replace("\n" + fixture + "\n", "\n", 1)
+    return personal_home_pattern(source_user).search(text) is not None
+
+
+def portable(name: str, rel: str, data: bytes, source_user: str | None = None) -> tuple[str, bytes]:
     if not is_text(rel):
         return rel, data
     text = normalized_bytes(rel, data).decode("utf-8-sig")
@@ -196,25 +222,30 @@ def portable(name: str, rel: str, data: bytes) -> tuple[str, bytes]:
             line = '    monkeypatch.setenv("MYCMUX_AGENT_CLI", str(tmp_path / "mycmux_agent_cli.py"))'
             text = replace_once(text, line, line + '\n    (tmp_path / "mycmux_agent_cli.py").touch()') if '.touch()' not in text else text
     # Python regression fixtures retain Windows path syntax and escaping.
+    if source_user is None:
+        source_user = Path.home().name
     if "/tests/" in rel:
-        text = re.sub(r"Users([/\\]+)miyaz", lambda m: "Users" + m[1] + "example", text)
+        if source_user.casefold() != "example":
+            text = personal_home_pattern(source_user).sub(lambda m: "Users" + m[1] + "example", text)
     else:
-        text = text.replace("C:/Users/miyaz/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py", "<resolved-mycmux-agent-cli>")
-        text = text.replace("C:/Users/miyaz/cmux-for-linux-dev-master/", "<mycmux-repository>/")
-        text = text.replace("C:/Users/miyaz", "~").replace("C:\\Users\\miyaz", "~")
+        windows_home = f"C:/Users/{source_user}"
+        source_repo = windows_home + "/cmux-for-linux-dev-master/"
+        text = text.replace(source_repo + "scripts/mycmux_agent_cli.py", "<resolved-mycmux-agent-cli>")
+        text = text.replace(source_repo, "<mycmux-repository>/")
+        text = re.sub(r"\bC:[/\\]Users[/\\]" + re.escape(source_user) + r"(?![\w.-])", "~", text, flags=re.I)
         if rel.endswith(".md"):
             text = re.sub(r'~\\[^`"\s]+', lambda m: m[0].replace("\\", "/"), text)
     for old, new in private_substitutions():
         text = text.replace(old, new)
-    if re.search(r"Users[/\\]+miyaz", text):
+    if has_personal_home_path(f"{name}/{rel}", text, source_user):
         raise ValueError(f"personal path remains: {name}/{rel}")
     return rel, text.encode("utf-8")
 
 
-def live_view(root: Path, name: str) -> dict[str, bytes]:
+def live_view(root: Path, name: str, source_user: str | None = None) -> dict[str, bytes]:
     result = {}
     for rel, data in files(root).items():
-        target, portable_data = portable(name, rel, data)
+        target, portable_data = portable(name, rel, data, source_user)
         if target in result and result[target] != portable_data:
             raise ValueError(f"conflicting live inputs: {name}/{target}")
         result[target] = portable_data
@@ -280,7 +311,7 @@ def check_live(home: Path) -> list[str]:
         if not source.is_dir():
             print(f"SKIP live {name}: not installed")
             continue
-        expected = hashes(live_view(source, name))
+        expected = hashes(live_view(source, name, home.name))
         actual = hashes(files(PACK / name))
         changed = sorted(key for key in expected.keys() | actual.keys() if expected.get(key) != actual.get(key))
         if changed:
@@ -308,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
             source, dest = (live, PACK / name) if args.from_live else (PACK / name, live)
             if not source.is_dir():
                 raise ValueError(f"source missing: {source}")
-            incoming = live_view(source, name) if args.from_live else files(source)
+            incoming = live_view(source, name, args.home.expanduser().name) if args.from_live else files(source)
             extra = set(files(dest)) - set(incoming)
             if args.to_live:
                 extra.discard("scripts/guard.json")  # preserve user configuration

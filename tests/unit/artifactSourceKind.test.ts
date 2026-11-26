@@ -13,8 +13,8 @@ describe("sourceKindFromPath", () => {
   it.each([
     ["C:/notes/memo.txt", "text"],
     ["C:/notes/memo.TXT", "text"],
-    ["/home/miyaz/run.log", "text"],
-    ["/home/miyaz/readme.text", "text"],
+    ["/home/example/run.log", "text"],
+    ["/home/example/readme.text", "text"],
     ["C:/reports/report.md", "markdown"],
     ["C:/reports/report.markdown", "markdown"],
     ["C:/reports/report.html", "html"],

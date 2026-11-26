@@ -597,6 +597,7 @@ app_commands![
             commands::ailog::ailog_set_price,
             commands::ailog::ailog_get_usd_jpy_rate,
             commands::ailog::ailog_set_usd_jpy_rate,
+            commands::ailog::set_ailog_mirror_full_text_root,
             commands::cli_accounts::list_cli_accounts,
             commands::cli_accounts::start_claude_setup_token,
             commands::cli_accounts::submit_claude_setup_code,
@@ -798,7 +799,7 @@ pub fn run() {
                 // on exit but only creates the app config dir itself.
                 if let Some(dir) = app_handle.path().app_config_dir().ok().and_then(|dir| test_profile::window_state_dir(&dir)) {
                     if let Err(error) = std::fs::create_dir_all(&dir) {
-                        crate::diag_warn!("profile", "failed to create the window-state dir {}: {error}", dir.display());
+                        crate::diag_warn!("profile", "failed to create the window-state directory: {:?}", error.kind());
                     }
                 }
                 #[cfg(target_os = "macos")]
@@ -810,16 +811,17 @@ pub fn run() {
             if let Ok(base) = app_handle.path().app_data_dir().map(test_profile::app_data_dir_from) {
                 agent_home_roots::register(base, &state.session_manager);
             }
-            let scrollback_dir = match db::storage::scrollback_dir(&app_handle) {
+            let (scrollback_dir, startup_publications) = match db::storage::scrollback_dir(&app_handle) {
                 Ok(dir) => {
+                    let publications = pty::scrollback_store::protect_startup_publications(&dir);
                     if state.scrollback_dir.set(dir.clone()).is_err() {
                         crate::diag_warn!("scrollback", "scrollback directory was already initialized");
                     }
-                    Some(dir)
+                    (Some(dir), Some(publications))
                 }
                 Err(error) => {
                     crate::diag_warn!("scrollback", "failed to resolve scrollback directory: {error}");
-                    None
+                    (None, None)
                 }
             };
             if let Some(dir) = scrollback_dir.clone() {
@@ -863,7 +865,9 @@ pub fn run() {
             let profile_dir = app_handle.path().app_data_dir()
                 .map(test_profile::app_data_dir_from).ok();
             let mycmux_dir = test_profile::runtime_dir().ok();
-            session_retention::run_startup_retention(profile_dir, mycmux_dir, scrollback_startup_cutoff);
+            session_retention::run_startup_retention(
+                profile_dir, mycmux_dir, scrollback_startup_cutoff, startup_publications,
+            );
             if !test_profile::is_active() {
                 ailog::mirror::start_scheduler(app_handle.clone());
                 launcher_dirs::scheduler::start(app_handle.clone());

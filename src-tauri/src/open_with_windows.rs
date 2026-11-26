@@ -330,7 +330,7 @@ mod tests {
         let root = TestRegistryRoot::new();
         let base = root.classes();
         assert!(!base.starts_with(PRODUCTION_BASE));
-        let exe = Path::new("C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe");
+        let exe = Path::new("C:\\Users\\example\\AppData\\Local\\mycmux\\mycmux.exe");
         let values = registration_values(&base, exe);
         assert_eq!(values.len(), 16);
         assert!(values.iter().all(|value| value.key.starts_with(&format!("{base}\\"))));
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn exact_registry_plan_never_claims_defaults() {
-        let exe = Path::new("C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe");
+        let exe = Path::new("C:\\Users\\example\\AppData\\Local\\mycmux\\mycmux.exe");
         let values = registration_values(PRODUCTION_BASE, exe);
         let actual: Vec<String> = values
             .iter()
@@ -386,8 +386,8 @@ mod tests {
         for line in &actual {
             println!("{line}");
         }
-        let command = "\"C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe\" \"%1\"";
-        let icon = "\"C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe\",0";
+        let command = "\"C:\\Users\\example\\AppData\\Local\\mycmux\\mycmux.exe\" \"%1\"";
+        let icon = "\"C:\\Users\\example\\AppData\\Local\\mycmux\\mycmux.exe\",0";
         let expected = vec![
             "HKCU\\Software\\Classes\\mycmux.markdown||REG_SZ|Markdown (mycmux)".to_string(),
             format!("HKCU\\Software\\Classes\\mycmux.markdown\\DefaultIcon||REG_SZ|{icon}"),
@@ -421,7 +421,7 @@ mod tests {
         .contains(&item.key.as_str())));
         assert_eq!(
             values[2].value,
-            "\"C:\\Users\\miyaz\\AppData\\Local\\mycmux\\mycmux.exe\" \"%1\""
+            "\"C:\\Users\\example\\AppData\\Local\\mycmux\\mycmux.exe\" \"%1\""
         );
     }
 

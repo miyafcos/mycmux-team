@@ -4,6 +4,46 @@ import { mentionTokenKey, type MentionToken } from "../lib/mentionModel";
 export type ComposerCommandKind = "plain" | "status-request" | "answer-forward" | "continue";
 export type DashboardOptimisticMessageState = "sending" | "sent" | "failed";
 
+export interface PaneSendDraft {
+  sessionId: string;
+  id: string;
+  text: string;
+}
+
+interface PaneSend extends PaneSendDraft {
+  moved: boolean;
+  transfers?: readonly symbol[];
+  provisional?: symbol;
+}
+
+export interface PaneSendTransfer {
+  drafts: () => PaneSendDraft[];
+  finish: (committed: boolean) => void;
+}
+
+export type PaneSendResult = "sent" | "unconfirmed" | "restore";
+
+const NO_PANE_SENDS: readonly PaneSend[] = [];
+
+export function isRecoverablePaneSend(draft: PaneSend): boolean {
+  return draft.moved && !draft.transfers?.length && draft.provisional === undefined;
+}
+
+function updatePaneSends(
+  current: ComposerState["paneSendsBySession"],
+  sessionIds: readonly string[],
+  update: (drafts: readonly PaneSend[]) => readonly PaneSend[],
+): ComposerState["paneSendsBySession"] {
+  const next = { ...current };
+  for (const id of sessionIds) {
+    if (!current[id]?.length) continue;
+    const drafts = update(current[id]);
+    if (drafts.length) next[id] = drafts;
+    else delete next[id];
+  }
+  return next;
+}
+
 /**
  * A dashboard-only visual receipt. It intentionally lives next to the shared
  * draft rather than the transcript: the transcript is still the source of
@@ -41,6 +81,13 @@ export interface ComposerQuestionGuard {
  */
 interface ComposerState {
   draftBySession: Record<string, string>;
+  paneSendsBySession: Record<string, readonly PaneSend[]>;
+  beginPaneSend: (sessionId: string, text: string) => PaneSendDraft;
+  finishPaneSend: (draft: PaneSendDraft, result: PaneSendResult) => void;
+  startPaneSendTransfer: (sessionIds: readonly string[]) => PaneSendTransfer;
+  adoptPaneSends: (drafts: readonly PaneSendDraft[], provisional?: symbol) => void;
+  stagePaneSends: (drafts: readonly PaneSendDraft[]) => (committed: boolean) => void;
+  restoreMovedPaneSends: (sessionId: string) => void;
   /** Structured destination nodes. They are intentionally never serialized into draft text. */
   mentionTokensBySession: Record<string, MentionToken[]>;
   commandKindBySession: Record<string, ComposerCommandKind>;
@@ -61,8 +108,105 @@ interface ComposerState {
   consumeDashboardOptimisticRetry: (sessionId: string, requestId: number) => void;
 }
 
-export const useComposerStore = create<ComposerState>((set) => ({
+const outgoingBySession = new Map<string, Set<symbol>>();
+
+export const useComposerStore = create<ComposerState>((set, get) => ({
   draftBySession: {},
+  paneSendsBySession: {},
+  beginPaneSend: (sessionId, text) => {
+    const draft = { sessionId, id: crypto.randomUUID(), text };
+    const transfers = outgoingBySession.get(sessionId);
+    set(state => ({
+      paneSendsBySession: {
+        ...state.paneSendsBySession,
+        [sessionId]: [...(state.paneSendsBySession[sessionId] ?? NO_PANE_SENDS),
+          { ...draft, moved: false, transfers: transfers ? [...transfers] : undefined }],
+      },
+    }));
+    return draft;
+  },
+  finishPaneSend: ({ id, sessionId, text }, result) => set(state => {
+    const current = state.paneSendsBySession[sessionId]?.find(draft => draft.id === id);
+    // The destination owns the draft once the transfer finishes.
+    if (!current || current.moved) return state;
+    if (current.transfers?.length && result !== "sent") {
+      return { paneSendsBySession: updatePaneSends(state.paneSendsBySession, [sessionId],
+        drafts => drafts.map(draft => draft === current ? { ...draft, moved: true } : draft)) };
+    }
+    const paneSendsBySession = updatePaneSends(state.paneSendsBySession, [sessionId],
+      drafts => drafts.filter(draft => draft !== current));
+    if (result !== "restore") return { paneSendsBySession };
+    const existing = state.draftBySession[sessionId];
+    return {
+      paneSendsBySession,
+      draftBySession: { ...state.draftBySession, [sessionId]: existing ? `${text}\n${existing}` : text },
+    };
+  }),
+  startPaneSendTransfer: (sessionIds) => {
+    const ids = [...new Set(sessionIds)];
+    const transfer = Symbol();
+    let finished = false;
+    for (const id of ids) {
+      const pending = outgoingBySession.get(id) ?? new Set<symbol>();
+      pending.add(transfer);
+      outgoingBySession.set(id, pending);
+    }
+    const claimed = (draft: PaneSend) => draft.transfers?.includes(transfer) === true;
+    set(state => ({ paneSendsBySession: updatePaneSends(state.paneSendsBySession, ids,
+      drafts => drafts.map(draft => draft.provisional === undefined
+        ? { ...draft, transfers: [...(draft.transfers ?? []), transfer] } : draft)) }));
+    return {
+      drafts: () => ids.flatMap(sessionId => (get().paneSendsBySession[sessionId] ?? NO_PANE_SENDS)
+        .filter(claimed).map(({ id, text }) => ({ sessionId, id, text }))),
+      finish: committed => {
+        if (finished) return;
+        finished = true;
+        for (const id of ids) {
+          const pending = outgoingBySession.get(id);
+          pending?.delete(transfer);
+          if (pending?.size === 0) outgoingBySession.delete(id);
+        }
+        set(state => ({ paneSendsBySession: updatePaneSends(state.paneSendsBySession, ids, drafts => committed
+          ? drafts.filter(draft => !claimed(draft))
+          : drafts.map(draft => claimed(draft) ? { ...draft, transfers: draft.transfers!.filter(token => token !== transfer) } : draft)) }));
+      },
+    };
+  },
+  adoptPaneSends: (drafts, provisional) => set(state => {
+    const paneSendsBySession = { ...state.paneSendsBySession };
+    for (const draft of drafts) {
+      const prior = paneSendsBySession[draft.sessionId] ?? NO_PANE_SENDS;
+      if (prior.some(current => current.id === draft.id)) continue;
+      paneSendsBySession[draft.sessionId] = [...prior, { ...draft, moved: true, provisional }];
+    }
+    return { paneSendsBySession };
+  }),
+  stagePaneSends: (drafts) => {
+    const provisional = Symbol();
+    get().adoptPaneSends(drafts, provisional);
+    const ids = [...new Set(drafts.map(draft => draft.sessionId))];
+    return committed => set(state => ({
+      paneSendsBySession: updatePaneSends(state.paneSendsBySession, ids, pending => committed
+        ? pending.map(draft => draft.provisional === provisional ? { ...draft, provisional: undefined } : draft)
+        : pending.filter(draft => draft.provisional !== provisional)),
+    }));
+  },
+  restoreMovedPaneSends: (sessionId) => set(state => {
+    const drafts = state.paneSendsBySession[sessionId] ?? NO_PANE_SENDS;
+    const moved = drafts.filter(isRecoverablePaneSend);
+    if (!moved.length) return state;
+    const pending = drafts.filter(draft => !isRecoverablePaneSend(draft));
+    const paneSendsBySession = { ...state.paneSendsBySession };
+    if (pending.length) paneSendsBySession[sessionId] = pending;
+    else delete paneSendsBySession[sessionId];
+    const text = moved.map(draft => draft.text);
+    const current = state.draftBySession[sessionId];
+    if (current) text.push(current);
+    return {
+      paneSendsBySession,
+      draftBySession: { ...state.draftBySession, [sessionId]: text.join("\n") },
+    };
+  }),
   mentionTokensBySession: {},
   commandKindBySession: {},
   questionGuardBySession: {},

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   close: null as null | ((event: { preventDefault: () => void }) => Promise<void>),
   confirm: vi.fn(async () => true),
   intent: vi.fn(async (_closing: boolean, _persist?: true) => {}),
+  dispatchIntent: vi.fn<(args: { closing: boolean; sequence?: number }) => Promise<void>>(),
   kill: vi.fn(async (_id: string) => {}),
   destroy: vi.fn(async () => {}),
   save: vi.fn(async (_data: import("../../src/lib/ipc").PersistentData) => {}),
@@ -31,6 +32,20 @@ vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.handoff, listen: async (
   mocks.events.set(name, handler); return () => { mocks.events.delete(name); };
 } }));
 vi.mock("../../src/lib/paneCloseConfirmation", () => ({ confirmPaneClose: mocks.confirm }));
+vi.mock("@tauri-apps/api/core", async (original) => {
+  const actual = await original<typeof import("@tauri-apps/api/core")>();
+  return {
+    ...actual,
+    invoke: (command: string, args?: Parameters<typeof actual.invoke>[1]) => {
+      if (command === "publish_window_fragment" && (args as { readCloseIntentDocument?: boolean })?.readCloseIntentDocument) {
+        return Promise.resolve(0);
+      }
+      return command === "set_window_close_intent"
+        ? mocks.dispatchIntent(args as { closing: boolean; sequence?: number })
+        : actual.invoke(command, args);
+    },
+  };
+});
 vi.mock("../../src/lib/ipc", async (original) => {
   const actual = await original<typeof import("../../src/lib/ipc")>();
   const settings = { schema_version: 1, theme_id: "default", font_size: 14, line_height: 1.2, font_family: "monospace" };
@@ -42,12 +57,21 @@ vi.mock("../../src/lib/ipc", async (original) => {
     releaseWorkspaces: mocks.release, publishWindowFragment: mocks.publish, sendSocketResponse: mocks.response, getPtyMetadataSnapshot: mocks.metadata,
     listRunningSessionIds: async () => [],
     readAgentSessionMappings: async () => ({}), listPets: async () => [], setAppFrontendVisible: async () => {},
-    savePersistentData: mocks.save, setWindowCloseIntent: mocks.intent,
+    savePersistentData: mocks.save, setWindowCloseIntent: (closing: boolean, destroy = false) => destroy ? mocks.destroy() : mocks.intent(closing),
     killSession: mocks.kill, quitApp: mocks.quit,
   };
 });
+
+const feedback = vi.hoisted(() => ({ send: vi.fn(), status: vi.fn() }));
+vi.mock("../../src/components/feedback/feedbackApi", () => ({
+  getFeedbackDestinationStatus: feedback.status,
+  sendFeedback: feedback.send,
+}));
+import { FeedbackDialog } from "../../src/components/feedback/FeedbackDialog";
+
 import { useWorkspacePersist, toTransferConfig, __resetWindowCloseStateForTests, WINDOW_CLOSE_TIMEOUT_MS } from "../../src/components/layout/SocketListener";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { WINDOW_REGISTRY_CHANGED_EVENT, type WindowFragment } from "../../src/lib/ipc";
 import { resetWindowContextCacheForTests, setWindowRole } from "../../src/lib/windowContext";
 import { __resetPersistenceCoordinatorForTests, getPersistentSchemaState } from "../../src/lib/workspacePersistenceCoordinator";
 import { __resetGroupingRuntimeForTests } from "../../src/stores/groupingRuntimeStore";
@@ -265,6 +289,67 @@ describe("native close-request path scopes its victims to the closing window", (
     expect(alive.has("keeper-b")).toBe(true);
     expect(useWorkspaceListStore.getState().workspaces).toHaveLength(1);
   });
+  it("publishes a resumed child's layout after a canceled close arrives late", async () => {
+    const realIpc = await vi.importActual<typeof import("../../src/lib/ipc")>("../../src/lib/ipc");
+    let deliverClose!: () => void;
+    let lastIntent = 0;
+    let backendClosing = false;
+    mocks.dispatchIntent.mockImplementation(async ({ closing, sequence }) => {
+      if (closing) await new Promise<void>((resolve) => { deliverClose = resolve; });
+      const order = sequence ?? lastIntent + 1;
+      if (order <= lastIntent) throw new Error("stale close intent");
+      lastIntent = order;
+      backendClosing = closing;
+    });
+    mocks.intent.mockImplementation(realIpc.setWindowCloseIntent);
+    let published: WindowFragment | undefined;
+    mocks.publish.mockImplementation(async (fragment) => {
+      if (fragment.window_label !== "mycmux-w2") return;
+      if (backendClosing) throw new Error("window is closing");
+      published = fragment;
+    });
+
+    await boot("mycmux-w2");
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.kill.mockRejectedValueOnce(new Error("kill failed"));
+
+    await act(async () => {
+      const closing = mocks.close!({ preventDefault: vi.fn() });
+      await vi.advanceTimersByTimeAsync(WINDOW_CLOSE_TIMEOUT_MS);
+      await closing;
+    });
+    expect(mocks.intent.mock.calls.map(([closing]) => closing)).toEqual([true, false]);
+    expect(mocks.kill).toHaveBeenCalled();
+    expect(mocks.destroy).not.toHaveBeenCalled();
+    expect(backendClosing).toBe(false);
+
+    await act(async () => deliverClose());
+    await act(async () => {
+      useWorkspaceListStore.getState().renameWorkspace("victim-ws", "Resumed layout");
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(published?.workspaces.find((ws) => ws.id === "victim-ws")?.name).toBe("Resumed layout");
+
+    await act(async () => root.unmount());
+    __resetWindowCloseStateForTests();
+    __resetGroupingRuntimeForTests();
+    __resetPersistenceCoordinatorForTests();
+    setWindowRole(false);
+    useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
+    mocks.getFragments.mockResolvedValue([{ ...published! }]);
+    mocks.save.mockClear();
+    root = createRoot(host);
+    await boot("main");
+    await act(async () => {
+      mocks.events.get(WINDOW_REGISTRY_CHANGED_EVENT)!({ payload: undefined });
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(mocks.save.mock.lastCall?.[0].workspaces).toEqual([
+      expect.objectContaining({ id: "victim-ws", name: "Resumed layout" }),
+    ]);
+  });
+
   it.each(["metadata", "fragments", "save", "kill"] as const)(
     "destroys the window after a hung %s and accepts a second close request",
     async (hungStep) => {
@@ -361,6 +446,59 @@ describe("native close-request path scopes its victims to the closing window", (
     resolveMetadata({ "victim-a": { session_id: "victim-a", process_name: "cmd.exe", cwd: "late" } });
     await vi.advanceTimersByTimeAsync(0);
     expect(usePaneMetadataStore.getState().metadata).toBe(metadataBeforeLateReply);
+  });
+
+
+  it("waits for the feedback copy-or-discard choice before an OS close can destroy the window", async () => {
+    await boot("mycmux-w2");
+    feedback.status.mockResolvedValue({ configured: true });
+    feedback.send.mockRejectedValue(new Error("synthetic request failure"));
+    const key = "mycmux.feedback.draft.v2.os-close";
+    const saved = JSON.stringify({ category: "bug", feature: "dashboard", problem: "保存済みの本文",
+      want: "希望する変更", urgency: "soon", sender: "北斗 太郎", failed: true, savedAt: 1 });
+    localStorage.setItem(key, saved);
+    const setItem = Storage.prototype.setItem;
+    const quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
+      if (name.startsWith("mycmux.feedback.draft.")) throw new DOMException("disk full", "QuotaExceededError");
+      setItem.call(this, name, value);
+    });
+    const clipboard = vi.fn(async (_text: string) => {});
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboard } });
+    const form = createRoot(document.createElement("div"));
+    let close!: Promise<void>;
+    try {
+      await act(async () => form.render(createElement(FeedbackDialog, {
+        initialImages: [], captureMessage: "", onClose: () => form.render(null),
+      })));
+      const body = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="困っていること"]')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(body, "保存できなかった本文");
+      await act(async () => { body.dispatchEvent(new Event("input", { bubbles: true })); });
+      const getButton = (label: string) => [...document.querySelectorAll("button")].find(button => button.textContent === label);
+      await act(async () => getButton("送る")!.click());
+      expect(feedback.send).toHaveBeenCalledOnce();
+      const preventDefault = vi.fn();
+      await act(async () => { close = mocks.close!({ preventDefault }); });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(mocks.destroy).not.toHaveBeenCalled();
+      expect(mocks.kill).not.toHaveBeenCalled();
+      const copy = getButton("本文をコピー");
+      expect(copy).toBeDefined();
+      await act(async () => copy!.click());
+      expect(clipboard).toHaveBeenCalledWith("保存できなかった本文\n\n希望する変更");
+      expect(body.value).toBe("保存できなかった本文");
+      expect(mocks.destroy).not.toHaveBeenCalled();
+      await act(async () => { getButton("未保存の本文を破棄して閉じる")!.click(); await close; });
+      expect(mocks.destroy).toHaveBeenCalledOnce();
+      expect(localStorage.getItem(key)).toBe(saved);
+      expect(feedback.send).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => { form.unmount(); await close; });
+      quota.mockRestore();
+      localStorage.removeItem(key);
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   });
 
   it("waits for a human answer beyond the IPC deadline and never destroys on a negative answer", async () => {

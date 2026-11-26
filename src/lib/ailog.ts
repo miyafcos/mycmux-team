@@ -675,16 +675,12 @@ export interface IndexStatus {
   mirrorWarningCode: string | null;
 }
 
-/**
- * Why the full-text mirror was skipped. The metadata mirror keeps running
- * either way, so the index itself is never at risk -- what stops is the copy
- * that a whole transcript could be restored from.
- */
+/** Why the full-text mirror paused. AI log indexing continues independently. */
 export const MIRROR_WARNING_LABELS: Record<string, string> = {
   "ailog.mirror.warning.tier2_low_space":
-    "全文の控えの保存先が残りわずかです。空きを作るまで全文の控えは止まります (集計用の控えは続きます)",
+    "全文の控えの保存先が残りわずかです。空きを作るまで全文の控えは止まります (AI ログの集計は続きます)",
   "ailog.mirror.warning.tier2_space_unknown":
-    "全文の控えの保存先の空き容量を確認できませんでした。保存先の設定を確認してください",
+    "全文の控えの保存先の空き容量を確認できませんでした。設定 → AI → AI ログの全文の控え で保存先を確認してください",
 };
 
 export function mirrorWarningLabel(code: string | null): string | null {

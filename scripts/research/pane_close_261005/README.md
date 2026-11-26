@@ -10,10 +10,10 @@ Before/after use the same script and repetitions, with the specified v0.83.0
 release copy and the cloud-built branch-head executable respectively:
 
 ```powershell
-python -X utf8 C:\Users\miyaz\.claude\dispatch\261005-shared\heavy_lock.py acquire --seat s5 --what "S5 isolated native replay" --minutes 30
+python -X utf8 "$env:USERPROFILE\.claude\dispatch\261005-shared\heavy_lock.py" acquire --seat s5 --what "S5 isolated native replay" --minutes 30
 python -X utf8 scripts\research\pane_close_261005\replay.py --profile s5beforeA --port 9380 --exe <release-copy> --sha256 <release-sha> --repetitions 3
 python -X utf8 scripts\research\pane_close_261005\replay.py --profile s5afterA --port 9380 --exe <cloud-exe> --sha256 <cloud-sha> --repetitions 3 --faults
-python -X utf8 C:\Users\miyaz\.claude\dispatch\261005-shared\heavy_lock.py release --seat s5
+python -X utf8 "$env:USERPROFILE\.claude\dispatch\261005-shared\heavy_lock.py" release --seat s5
 ```
 
 Run one host at a time and release the lease in `finally` after the host stops.

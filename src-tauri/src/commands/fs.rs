@@ -598,29 +598,29 @@ mod tests {
     #[test]
     fn explorer_command_line_file_with_spaces() {
         let line = windows_explorer_command_line(
-            Path::new(r"C:\Users\miyaz\Desktop\sample doc.pdf"),
+            Path::new(r"C:\Users\example\Desktop\sample doc.pdf"),
             false,
         );
         assert_eq!(
             line,
-            r#"/select,"C:\Users\miyaz\Desktop\sample doc.pdf""#
+            r#"/select,"C:\Users\example\Desktop\sample doc.pdf""#
         );
     }
 
     #[test]
     fn explorer_command_line_directory() {
-        let line = windows_explorer_command_line(Path::new(r"C:\Users\miyaz\Desktop"), true);
-        assert_eq!(line, r#""C:\Users\miyaz\Desktop""#);
+        let line = windows_explorer_command_line(Path::new(r"C:\Users\example\Desktop"), true);
+        assert_eq!(line, r#""C:\Users\example\Desktop""#);
     }
 
     #[test]
     fn explorer_command_line_japanese_space_and_forward_slashes() {
         let input = format!(
-            "C:/Users/miyaz/Dropbox/\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2/a b.md"
+            "C:/Users/example/Dropbox/\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2/a b.md"
         );
         let line = windows_explorer_command_line(Path::new(&input), false);
         let expected = format!(
-            "/select,\"C:\\Users\\miyaz\\Dropbox\\\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2\\a b.md\""
+            "/select,\"C:\\Users\\example\\Dropbox\\\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2\\a b.md\""
         );
         assert_eq!(line, expected);
     }
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn resolve_local_path_link_handles_extensionless_dirs_files_and_prose() {
         let temp = TestTempDir::new();
-        let dir = temp.path.join("3_一次原稿");
+        let dir = temp.path.join("3_サンプル原稿");
         let spaced_dir = temp.path.join("my folder");
         let extensionless_file = temp.path.join("artifact without extension");
         std::fs::create_dir_all(&dir).unwrap();
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn resolve_local_path_link_accepts_msys_form_and_returns_input_substring() {
         let temp = TestTempDir::new();
-        let dir = temp.path.join("my folder").join("3_一次原稿");
+        let dir = temp.path.join("my folder").join("3_サンプル原稿");
         std::fs::create_dir_all(&dir).unwrap();
 
         let candidate = format!("{} を参照", msys_path(&dir));

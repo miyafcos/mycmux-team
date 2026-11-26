@@ -152,12 +152,16 @@ function indentedValueEnd(value: string, key: number, start: number, sequence = 
   return end > start ? end : undefined;
 }
 
-function structuredEnd(value: string, at: number): number {
+function structuredEnd(value: string, at: number, flow = false): number {
   const closing: string[] = [];
   for (let end = at; end < value.length;) {
     const c = value[end];
     if (isQuote(c)) {
       end = quotedEnd(value, end, true).end;
+      continue;
+    }
+    if (flow && c === "#" && space(value[end - 1])) {
+      end = lineEnd(value, end);
       continue;
     }
     if (c === "{" || c === "[") closing.push(c === "{" ? "}" : "]");
@@ -215,7 +219,7 @@ function authorizationHeaderStart(value: string, at: number): [start: number, al
 }
 function authorizationParameter(value: string, at: number): number | undefined {
   const field = assignmentAt(value, at);
-  if (!field) return;
+  if (!field || field.key === null) return;
   const start = field.start;
   const escapedQuote = value[start] === "\\" && isQuote(value[start + 1]);
   // A generic named parameter needs a quoted value. A lone '=' can be Base64 padding.
@@ -295,14 +299,15 @@ function credentialParts(parts: string[], keys: readonly string[]): boolean {
   return parts.some((part, i) => keys.includes(part)
     || keys.includes(`${part}_${parts[i + 1]}`));
 }
+const lowerAscii = (value: string) => value.replace(/[A-Z]/g, char => char.toLowerCase());
 function credentialKey(key: string, keys = PRESEND_CREDENTIAL_KEYS): boolean {
-  const lower = key.toLowerCase();
+  const lower = lowerAscii(key);
   if (keys.includes(lower) || credentialParts(lower.split(/[_-]/), keys)) return true;
   // Check the original boundaries before further splitting acronyms.
   const camelCase = key.replace(/([a-z0-9])([A-Z])/g, "$1_$2");
-  if (credentialParts(camelCase.toLowerCase().split(/[_-]/), keys)) return true;
+  if (credentialParts(lowerAscii(camelCase).split(/[_-]/), keys)) return true;
   const words = camelCase.replace(/([A-Z])(?=[A-Z][a-z])/g, "$1_");
-  return lower === "dbpassword" || credentialParts(words.toLowerCase().split(/[_-]/), keys);
+  return lower === "dbpassword" || credentialParts(lowerAscii(words).split(/[_-]/), keys);
 }
 const assignmentDelimiters = ["=>", ":=", "=", ":", "\uff1d", "\uff1a"];
 const lineBreak = /[\n\r\u2028\u2029]/u;
@@ -331,26 +336,83 @@ function startsAssignment(value: string, start: number): boolean {
 
 
 interface Assignment {
-  key: string;
+  key: string | null;
   quoted: boolean;
+  escaped: boolean;
   at: number;
   delimiter: string;
   after: number;
   start: number;
 }
 
+const keyEscapes: Readonly<Record<string, string>> = {
+  b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v",
+};
+
+function decodeQuotedKey(raw: string): string | null {
+  let decoded = "";
+  for (let i = 0; i < raw.length;) {
+    const size = width(raw, i);
+    if (raw[i] !== "\\") {
+      decoded += raw.slice(i, i + size);
+      i += size;
+      continue;
+    }
+    const escape = raw[++i];
+    const digits = escape === "u" ? 4 : escape === "x" ? 2 : escape === "U" ? 8 : 0;
+    if (digits) {
+      const hex = raw.slice(i + 1, i + 1 + digits);
+      if (hex.length !== digits || !/^[0-9a-f]+$/i.test(hex)) return null;
+      let point = Number.parseInt(hex, 16);
+      i += digits + 1;
+      if (point >= 0xd800 && point <= 0xdfff) {
+        if (escape !== "u" || point > 0xdbff || !raw.startsWith("\\u", i)) return null;
+        const low = raw.slice(i + 2, i + 6);
+        if (!/^[dD][c-fC-F][0-9a-fA-F]{2}$/.test(low)) return null;
+        point = 0x10000 + ((point - 0xd800) << 10) + (Number.parseInt(low, 16) - 0xdc00);
+        i += 6;
+      }
+      if (point > 0x10ffff) return null;
+      decoded += String.fromCodePoint(point);
+    } else {
+      // Some escape letters have different meanings in YAML and script
+      // strings. An ambiguous name with one of those escapes is unsafe.
+      if (!escape || /[0-9aeN_LP]/.test(escape) || lineBreak.test(escape)) return null;
+      const size = width(raw, i);
+      decoded += keyEscapes[escape] ?? raw.slice(i, i + size);
+      i += size;
+    }
+  }
+  return decoded;
+}
+
+function isStructuredCredentialKey(key: string): boolean {
+  return key.toLowerCase() === "authorization" || credentialKey(key);
+}
+
 function assignmentAt(value: string, index: number): Assignment | undefined {
-  const quote = isQuote(value[index]) ? value[index] : "";
-  const begin = index + quote.length;
-  let end = begin;
-  while (end < value.length && identifier(value[end])) end++;
-  if (end === begin || (quote && value[end] !== quote)) return;
-  const keyEnd = end + quote.length;
+  const quoted = isQuote(value[index]);
+  let keyEnd = index;
+  let raw: string;
+  if (quoted) {
+    if (value[index - 1] === "\\") return;
+    const key = quotedEnd(value, index, true);
+    if (!key.closed) return;
+    keyEnd = key.end;
+    raw = value.slice(index + 1, keyEnd - 1);
+    if (!raw.includes("\\") && !/^[A-Za-z0-9_-]+$/.test(raw)) return;
+  } else {
+    while (keyEnd < value.length && identifier(value[keyEnd])) keyEnd++;
+    if (keyEnd === index) return;
+    raw = value.slice(index, keyEnd);
+  }
   const delimiterAt = skipSpace(value, keyEnd);
   const delimiter = assignmentDelimiter(value, delimiterAt);
   if (!delimiter) return;
   const after = delimiterAt + delimiter.length;
-  return { key: value.slice(begin, end), quoted: Boolean(quote), at: index, delimiter, after, start: skipSpace(value, after) };
+  const escaped = quoted && raw.includes("\\");
+  return { key: escaped ? decodeQuotedKey(raw) : raw, quoted, escaped, at: index,
+    delimiter, after, start: skipSpace(value, after) };
 }
 
 function siblingAssignment(value: string, fieldAt: number, end: number, flow: boolean): Assignment | undefined {
@@ -359,6 +421,7 @@ function siblingAssignment(value: string, fieldAt: number, end: number, flow: bo
   if (value[at] === "#") at = lineEnd(value, at);
   if (flow) {
     at = skipSpace(value, at);
+    while (value[at] === "#") at = skipSpace(value, lineEnd(value, at));
     if (value[at] !== ",") return;
   } else if (at === value.length || !lineBreak.test(value[at])) {
     return;
@@ -373,28 +436,64 @@ function siblingAssignment(value: string, fieldAt: number, end: number, flow: bo
   return sibling?.delimiter === ":" ? sibling : undefined;
 }
 
-function environmentName(value: string, field: Assignment): boolean {
-  const start = field.start + Number(isQuote(value[field.start]));
-  let end = start;
-  while (end < value.length && identifier(value[end])) end++;
-  if (end === start || !credentialKey(value.slice(start, end))) return false;
-  return isQuote(value[field.start]) ? value[end] === value[field.start]
-    : end === value.length || space(value[end]) || ",}]".includes(value[end]);
+type EnvironmentName = "ordinary" | "credential" | "omit-reading";
+
+function skipYamlComments(value: string, at: number): number {
+  at = skipSpace(value, at);
+  while (value[at] === "#") at = skipSpace(value, lineEnd(value, at));
+  return at;
 }
 
-function environmentValue(value: string, field: Assignment, flow: boolean): Assignment | undefined {
-  const key = field.key.toLowerCase();
+function environmentMemberStart(value: string, field: Assignment, flow: boolean): number {
+  const start = skipYamlComments(value, field.start);
+  if (flow) return start;
+  const end = lineEnd(value, field.after);
+  if (start <= end) return start;
+  const indent = field.at - lineBeginning(value, field.at);
+  // Every block member, not just the name, ends before the next sibling.
+  return start < value.length && start - lineBeginning(value, start) > indent ? start : end;
+}
+
+function environmentName(value: string, start: number): EnvironmentName {
+  if (isQuote(value[start])) {
+    const { end, closed } = quotedEnd(value, start, true);
+    if (!closed) return "omit-reading";
+    const raw = value.slice(start + 1, end - 1);
+    if (raw.includes("\\")) {
+      const decoded = decodeQuotedKey(raw);
+      // Escaped credential names in split records are not sent for reading.
+      return decoded === null || isStructuredCredentialKey(decoded) ? "omit-reading" : "ordinary";
+    }
+    return /^[A-Za-z0-9_-]+$/.test(raw) && credentialKey(raw) ? "credential" : "ordinary";
+  }
+  let end = start;
+  while (end < value.length && identifier(value[end])) end++;
+  if (end === start) return "omit-reading";
+  const bounded = end === value.length || space(value[end]) || ",}]".includes(value[end]);
+  return bounded && credentialKey(value.slice(start, end)) ? "credential" : "ordinary";
+}
+
+function environmentValue(value: string, field: Assignment, flow: boolean): { at: number; omitReading: boolean } | undefined {
+  const key = field.key?.toLowerCase();
   if (field.delimiter !== ":" || (key !== "name" && key !== "value")) return;
-  if (key === "name" && !environmentName(value, field)) return;
   let member = field;
+  let start = environmentMemberStart(value, member, flow);
+  const name = key === "name" ? environmentName(value, start) : undefined;
+  if (name === "ordinary") return;
   for (;;) {
-    const end = valueEnd(value, member.start, flow ? "flow" : "line");
+    // A flow boundary that cannot be established must not hide a sibling.
+    const end = flow ? yamlFlowNodeEnd(value, start) : valueEnd(value, start, "line");
+    if (end === null) return { at: field.at, omitReading: true };
     const next = siblingAssignment(value, field.at, end, flow);
-    if (!next || next.start <= member.start) return;
-    const nextKey = next.key.toLowerCase();
+    if (!next || next.at <= member.at) return;
+    const nextKey = next.key?.toLowerCase();
     if (nextKey === key) return;
-    if (key === "name" && nextKey === "value") return next;
-    if (key === "value" && nextKey === "name") return environmentName(value, next) ? field : undefined;
+    start = environmentMemberStart(value, next, flow);
+    if (nextKey === (key === "name" ? "value" : "name")) {
+      const pairedName = name ?? environmentName(value, start);
+      if (pairedName === "ordinary") return;
+      return { at: key === "name" ? next.at : field.at, omitReading: pairedName === "omit-reading" };
+    }
     member = next;
   }
 }
@@ -450,7 +549,7 @@ function urlAuthority(value: string, start: number, masks: Mask[]): number | und
   for (let i = 0; i < user.length; i++) {
     if (i > 0 && identifier(user[i - 1])) continue;
     const field = assignmentAt(user, i);
-    if (field && credentialKey(field.key)) {
+    if (field?.key && credentialKey(field.key)) {
       masks.push({ start: body + (i === 0 ? field.start : 0), end: password });
       break;
     }
@@ -488,12 +587,260 @@ function assignmentMask(value: string, field: Assignment, flow: boolean): [mask:
     const continuation = skipSpace(value, lineEnd(value, end));
     end = indentedValueEnd(value, at, continuation, value[start] === "#") ?? end;
   }
-  if (start === end || settingValue(field.key, value.slice(start, end), yaml)) return;
+  if (start === end || settingValue(field.key ?? "", value.slice(start, end), yaml)) return;
   return [valueMask(value, start, end, quoted), end];
 }
 
-function l5AssignmentMasks(value: string): Mask[] {
+function yamlNodePosition(value: string, at: number, flow: boolean): { column: number; afterColon: boolean } | undefined {
+  let left = at;
+  while (value[left - 1] === " " || value[left - 1] === "\t") left--;
+  if (left === 0 || lineBreak.test(value[left - 1])) return { column: at - left, afterColon: false };
+  const previous = value[left - 1];
+  if (flow && ":[{,".includes(previous)) return { column: 0, afterColon: previous === ":" };
+  if ((previous !== ":" && previous !== "-") || left === at) return;
+  const prefix = value.slice(lineBeginning(value, left - 1), left);
+  if (previous === "-") {
+    if (/^[ \t]*-$/.test(prefix)) return { column: prefix.length - 1, afterColon: false };
+    return;
+  }
+  return { column: /^[ \t]*(?:-[ \t]+)?/.exec(prefix)![0].length, afterColon: true };
+}
+
+function yamlPropertyEnd(value: string, at: number): number | undefined {
+  const marker = value[at];
+  const next = value[at + 1];
+  if (marker === "?") return !next || space(next) ? at + 1 : undefined;
+  if (!"&*!".includes(marker)) return;
+  if (marker === "!" && next === "<") {
+    const end = value.indexOf(">", at + 2);
+    if (end > at && end < lineEnd(value, at)) return end + 1;
+  }
+  let end = at + 1;
+  while (end < value.length && !space(value[end]) && !",[]{}=\"'".includes(value[end])) end++;
+  if (marker === "*" && value.slice(at + 1, end).includes("*")) return;
+  return end > at + 1 || marker === "!" ? end : undefined;
+}
+
+// Return the end of the actual flow value, not the legacy mask span.
+function yamlFlowNodeEnd(value: string, start: number): number | null {
+  const closing: string[] = [];
+  let mode: "start" | "plain" | "closed" = "start";
+  let end = start;
+  for (let at = start; at < value.length;) {
+    const c = value[at];
+    if (space(c)) {
+      at = skipSpace(value, at);
+      continue;
+    }
+    if (c === "#" && (at === start || space(value[at - 1]))) {
+      at = lineEnd(value, at);
+      continue;
+    }
+    if (",]}".includes(c)) {
+      if (closing.length === 0) return end;
+      if (c !== ",") {
+        if (closing.pop() !== c) return null;
+        mode = "closed";
+      } else {
+        mode = "start";
+      }
+    } else if (c === ":" && closing.length > 0 && (mode === "closed"
+      || at + 1 === value.length || space(value[at + 1]) || ",[]{}".includes(value[at + 1]))) {
+      mode = "start";
+    } else if (mode === "start" && isQuote(c)) {
+      const quoted = quotedEnd(value, at, true);
+      if (!quoted.closed) return null;
+      at = end = quoted.end;
+      mode = "closed";
+      continue;
+    } else if (mode === "start" && "&*!?".includes(c)) {
+      const property = yamlPropertyEnd(value, at);
+      if (property !== undefined) {
+        at = end = property;
+        if (c === "*") mode = "closed";
+        continue;
+      }
+      mode = "plain";
+    } else if (mode === "start" && (c === "{" || c === "[")) {
+      closing.push(c === "{" ? "}" : "]");
+    } else {
+      if (mode === "closed" || c === "{" || c === "[") return null;
+      mode = "plain";
+    }
+    at += width(value, at);
+    end = at;
+  }
+  return null;
+}
+
+function yamlInlineNodeEnd(value: string, start: number): number {
+  let end = start;
+  while (end < value.length) {
+    const current = value[end];
+    if (lineBreak.test(current)) break;
+    if (current === "#" && space(value[end - 1])) {
+      end = lineEnd(value, end);
+    } else if (current === "{" || current === "[") {
+      end = structuredEnd(value, end, false);
+    } else if (isQuote(current) && !identifier(value[end - 1])) {
+      end = quotedEnd(value, end, true).end;
+    } else {
+      end += width(value, end);
+    }
+  }
+  return end;
+}
+
+function yamlValueIndicator(value: string, at: number, flow: boolean): boolean {
+  return value[at] === ":" && (flow || at + 1 === value.length || space(value[at + 1]));
+}
+
+function yamlScalarTailIsKnown(node: string, end: number): boolean {
+  const tail = node.slice(skipSpace(node, end));
+  return !tail || (tail.startsWith("#") && !lineBreak.test(tail));
+}
+
+function yamlAnchorMayNameCredential(node: string): boolean {
+  let at = skipSpace(node, 0);
+  while (node[at] === "!") at = skipSpace(node, yamlPropertyEnd(node, at)!);
+  // Only a scalar we can classify may clear a previous sensitive binding.
+  if (at === node.length) return true;
+  if (isQuote(node[at])) {
+    const { end, closed } = quotedEnd(node, at, true);
+    if (!closed || lineBreak.test(node.slice(at, end)) || !yamlScalarTailIsKnown(node, end)) return true;
+    const decoded = decodeQuotedKey(node.slice(at + 1, end - 1));
+    return decoded === null || isStructuredCredentialKey(decoded);
+  }
+  let end = at;
+  while (end < node.length && identifier(node[end])) end++;
+  return end === at || !yamlScalarTailIsKnown(node, end) || isStructuredCredentialKey(node.slice(at, end));
+}
+
+function yamlExplicitKeyIsSensitive(key: string, credentialAnchors: Set<string>): boolean {
+  for (let at = 0; at < key.length;) {
+    if (key[at] === "#" && (at === 0 || space(key[at - 1]))) {
+      at = lineEnd(key, at);
+    } else if (isQuote(key[at])) {
+      const { end, closed } = quotedEnd(key, at, true);
+      if (!closed) return true;
+      const decoded = decodeQuotedKey(key.slice(at + 1, end - 1));
+      if (decoded === null || isStructuredCredentialKey(decoded)) return true;
+      at = end;
+    } else if ("&*!".includes(key[at])) {
+      const end = yamlPropertyEnd(key, at) ?? at + 1;
+      if (key[at] === "*" && credentialAnchors.has(key.slice(at + 1, end))) return true;
+      at = end;
+    } else if (identifier(key[at])) {
+      let end = at + 1;
+      while (end < key.length && identifier(key[end])) end++;
+      if (isStructuredCredentialKey(key.slice(at, end))) return true;
+      at = end;
+    } else {
+      at += width(key, at);
+    }
+  }
+  return false;
+}
+
+// Record the values or explicit keys affected by YAML node properties. A
+// property can cover its nested children but ends at the next sibling node.
+function yamlNodeScopes(value: string): Mask[] | null {
+  const scopes: Mask[] = [];
+  const credentialAnchors = new Set<string>();
+  const closing: string[] = [];
+  for (let at = 0; at < value.length;) {
+    const current = value[at];
+    const flow = closing.length > 0;
+    if (!flow && (at === 0 || lineBreak.test(value[at - 1]))) {
+      const directive = value.slice(at, at + 3);
+      if ((directive === "---" || directive === "...") && (at + 3 === value.length || space(value[at + 3]))) {
+        credentialAnchors.clear();
+      }
+      if (directive === "\u0060\u0060\u0060" || directive === "~~~") credentialAnchors.clear();
+    }
+    if (current === "#" && (at === 0 || space(value[at - 1]))) {
+      at = lineEnd(value, at);
+      continue;
+    }
+    if (isQuote(current) && (flow ? yamlNodePosition(value, at, true)
+      : at === 0 || (!identifier(value[at - 1]) && value[at - 1] !== "\\"))) {
+      const { end, closed } = quotedEnd(value, at, true);
+      if (closed) {
+        at = end;
+        continue;
+      }
+      if (flow || (yamlNodePosition(value, at, false) && value.slice(at, lineEnd(value, at)).includes("\\"))) return null;
+    }
+    if ("&*!?".includes(current)) {
+      const body = yamlPropertyEnd(value, at);
+      const position = body === undefined ? undefined : yamlNodePosition(value, at, flow);
+      if (body !== undefined && position) {
+        const { column, afterColon } = position;
+        let end = flow ? yamlFlowNodeEnd(value, body) : yamlInlineNodeEnd(value, body);
+        if (end === null) return null;
+        let next = skipSpace(value, end);
+        if (!flow) {
+          const markerOnly = /^[ \t]*(?:#.*)?$/.test(value.slice(body, end));
+          while (next < value.length) {
+            if (value[next] === "#") {
+              next = skipSpace(value, lineEnd(value, next));
+              continue;
+            }
+            const indent = next - lineBeginning(value, next);
+            const sequence = markerOnly && afterColon && indent === column && value[next] === "-"
+              && (next + 1 === value.length || space(value[next + 1]));
+            if (indent <= column && !sequence) break;
+            end = yamlInlineNodeEnd(value, next);
+            next = skipSpace(value, end);
+          }
+        }
+        const name = value.slice(at + 1, body);
+        if (current === "&") {
+          // A later alias may use this scalar as a mapping key.
+          if (yamlAnchorMayNameCredential(value.slice(body, end))) credentialAnchors.add(name);
+          else credentialAnchors.delete(name);
+        } else if (current === "*" && !afterColon && credentialAnchors.has(name)) {
+          const delimiter = skipSpace(value, body);
+          if (!lineBreak.test(value.slice(body, delimiter)) && yamlValueIndicator(value, delimiter, flow)) return null;
+        } else if (current === "?" && (flow || yamlValueIndicator(value, next, false))
+          && yamlExplicitKeyIsSensitive(value.slice(body, end), credentialAnchors)) {
+          return null;
+        }
+        scopes.push({ start: at, end });
+        // Keep scanning the marked node itself for nested properties.
+        at = body;
+        continue;
+      }
+    }
+    if (current === "{" || current === "[") closing.push(current === "{" ? "}" : "]");
+    else if (current === closing[closing.length - 1]) closing.pop();
+    at += width(value, at);
+  }
+  return unionMasks(scopes);
+}
+
+function ambiguousCredentialField(value: string, field: Assignment, flow: boolean, end: number): boolean {
+  if (field.delimiter !== ":") return false;
+  const { at, start } = field;
+  if (isQuote(value[start]) && !quotedEnd(value, start, true).closed) return true;
+  if (flow) {
+    const next = skipSpace(value, end);
+    return next < value.length && !",}]".includes(value[next]) && lineBreak.test(value.slice(end, next));
+  }
+  const line = lineBeginning(value, at);
+  const prefix = value.slice(line, at);
+  const indent = /^[ \t]*(?:-[ \t]+)?$/.test(prefix) ? prefix.length : /^[ \t]*/.exec(prefix)![0].length;
+  let next = skipSpace(value, lineEnd(value, end));
+  while (value[next] === "#") next = skipSpace(value, lineEnd(value, next));
+  return next < value.length && next - lineBeginning(value, next) > indent;
+}
+
+function l5AssignmentMasks(value: string, escapedKeys?: Mask[]): { masks: Mask[]; ambiguous: boolean } {
+  const checkBoundaries = escapedKeys !== undefined;
   const masks: Mask[] = [];
+  const yamlScopes = checkBoundaries ? yamlNodeScopes(value) : [];
+  if (yamlScopes === null) return { masks, ambiguous: true };
+  let yamlIndex = 0;
   const closing: string[] = [];
   const environmentValues = new Set<number>();
   let quotedThrough = 0;
@@ -507,12 +854,28 @@ function l5AssignmentMasks(value: string): Mask[] {
         continue;
       }
       const field = assignmentAt(value, i);
+      if (checkBoundaries && field?.key === null) return { masks, ambiguous: true };
       const paired = field && environmentValue(value, field, flow);
+      if (checkBoundaries && paired?.omitReading) return { masks, ambiguous: true };
       // Continue inspecting the fields in between; they can be secrets too.
       if (paired && paired.at !== i) environmentValues.add(paired.at);
-      const secret = field && (credentialKey(field.key) || environmentValues.delete(i) || paired?.at === i);
+      const authorization = field?.key?.toLowerCase() === "authorization";
+      const secret = field && (environmentValues.delete(i) || paired?.at === i
+        || (field.key !== null && (credentialKey(field.key) || (field.escaped && authorization))));
       const masked = secret && field ? assignmentMask(value, field, flow) : undefined;
+      if (checkBoundaries && field && (secret || authorization)) {
+        const end = masked?.[1] ?? valueEnd(value, field.start, flow ? "flow" : "line");
+        while (yamlScopes[yamlIndex] && yamlScopes[yamlIndex].end <= i) yamlIndex++;
+        const scope = yamlScopes[yamlIndex];
+        const flowEnd = secret && flow && field.delimiter === ":" ? yamlFlowNodeEnd(value, field.start) : end;
+        if (flowEnd === null || flowEnd > end
+          || (i >= quotedThrough && field.delimiter === ":" && scope && scope.start < Math.max(field.after, end))
+          || ambiguousCredentialField(value, field, flow, end)) {
+          return { masks, ambiguous: true };
+        }
+      }
       if (masked) {
+        if (field?.escaped) escapedKeys?.push(masked[0]);
         masks.push(masked[0]);
         i = masked[1];
         continue;
@@ -542,11 +905,11 @@ function l5AssignmentMasks(value: string): Mask[] {
       if (c === "#" && (i === 0 || space(value[i - 1]))) quotedThrough = lineEnd(value, i);
       else if (c === "{" || c === "[") closing.push(c === "{" ? "}" : "]");
       else if (c === closing[closing.length - 1]) closing.pop();
-      else if (flow && isQuote(c)) quotedThrough = quotedEnd(value, i, true).end;
+      else if (flow && isQuote(c) && yamlNodePosition(value, i, true)) quotedThrough = quotedEnd(value, i, true).end;
     }
     i += width(value, i);
   }
-  return masks;
+  return { masks, ambiguous: false };
 }
 
 function v09014MaskedValue(value: string, at: number, stopAtQuote: boolean,
@@ -628,7 +991,7 @@ function v09014Masks(value: string): Mask[] {
 
 function l5Masks(value: string): Mask[] {
   const headers = authorizationMasks(value, l5AuthorizationValue);
-  return sourceMasks(headers, l5AssignmentMasks(renderMasks(value, headers)));
+  return sourceMasks(headers, l5AssignmentMasks(renderMasks(value, headers)).masks);
 }
 
 /** Source UTF-16 offsets. Both policies share identical PEM and prefix matches. */
@@ -644,4 +1007,13 @@ export function presendCredentialRanges(value: string): Mask[] {
 
 export function scrubPresendCredentials(value: string): string {
   return renderMasks(value, presendCredentialRanges(value));
+}
+
+/** The reading pipeline can omit input whose credential value cannot be bounded. */
+export function scrubPresendReadingInput(value: string): string | null {
+  const escapedKeys: Mask[] = [];
+  if (l5AssignmentMasks(value, escapedKeys).ambiguous) return null;
+  // Another credential pattern can mask part of the key before the later
+  // assignment scan. Retain these value spans from the original input.
+  return renderMasks(value, unionMasks(presendCredentialRanges(value).concat(escapedKeys)));
 }

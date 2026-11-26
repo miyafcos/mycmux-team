@@ -863,13 +863,16 @@ impl PresendService {
         if request_id.is_empty() || owner.session_id.is_empty() || draft.chars().nth(MAX_TRANSFER_DRAFT_CHARS).is_some() {
             return None;
         }
-        let draft = credentials::scrub(draft);
+        let draft = credentials::scrub_for_reading(draft)?;
         let workdir = normalize_workdir_name(workdir);
         self.read(
             request_id,
             provider,
             owner,
-            || prompt(&draft, &credentials::scrub(excerpt()), &workdir),
+            || {
+                let excerpt = credentials::scrub_for_reading(excerpt())?;
+                Some(prompt(&draft, &excerpt, &workdir))
+            },
             owner_is_current,
             confirm_foreground,
             progress,
@@ -881,7 +884,7 @@ impl PresendService {
         request_id: String,
         provider: Provider,
         owner: ReadingOwner,
-        build_prompt: impl FnOnce() -> String,
+        build_prompt: impl FnOnce() -> Option<String>,
         owner_is_current: impl Fn() -> bool,
         confirm_foreground: impl Future<Output = bool>,
         progress: Option<&ReadProgress>,
@@ -945,7 +948,10 @@ impl PresendService {
             self.discard_unsent(&mut engine, provider).await;
             return None;
         }
-        let prompt = build_prompt();
+        let Some(prompt) = build_prompt() else {
+            self.discard_unsent(&mut engine, provider).await;
+            return None;
+        };
         if !owner_is_current() {
             engine.close().await;
             return None;

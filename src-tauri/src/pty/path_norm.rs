@@ -199,8 +199,8 @@ mod tests {
     #[test]
     fn strips_extended_length_drive_prefix() {
         assert_eq!(
-            strip_extended_length_prefix(r"\\?\C:\Users\miyaz\.mycmux\online-dev\x\handoff.md"),
-            r"C:\Users\miyaz\.mycmux\online-dev\x\handoff.md"
+            strip_extended_length_prefix(r"\\?\C:\Users\example\.mycmux\online-dev\x\handoff.md"),
+            r"C:\Users\example\.mycmux\online-dev\x\handoff.md"
         );
     }
 
@@ -215,8 +215,8 @@ mod tests {
     #[test]
     fn leaves_plain_paths_untouched() {
         assert_eq!(
-            strip_extended_length_prefix(r"C:\Users\miyaz\handoff.md"),
-            r"C:\Users\miyaz\handoff.md"
+            strip_extended_length_prefix(r"C:\Users\example\handoff.md"),
+            r"C:\Users\example\handoff.md"
         );
         assert_eq!(strip_extended_length_prefix("/home/me/handoff.md"), "/home/me/handoff.md");
         assert_eq!(strip_extended_length_prefix(""), "");
@@ -294,32 +294,32 @@ mod tests {
 
     #[test]
     fn claude_project_key_mangles_windows_drive_path() {
-        assert_eq!(claude_project_key(r"C:\Users\miyaz"), "C--Users-miyaz");
+        assert_eq!(claude_project_key(r"C:\Users\example"), "C--Users-example");
     }
 
     #[test]
     fn claude_project_key_mangles_posix_drive_path() {
-        assert_eq!(claude_project_key("/c/Users/miyaz"), "C--Users-miyaz");
+        assert_eq!(claude_project_key("/c/Users/example"), "C--Users-example");
     }
 
     #[test]
     fn claude_project_key_trims_trailing_separators() {
-        assert_eq!(claude_project_key(r"C:\Users\miyaz\"), "C--Users-miyaz");
+        assert_eq!(claude_project_key(r"C:\Users\example\"), "C--Users-example");
     }
 
     #[test]
     fn claude_project_key_sanitizes_dot_space_and_non_ascii() {
         assert_eq!(
-            claude_project_key(r"C:\Users\miyaz\.ai-dashboard\master"),
-            "C--Users-miyaz--ai-dashboard-master"
+            claude_project_key(r"C:\Users\example\.ai-dashboard\master"),
+            "C--Users-example--ai-dashboard-master"
         );
         assert_eq!(
-            claude_project_key(r"C:\Users\miyaz\Documents\New project"),
-            "C--Users-miyaz-Documents-New-project"
+            claude_project_key(r"C:\Users\example\Documents\New project"),
+            "C--Users-example-Documents-New-project"
         );
         assert_eq!(
-            claude_project_key(r"C:\Users\miyaz\日本語"),
-            "C--Users-miyaz----"
+            claude_project_key(r"C:\Users\example\日本語"),
+            "C--Users-example----"
         );
     }
 
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn claude_path_hash_matches_the_shipped_implementation() {
-        assert_eq!(claude_path_hash("C:\\Users\\miyaz"), 1_063_363_677);
+        assert_eq!(claude_path_hash("C:\\Users\\example"), 1_587_806_385);
         assert_eq!(claude_path_hash("/Users/example/work/mycmux"), -671_413_284);
         assert_eq!(claude_path_hash(""), 0);
         assert_eq!(claude_path_hash("-"), 45);

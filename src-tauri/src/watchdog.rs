@@ -686,6 +686,22 @@ pub(crate) fn start(app: AppHandle) {
     if LOG_QUEUE.set(queue).is_err() {
         return;
     }
+    // All shell navigations advance the close generation, including a reload
+    // outside watchdog recovery. Child Web tabs do not own a window publisher.
+    let close_documents = tauri::plugin::Builder::<tauri::Wry, ()>::new("window-close-documents")
+        .on_page_load(|view, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && view.label() == view.window().label()
+            {
+                if let Some(state) = view.try_state::<crate::AppState>() {
+                    state.window_registry.begin_close_intent_document(view.label());
+                }
+            }
+        })
+        .build();
+    if let Err(error) = app.plugin(close_documents) {
+        crate::diag::warn("watchdog", &format!("Could not observe window documents: {error}"));
+    }
     let (failure_queue, failure_receiver) = mpsc::sync_channel(128);
     let _ = FAILURES.set(failure_queue);
     renderers().lock().unwrap_or_else(|p| p.into_inner()).views

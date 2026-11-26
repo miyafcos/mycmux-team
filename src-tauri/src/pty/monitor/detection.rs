@@ -1214,10 +1214,10 @@ mod tests {
     fn interpreter_classification_ignores_prompt_paths() {
         let args = vec![
             "node.exe".to_string(),
-            "C:\\Users\\miyaz\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"
+            "C:\\Users\\example\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"
                 .to_string(),
             "--no-alt-screen".to_string(),
-            "Handoff C:\\Users\\miyaz\\.claude\\dispatch".to_string(),
+            "Handoff C:\\Users\\example\\.claude\\dispatch".to_string(),
         ];
         assert_eq!(
             classify_interpreter_cmdline(&args),

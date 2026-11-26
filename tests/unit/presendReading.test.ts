@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { appendPresendLine, normalizePresendProvider, presendAttemptKey, presendWorkdirName, samePresendRevision, shouldReadPresend, unicodeTail, type PresendTrigger } from "../../src/lib/presendReading";
-import { OMITTED, presendCredentialRanges, PRESEND_CREDENTIAL_KEYS, scrubJevCredentials, scrubPresendCredentials } from "../../src/lib/scrubCredentials";
+import { OMITTED, presendCredentialRanges, PRESEND_CREDENTIAL_KEYS, scrubJevCredentials, scrubPresendCredentials, scrubPresendReadingInput } from "../../src/lib/scrubCredentials";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 
 const input: PresendTrigger = { enabled: true, tabEnabled: true, target: "claude", draft: "abcdefghijkl", composing: false, quietMs: 1500, attempted: new Set() };
@@ -233,4 +233,117 @@ describe("shared renderer and Rust credential examples", () => {
     expect(scrubPresendCredentials(expected) === second, row.name).toBe(true);
     expect(scrubPresendCredentials(second) === second, row.name).toBe(true);
   });
+});
+
+it("redacts values after decoding escapes in quoted field names", () => {
+  for (const key of [
+    String.raw`"\u0070assword"`, String.raw`'pass\x77ord'`,
+    String.raw`"pass\word"`, String.raw`"authoriz\u0061tion"`,
+    String.raw`"\uD83D\uDE42_password"`,
+  ]) {
+    expect(scrubPresendReadingInput(key + ': "dummy-field-value"')).toBe(key + ': "' + OMITTED + '"');
+  }
+  const prefix = ["sk-ant-", "fixture-key_"].join("");
+  const key = String.raw`"\u0070assword_` + prefix + '"';
+  expect(scrubPresendReadingInput(key + ': "dummy-field-value"')).toBe(
+    String.raw`"\u0070assword_` + OMITTED + '": "' + OMITTED + '"',
+  );
+});
+
+it("stops reading YAML when a node property and a credential belong to the same node", () => {
+  const cases = [
+    'creds: &toy\n  "' + String.raw`\u0070assword` + '": dummy-value',
+    "creds: {password: *toy}",
+    "creds: !toy {password: dummy-value}",
+    "? password\n: dummy-value",
+    "?\n  - password\n: dummy-value",
+  ];
+  for (const value of cases) expect(scrubPresendReadingInput(value), value).toBeNull();
+
+  const separateNodes = "sample: &toy\n  label: hello\npassword: dummy-value";
+  expect(scrubPresendReadingInput(separateNodes)).toBe("sample: &toy\n  label: hello\npassword: " + OMITTED);
+  const separateFlow = 'sample: [&toy hello, {password: "dummy-value"}]';
+  expect(scrubPresendReadingInput(separateFlow)).toBe('sample: [&toy hello, {password: "' + OMITTED + '"}]');
+});
+
+it("stops reading when a YAML alias resolves to a credential field name", () => {
+  for (const name of ["password", '"\\u0070assword"']) {
+    for (const key of ["? *sample-key\n:", "*sample-key :"]) {
+      const input = "field-name: &sample-key " + name + "\n" + key + " dummy-field-value";
+      expect(scrubPresendReadingInput(input)).toBeNull();
+    }
+  }
+  for (const ordinary of [
+    "field-name: &sample-key theme\n? *sample-key\n: rename the password label",
+    "old-name: &sample-key password\nnew-name: &sample-key theme\n? *sample-key\n: rename the label",
+    "? &password theme\n: rename the label",
+  ]) expect(scrubPresendReadingInput(ordinary)).toBe(ordinary);
+});
+
+it("lane F leaves an ordinary escaped environment name readable", () => {
+  const input = '{"name":"SAMPLE\\u005fTHEME","value":"dark"}';
+  expect(scrubPresendReadingInput(input)).toBe(input);
+});
+
+it.each([
+  ["plain note with a mid-value quote (name first)", "env: [{name: API_TOKEN, note: say \"hello, value: fixture-label}]", "env: [{name: API_TOKEN, note: say \"hello, value: [credential omitted]}]"],
+  ["quoted note with a delimiter (name first)", "env: [{name: API_TOKEN, note: \"say, hello\", value: fixture-label}]", "env: [{name: API_TOKEN, note: \"say, hello\", value: [credential omitted]}]"],
+  ["an unterminated quoted note (name first)", "env: [{name: API_TOKEN, note: \"unfinished, value: fixture-label}]", null],
+  ["plain note with a mid-value quote (value first)", "env: [{value: fixture-label, note: say \"hello, name: API_TOKEN}]", "env: [{value: [credential omitted], note: say \"hello, name: API_TOKEN}]"],
+  ["quoted note with a delimiter (value first)", "env: [{value: fixture-label, note: \"say, hello\", name: API_TOKEN}]", "env: [{value: [credential omitted], note: \"say, hello\", name: API_TOKEN}]"],
+  ["an unterminated quoted note (value first)", "env: [{value: fixture-label, note: \"unfinished, name: API_TOKEN}]", null],
+] as const)("G2-001 checks %s before reading", (_label, input, expected) => {
+  expect(scrubPresendReadingInput(input)).toBe(expected === undefined ? input : expected);
+});
+
+it.each([
+  ["tagged neighbor and a comment on a structured value", "cfg: {a: !t [1] # note\n , password: {p: alpha # }\n  , q: fixture-label}}", null],
+  ["tagged neighbor and a multiline plain value", "cfg: {a: !t [1] # note\n , password: alpha\n    fixture-label, mode: demo}", null],
+  ["a closing bracket in a sequence comment", "cfg: {password: [alpha # ]\n    , fixture-label], mode: demo}", null],
+  ["a completely covered flow value", "cfg: {password: {p: alpha, q: fixture-label}, mode: demo}", "cfg: {password: [credential omitted], mode: demo}"],
+  ["a split record whose value continues (name first)", "env: [{name: API_TOKEN, value: [alpha # ]\n    , fixture-label]}]", null],
+  ["a split record whose value continues (value first)", "env: [{value: [alpha # ]\n    , fixture-label], name: API_TOKEN}]", null],
+] as const)("G2-002 checks %s before reading", (_label, input, expected) => {
+  expect(scrubPresendReadingInput(input)).toBe(expected === undefined ? input : expected);
+});
+
+it.each([
+  ["flow PATH after a leading comment (name first)", "env: [{name: # search path\n \n PATH, value: /usr/bin}]", undefined],
+  ["deep block PATH after a leading comment (name first)", "env:\n  - name: # search path\n\n        PATH\n    value: fixture-label", undefined],
+  ["flow credential name after a comment (name first)", "env: [{name: # setting\n API_TOKEN, value: /usr/bin}]", "env: [{name: # setting\n API_TOKEN, value: [credential omitted]}]"],
+  ["deep block credential name after a comment (name first)", "env:\n  - name: # setting\n\n        API_TOKEN\n    value: fixture-label", "env:\n  - name: # setting\n\n        API_TOKEN\n    value: [credential omitted]"],
+  ["block comment followed by a same-depth key (name first)", "env:\n  - name: # intentionally blank\n    value: fixture-label", null],
+  ["flow PATH after a leading comment (value first)", "env: [{value: /usr/bin, name: # search path\n \n PATH}]", undefined],
+  ["deep block PATH after a leading comment (value first)", "env:\n  - value: fixture-label\n    name: # search path\n\n        PATH", undefined],
+  ["flow credential name after a comment (value first)", "env: [{value: /usr/bin, name: # setting\n API_TOKEN}]", "env: [{value: [credential omitted], name: # setting\n API_TOKEN}]"],
+  ["deep block credential name after a comment (value first)", "env:\n  - value: fixture-label\n    name: # setting\n\n        API_TOKEN", "env:\n  - value: [credential omitted]\n    name: # setting\n\n        API_TOKEN"],
+  ["block comment followed by a same-depth key (value first)", "env:\n  - value: fixture-label\n    name: # intentionally blank", null],
+] as const)("G2-003 checks %s before reading", (_label, input, expected) => {
+  expect(scrubPresendReadingInput(input)).toBe(expected === undefined ? input : expected);
+});
+
+it.each([
+  ["an empty middle member (name first)", "env:\n  - name:\n    note:\n    value: fixture-label", null],
+  ["adjacent members (name first)", "env:\n  - name:\n    value: fixture-label", null],
+  ["an empty middle member (value first)", "env:\n  - value: fixture-label\n    note:\n    name:", null],
+  ["adjacent members (value first)", "env:\n  - value: fixture-label\n    name:", null],
+] as const)("G2-004 checks %s before reading", (_label, input, expected) => {
+  expect(scrubPresendReadingInput(input)).toBe(expected === undefined ? input : expected);
+});
+
+it("lane F omits input when an alias key refers to an uncertain YAML name", () => {
+  for (const node of [
+    "|-\n  password",
+    ">-\n  password",
+    "[theme, language]",
+    '"two\n  lines"',
+    "theme # heading\n  continuation",
+  ]) {
+    for (const key of ["? *sample-key\n:", "*sample-key :"]) {
+      const input = "field-name: &sample-key " + node + "\n" + key + " fixture-label";
+      expect(scrubPresendReadingInput(input), node + " / " + key).toBeNull();
+    }
+    const notUsedAsKey = "field-name: &sample-key " + node + "\nlabel: fixture-label";
+    expect(scrubPresendReadingInput(notUsedAsKey)).toBe(notUsedAsKey);
+  }
 });

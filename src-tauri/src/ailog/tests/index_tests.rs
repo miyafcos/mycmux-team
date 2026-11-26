@@ -37,6 +37,87 @@ fn indexing_the_same_file_twice_does_not_duplicate_rows() {
 }
 
 #[test]
+fn lane_d_old_projects_are_rederived_from_saved_cwd_and_touches() {
+    let fixture = Fixture::new();
+    // Logical transcript paths keep the fixture independent of the runner's
+    // temp folder, which can itself be a numbered folder or attribution noise.
+    let project = "/sample-projects/ProjectX/19_inputs";
+    let conn = fixture.conn();
+    for (id, cwd) in [("old-cwd", project), ("old-touch", "/sample-projects")] {
+        conn.execute(
+            "INSERT INTO session (kind, session_id, cwd, project_key, project_label)
+             VALUES (?1, ?2, ?3, 'other', 'other')",
+            params![KIND_CLAUDE, id, cwd],
+        ).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO file_touch (kind, session_id, path, edit_count)
+         VALUES (?1, 'old-touch', ?2, 1)",
+        params![KIND_CLAUDE, format!("{project}/fixture.rs")],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO index_state (key, value) VALUES ('derivation_version', 'project-work-v2')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let line = serde_json::json!({
+        "type": "assistant", "sessionId": "new-session", "requestId": "new-request",
+        "timestamp": "2026-08-01T01:00:00Z", "cwd": project, "entrypoint": "cli",
+        "uuid": "new-line", "message": { "id": "new-message", "model": "claude-opus-5",
+            "role": "assistant", "content": [], "usage": { "input_tokens": 100, "output_tokens": 200 } },
+    }).to_string();
+    fixture.write("new-session.jsonl", &[&line]);
+    let report = fixture.index(KIND_CLAUDE, false);
+    assert_eq!(report.files_done, 1);
+    let conn = fixture.conn();
+    let projects = conn.prepare("SELECT session_id, project_key, project_label FROM session ORDER BY session_id")
+        .unwrap().query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(projects, ["new-session", "old-cwd", "old-touch"].map(|id| (
+        id.to_owned(), "projectx".to_owned(), "ProjectX".to_owned(),
+    )));
+}
+
+#[test]
+fn lane_f_rederivation_and_ingest_use_the_same_home_repository() {
+    let fixture = Fixture::new();
+    let home = "/sample-home";
+    let project = "/sample-home/FixtureRepository";
+    let conn = fixture.conn();
+    conn.execute(
+        "INSERT INTO session (kind, session_id, cwd, project_key, project_label)
+         VALUES (?1, 'old-home', ?2, 'other', 'other')",
+        params![KIND_CLAUDE, project],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO index_state (key, value) VALUES ('derivation_version', 'project-work-v2')",
+        [],
+    ).unwrap();
+    drop(conn);
+
+    let line = serde_json::json!({
+        "type": "assistant", "sessionId": "new-home", "requestId": "home-request",
+        "timestamp": "2026-08-01T01:00:00Z", "cwd": project, "entrypoint": "cli",
+        "uuid": "home-line", "message": { "id": "home-message", "model": "claude-opus-5",
+            "role": "assistant", "content": [], "usage": { "input_tokens": 100, "output_tokens": 200 } },
+    }).to_string();
+    fixture.write("new-home.jsonl", &[&line]);
+    let report = crate::ailog::project_rules::with_fixture_home(project, home, || fixture.index(KIND_CLAUDE, false));
+    assert_eq!(report.files_done, 1);
+
+    let conn = fixture.conn();
+    let projects = conn.prepare("SELECT session_id, project_key, project_label FROM session ORDER BY session_id")
+        .unwrap().query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(projects, ["new-home", "old-home"].map(|id| (
+        id.to_owned(), "fixturerepository".to_owned(), "FixtureRepository".to_owned(),
+    )));
+}
+
+#[test]
 fn gzip_archive_has_plain_fixture_parity() {
     let plain = Fixture::new();
     plain.write("S1.jsonl", CLAUDE_SPLIT_REQUEST);
@@ -1011,7 +1092,7 @@ fn smoke_real_claude_project() {
     let dir = std::env::var("AILOG_SMOKE_DIR").unwrap_or_else(|_| {
         crate::ailog::claude_root()
             .expect("claude root")
-            .join("C--Users-miyaz-cmux-for-linux-dev-master")
+            .join("C--Users-example-cmux-for-linux-dev-master")
             .to_string_lossy()
             .to_string()
     });

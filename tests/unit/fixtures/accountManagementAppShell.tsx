@@ -52,7 +52,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     readAccountManagementDocument?: boolean; accountManagementSequence?: number; includeQuitState?: boolean;
     accountManagementDocument?: number;
     accountManagementSubscription?: WindowTabIndex["account_management_subscription"];
-    closing?: boolean;
+    closing?: boolean; destroy?: boolean; readCloseIntentDocument?: boolean;
   }) => {
     switch (name) {
       case "load_persistent_data":
@@ -74,6 +74,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "publish_window_fragment":
         if (args?.fragment && !ipc.closing) ipc.published.push(args.fragment);
         if (args?.readAccountManagementDocument) return ipc.readDocument();
+        if (args?.readCloseIntentDocument) return 0;
         if (typeof args?.accountManagementReady === "boolean") {
           const sequence = args.accountManagementSequence!;
           await ipc.publishReadiness(args.accountManagementReady);
@@ -112,6 +113,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       }
       case "set_window_close_intent": {
         ipc.closing = args!.closing!;
+        if (args?.destroy) await ipc.destroy();
         return null;
       }
       case "kill_session":

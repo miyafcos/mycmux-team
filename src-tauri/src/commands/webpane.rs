@@ -3691,14 +3691,14 @@ assert.match(reply.error, /host changed/);
 
     /// A document served through the asset protocol, spelled the way
     /// `convertFileSrc` spells it on Windows.
-    const PREVIEW_DOCUMENT: &str = "http://asset.localhost/C%3A%2FUsers%2Fmiyaz%2Freport.html";
+    const PREVIEW_DOCUMENT: &str = "http://asset.localhost/C%3A%2FUsers%2Fexample%2Freport.html";
 
     #[test]
     fn a_preview_only_opens_documents_served_from_the_asset_host() {
         // The Mac spelling of the same document. Without it the preview never
         // opens there: `initial_webpane_url` refuses the only URL the pane is
         // ever handed.
-        let mac_document = "asset://localhost/C%3A%2FUsers%2Fmiyaz%2Freport.html";
+        let mac_document = "asset://localhost/C%3A%2FUsers%2Fexample%2Freport.html";
         assert!(preset_keeps_url_inside_pane(
             preset_by_id("preview").expect("the preview preset is registered"),
             &mac_document.parse().expect("a url"),
@@ -3793,7 +3793,7 @@ assert.match(reply.error, /host changed/);
         for forbidden in ["about:blank", "file:///C:/report.html", "https://accounts.google.com/"] {
             assert!(preview_reload_url(&forbidden.parse().unwrap()).is_err());
         }
-        let mac: Url = "asset://localhost/Users/miyaz/report.html".parse().unwrap();
+        let mac: Url = "asset://localhost/Users/example/report.html".parse().unwrap();
         assert_eq!(preview_reload_url(&mac).unwrap().path(), mac.path());
     }
 

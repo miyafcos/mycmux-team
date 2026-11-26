@@ -259,13 +259,17 @@ fn indented_value_end(value: &str, key_at: usize, start: usize, sequence: bool) 
     (end > start).then(|| start + value[start..end].trim_end_matches(whitespace).len())
 }
 
-fn structured_end(value: &str, at: usize) -> usize {
+fn structured_end(value: &str, at: usize, flow: bool) -> usize {
     let mut closing = Vec::new();
     let mut end = at;
     while let Some(c) = value[end..].chars().next() {
         match c {
             '\'' | '"' => {
                 end = quoted_end(value, end, true).0;
+                continue;
+            }
+            '#' if flow && value[..end].chars().next_back().is_some_and(whitespace) => {
+                end = line_end(value, end);
                 continue;
             }
             '{' => closing.push('}'),
@@ -299,7 +303,7 @@ fn value_end(value: &str, start: usize, mode: ValueMode) -> usize {
         && !value[start..].starts_with(OMITTED)
         && value[start..].starts_with(['{', '['])
     {
-        return structured_end(value, start);
+        return structured_end(value, start, false);
     }
     let mut end = start;
     let mut content_end = start;
@@ -364,7 +368,7 @@ fn authorization_parameter(value: &str, at: usize) -> Option<usize> {
     let bytes = value.as_bytes();
     let escaped_quote = bytes.get(start) == Some(&b'\\') && is_quote(bytes.get(start + 1));
     // A generic named parameter needs a quoted value. A lone '=' can be Base64 padding.
-    if !(credential_key(field.key) || field.delimiter == "=" && (is_quote(bytes.get(start)) || escaped_quote)) {
+    if !(credential_key(field.key.as_deref()?) || field.delimiter == "=" && (is_quote(bytes.get(start)) || escaped_quote)) {
         return None;
     }
     if escaped_quote {
@@ -583,35 +587,111 @@ fn starts_assignment(value: &str) -> bool {
     body < rest.len() && !has_line_break(&rest[..body])
 }
 
-#[derive(Clone, Copy)]
 struct Assignment<'a> {
-    key: &'a str,
+    key: Option<std::borrow::Cow<'a, str>>,
     at: usize,
     quoted: bool,
+    escaped: bool,
     delimiter: &'static str,
     after: usize,
     start: usize,
 }
 
-fn assignment_at(value: &str, at: usize) -> Option<Assignment<'_>> {
-    let bytes = value.as_bytes();
-    let quote = bytes.get(at).filter(|_| is_quote(bytes.get(at)));
-    let begin = at + usize::from(quote.is_some());
-    let mut end = begin;
-    while bytes.get(end).is_some_and(|c| identifier(*c)) {
-        end += 1;
-    }
-    if end == begin || (quote.is_some() && bytes.get(end) != quote) {
+fn key_hex(raw: &str, at: usize, digits: usize) -> Option<u32> {
+    let hex = raw.get(at..at + digits)?;
+    if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    let key_end = end + usize::from(quote.is_some());
+    u32::from_str_radix(hex, 16).ok()
+}
+
+fn decode_quoted_key(raw: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(raw.len());
+    let mut i = 0;
+    while let Some(c) = raw[i..].chars().next() {
+        i += c.len_utf8();
+        if c != '\\' {
+            decoded.push(c);
+            continue;
+        }
+        let escape = raw[i..].chars().next()?;
+        i += escape.len_utf8();
+        let digits = match escape { 'u' => 4, 'x' => 2, 'U' => 8, _ => 0 };
+        if digits > 0 {
+            let mut point = key_hex(raw, i, digits)?;
+            i += digits;
+            if (0xd800..=0xdfff).contains(&point) {
+                if escape != 'u' || point > 0xdbff || !raw[i..].starts_with("\\u") {
+                    return None;
+                }
+                let low = key_hex(raw, i + 2, 4)?;
+                if !(0xdc00..=0xdfff).contains(&low) {
+                    return None;
+                }
+                point = 0x10000 + ((point - 0xd800) << 10) + (low - 0xdc00);
+                i += 6;
+            }
+            decoded.push(char::from_u32(point)?);
+        } else {
+            // Reject escape letters whose meanings differ across the input formats.
+            decoded.push(match escape {
+                'b' => '\u{8}',
+                'f' => '\u{c}',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\u{b}',
+                '0'..='9' | 'a' | 'e' | 'N' | '_' | 'L' | 'P' | '\n' | '\r' | '\u{2028}' | '\u{2029}' => {
+                    return None;
+                }
+                other => other,
+            });
+        }
+    }
+    Some(decoded)
+}
+
+fn is_structured_credential_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("authorization") || credential_key(key)
+}
+
+fn assignment_at(value: &str, at: usize) -> Option<Assignment<'_>> {
+    use std::borrow::Cow;
+
+    let bytes = value.as_bytes();
+    let quoted = is_quote(bytes.get(at));
+    let (key_end, raw) = if quoted {
+        if at > 0 && bytes[at - 1] == b'\\' {
+            return None;
+        }
+        let (end, closed) = quoted_end(value, at, true);
+        if !closed {
+            return None;
+        }
+        let raw = &value[at + 1..end - 1];
+        if !raw.contains('\\') && (raw.is_empty() || !raw.bytes().all(identifier)) {
+            return None;
+        }
+        (end, raw)
+    } else {
+        let mut end = at;
+        while bytes.get(end).is_some_and(|c| identifier(*c)) {
+            end += 1;
+        }
+        if end == at {
+            return None;
+        }
+        (end, &value[at..end])
+    };
     let delimiter_at = skip_space(value, key_end);
     let delimiter = assignment_delimiter(&value[delimiter_at..])?;
     let after = delimiter_at + delimiter.len();
+    let escaped = quoted && raw.contains('\\');
     Some(Assignment {
-        key: &value[begin..end],
+        key: if escaped { decode_quoted_key(raw).map(Cow::Owned) } else { Some(Cow::Borrowed(raw)) },
         at,
-        quoted: quote.is_some(),
+        quoted,
+        escaped,
         delimiter,
         after,
         start: skip_space(value, after),
@@ -628,6 +708,9 @@ fn sibling_assignment(value: &str, field_at: usize, end: usize, flow: bool) -> O
     }
     if flow {
         at = skip_space(value, at);
+        while value[at..].starts_with('#') {
+            at = skip_space(value, line_end(value, at));
+        }
         if !value[at..].starts_with(',') {
             return None;
         }
@@ -650,50 +733,112 @@ fn sibling_assignment(value: &str, field_at: usize, end: usize, flow: bool) -> O
     assignment_at(value, at).filter(|field| field.delimiter == ":")
 }
 
-fn environment_name(value: &str, field: Assignment<'_>) -> bool {
+#[derive(Clone, Copy)]
+enum EnvironmentName {
+    Ordinary,
+    Credential,
+    OmitReading,
+}
+
+fn skip_yaml_comments(value: &str, at: usize) -> usize {
+    let mut at = skip_space(value, at);
+    while value[at..].starts_with('#') {
+        at = skip_space(value, line_end(value, at));
+    }
+    at
+}
+
+fn environment_member_start(value: &str, field: &Assignment<'_>, flow: bool) -> usize {
+    let start = skip_yaml_comments(value, field.start);
+    if flow {
+        return start;
+    }
+    let end = line_end(value, field.after);
+    if start <= end {
+        return start;
+    }
+    let indent = field.at - line_beginning(value, field.at);
+    // Every block member, not just the name, ends before the next sibling.
+    if start < value.len() && start - line_beginning(value, start) > indent { start } else { end }
+}
+
+fn environment_name(value: &str, start: usize) -> EnvironmentName {
+    use EnvironmentName::{Credential, OmitReading, Ordinary};
+
     let bytes = value.as_bytes();
-    let quoted = is_quote(bytes.get(field.start));
-    let start = field.start + usize::from(quoted);
+    if is_quote(bytes.get(start)) {
+        let (end, closed) = quoted_end(value, start, true);
+        if !closed {
+            return OmitReading;
+        }
+        let raw = &value[start + 1..end - 1];
+        if raw.contains('\\') {
+            // Escaped credential names in split records are not sent for reading.
+            return if decode_quoted_key(raw).as_deref().is_none_or(is_structured_credential_key) {
+                OmitReading
+            } else {
+                Ordinary
+            };
+        }
+        return if !raw.is_empty() && raw.bytes().all(identifier) && credential_key(raw) {
+            Credential
+        } else {
+            Ordinary
+        };
+    }
     let mut end = start;
     while bytes.get(end).is_some_and(|c| identifier(*c)) {
         end += 1;
     }
-    if end == start || !credential_key(&value[start..end]) {
-        return false;
+    if end == start {
+        return OmitReading;
     }
-    if quoted {
-        bytes.get(end) == bytes.get(field.start)
+    let bounded = value[end..].chars().next().is_none_or(|c| whitespace(c) || ",}]".contains(c));
+    if bounded && credential_key(&value[start..end]) {
+        Credential
     } else {
-        value[end..].chars().next().is_none_or(|c| whitespace(c) || ",}]".contains(c))
+        Ordinary
     }
 }
 
-fn environment_value<'a>(value: &'a str, field: Assignment<'a>, flow: bool) -> Option<Assignment<'a>> {
+fn environment_value(value: &str, field: &Assignment<'_>, flow: bool) -> Option<(usize, bool)> {
     if field.delimiter != ":" {
         return None;
     }
-    let name_first = field.key.eq_ignore_ascii_case("name");
-    if !name_first && !field.key.eq_ignore_ascii_case("value") {
+    let key = field.key.as_deref()?;
+    let name_first = key.eq_ignore_ascii_case("name");
+    if !name_first && !key.eq_ignore_ascii_case("value") {
         return None;
     }
-    if name_first && !environment_name(value, field) {
+    let mut member_at = field.at;
+    let mut start = environment_member_start(value, field, flow);
+    let name = name_first.then(|| environment_name(value, start));
+    if matches!(name, Some(EnvironmentName::Ordinary)) {
         return None;
     }
-    let mut member = field;
     loop {
-        let mode = if flow { ValueMode::Flow } else { ValueMode::Line };
-        let end = value_end(value, member.start, mode);
+        // A flow boundary that cannot be established must not hide a sibling.
+        let end = if flow {
+            let Some(end) = yaml_flow_node_end(value, start) else { return Some((field.at, true)); };
+            end
+        } else {
+            value_end(value, start, ValueMode::Line)
+        };
         let next = sibling_assignment(value, field.at, end, flow)?;
-        if next.start <= member.start || next.key.eq_ignore_ascii_case(field.key) {
+        let next_key = next.key.as_deref()?;
+        if next.at <= member_at || next_key.eq_ignore_ascii_case(key) {
             return None;
         }
-        if name_first && next.key.eq_ignore_ascii_case("value") {
-            return Some(next);
+        start = environment_member_start(value, &next, flow);
+        if next_key.eq_ignore_ascii_case(if name_first { "value" } else { "name" }) {
+            let at = if name_first { next.at } else { field.at };
+            return match name.unwrap_or_else(|| environment_name(value, start)) {
+                EnvironmentName::Ordinary => None,
+                EnvironmentName::Credential => Some((at, false)),
+                EnvironmentName::OmitReading => Some((at, true)),
+            };
         }
-        if !name_first && next.key.eq_ignore_ascii_case("name") {
-            return environment_name(value, next).then_some(field);
-        }
-        member = next;
+        member_at = next.at;
     }
 }
 
@@ -780,7 +925,7 @@ fn url_authority(value: &str, start: usize, masks: &mut Vec<Mask>) -> Option<usi
     let user = &value[body..password];
     if let Some(field) = user.char_indices()
         .filter(|(at, _)| *at == 0 || !identifier(user.as_bytes()[*at - 1]))
-        .find_map(|(at, _)| assignment_at(user, at).filter(|field| credential_key(field.key)))
+        .find_map(|(at, _)| assignment_at(user, at).filter(|field| field.key.as_deref().is_some_and(credential_key)))
     {
         let start = if field.at == 0 { body + field.start } else { body };
         masks.push(Mask::new(start, password));
@@ -801,8 +946,8 @@ fn yaml_block_header(line: &str) -> bool {
     })
 }
 
-fn assignment_mask(value: &str, field: Assignment<'_>, flow: bool) -> Option<(Mask, usize)> {
-    let Assignment { start, quoted, at, .. } = field;
+fn assignment_mask(value: &str, field: &Assignment<'_>, flow: bool) -> Option<(Mask, usize)> {
+    let (start, quoted, at) = (field.start, field.quoted, field.at);
     let query = at > 0 && matches!(value.as_bytes()[at - 1], b'?' | b'&');
     let yaml = !query && !flow && field.delimiter == ":"
         && matches!(value[line_beginning(value, at)..at].trim_matches(whitespace), "" | "-");
@@ -840,14 +985,356 @@ fn assignment_mask(value: &str, field: Assignment<'_>, flow: bool) -> Option<(Ma
         let continuation = skip_space(value, line_end(value, end));
         end = indented_value_end(value, at, continuation, value[start..].starts_with('#')).unwrap_or(end);
     }
-    if start == end || setting_value(field.key, &value[start..end], yaml) {
+    if start == end || setting_value(field.key.as_deref().unwrap_or_default(), &value[start..end], yaml) {
         return None;
     }
     Some((value_mask(value, start, end, quoted), end))
 }
 
-fn l5_assignment_masks(value: &str) -> Vec<Mask> {
+fn yaml_node_position(value: &str, at: usize, flow: bool) -> Option<(usize, bool)> {
+    let bytes = value.as_bytes();
+    let mut left = at;
+    while left > 0 && matches!(bytes[left - 1], b' ' | b'\t') {
+        left -= 1;
+    }
+    let previous = value[..left].chars().next_back();
+    if previous.is_none_or(|c| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')) {
+        return Some((at - left, false));
+    }
+    if flow && previous.is_some_and(|c| ":[{,".contains(c)) {
+        return Some((0, previous == Some(':')));
+    }
+    if !matches!(previous, Some(':' | '-')) || left == at {
+        return None;
+    }
+    let prefix = &value[line_beginning(value, left - 1)..left];
+    let key = prefix.trim_start_matches([' ', '\t']);
+    let indent = prefix.len() - key.len();
+    if previous == Some('-') {
+        return (key == "-").then_some((indent, false));
+    }
+    let sequence_prefix = key.strip_prefix('-').filter(|rest| rest.starts_with([' ', '\t']));
+    let column = sequence_prefix.map_or(indent, |rest| {
+        indent + 1 + rest.len() - rest.trim_start_matches([' ', '\t']).len()
+    });
+    Some((column, true))
+}
+
+fn yaml_property_end(value: &str, at: usize) -> Option<usize> {
+    let marker = value.as_bytes()[at];
+    let next = value[at + 1..].chars().next();
+    if marker == b'?' {
+        return next.is_none_or(whitespace).then_some(at + 1);
+    }
+    if !matches!(marker, b'&' | b'*' | b'!') {
+        return None;
+    }
+    if marker == b'!' && next == Some('<') {
+        if let Some(end) = value[at + 2..line_end(value, at)].find('>') {
+            return Some(at + 3 + end);
+        }
+    }
+    let mut end = at + 1;
+    while let Some(c) = value[end..].chars().next() {
+        if whitespace(c) || ",[]{}=\"'".contains(c) {
+            break;
+        }
+        end += c.len_utf8();
+    }
+    if marker == b'*' && value[at + 1..end].contains('*') {
+        return None;
+    }
+    (end > at + 1 || marker == b'!').then_some(end)
+}
+
+// Return the end of the actual flow value, not the legacy mask span.
+fn yaml_flow_node_end(value: &str, start: usize) -> Option<usize> {
+    #[derive(PartialEq)]
+    enum Mode { Start, Plain, Closed }
+    let mut closing = Vec::new();
+    let mut mode = Mode::Start;
+    let mut at = start;
+    let mut end = start;
+    while let Some(c) = value[at..].chars().next() {
+        if whitespace(c) {
+            at = skip_space(value, at);
+            continue;
+        }
+        if c == '#' && (at == start || value[..at].chars().next_back().is_some_and(whitespace)) {
+            at = line_end(value, at);
+            continue;
+        }
+        if ",]}".contains(c) {
+            if closing.is_empty() {
+                return Some(end);
+            }
+            if c == ',' {
+                mode = Mode::Start;
+            } else {
+                if closing.pop() != Some(c) {
+                    return None;
+                }
+                mode = Mode::Closed;
+            }
+        } else if c == ':' && !closing.is_empty() && (mode == Mode::Closed
+            || value[at + 1..].chars().next().is_none_or(|next| whitespace(next) || ",[]{}".contains(next)))
+        {
+            mode = Mode::Start;
+        } else if mode == Mode::Start && matches!(c, '\'' | '"') {
+            let (quoted_end, closed) = quoted_end(value, at, true);
+            if !closed {
+                return None;
+            }
+            at = quoted_end;
+            end = at;
+            mode = Mode::Closed;
+            continue;
+        } else if mode == Mode::Start && "&*!?".contains(c) {
+            if let Some(property) = yaml_property_end(value, at) {
+                at = property;
+                end = at;
+                if c == '*' {
+                    mode = Mode::Closed;
+                }
+                continue;
+            }
+            mode = Mode::Plain;
+        } else if mode == Mode::Start && matches!(c, '{' | '[') {
+            closing.push(if c == '{' { '}' } else { ']' });
+        } else {
+            if mode == Mode::Closed || matches!(c, '{' | '[') {
+                return None;
+            }
+            mode = Mode::Plain;
+        }
+        at += c.len_utf8();
+        end = at;
+    }
+    None
+}
+
+fn yaml_inline_node_end(value: &str, start: usize) -> usize {
+    let mut end = start;
+    while let Some(c) = value[end..].chars().next() {
+        if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+            break;
+        }
+        end = match c {
+            '#' if value[..end].chars().next_back().is_some_and(whitespace) => line_end(value, end),
+            '{' | '[' => structured_end(value, end, false),
+            '\'' | '"' if end == 0 || !identifier(value.as_bytes()[end - 1]) => {
+                quoted_end(value, end, true).0
+            }
+            _ => end + c.len_utf8(),
+        };
+    }
+    end
+}
+
+fn yaml_value_indicator(value: &str, at: usize, flow: bool) -> bool {
+    value.as_bytes().get(at) == Some(&b':')
+        && (flow || value[at + 1..].chars().next().is_none_or(whitespace))
+}
+
+fn yaml_scalar_tail_is_known(node: &str, end: usize) -> bool {
+    let tail = &node[skip_space(node, end)..];
+    tail.is_empty() || (tail.starts_with('#') && !has_line_break(tail))
+}
+
+fn yaml_anchor_may_name_credential(node: &str) -> bool {
+    let mut at = skip_space(node, 0);
+    while node[at..].starts_with('!') {
+        at = skip_space(node, yaml_property_end(node, at).unwrap());
+    }
+    // Only a scalar we can classify may clear a previous sensitive binding.
+    if at == node.len() {
+        return true;
+    }
+    if is_quote(node.as_bytes().get(at)) {
+        let (end, closed) = quoted_end(node, at, true);
+        if !closed || has_line_break(&node[at..end]) || !yaml_scalar_tail_is_known(node, end) {
+            return true;
+        }
+        return decode_quoted_key(&node[at + 1..end - 1]).as_deref().is_none_or(is_structured_credential_key);
+    }
+    let mut end = at;
+    while node.as_bytes().get(end).is_some_and(|c| identifier(*c)) {
+        end += 1;
+    }
+    end == at || !yaml_scalar_tail_is_known(node, end) || is_structured_credential_key(&node[at..end])
+}
+
+fn yaml_explicit_key_is_sensitive(key: &str, credential_anchors: &std::collections::HashSet<&str>) -> bool {
+    let bytes = key.as_bytes();
+    let mut at = 0;
+    while let Some(c) = key[at..].chars().next() {
+        if c == '#' && (at == 0 || key[..at].chars().next_back().is_some_and(whitespace)) {
+            at = line_end(key, at);
+        } else if is_quote(bytes.get(at)) {
+            let (end, closed) = quoted_end(key, at, true);
+            if !closed || decode_quoted_key(&key[at + 1..end - 1]).as_deref().is_none_or(is_structured_credential_key) {
+                return true;
+            }
+            at = end;
+        } else if matches!(c, '&' | '*' | '!') {
+            let end = yaml_property_end(key, at).unwrap_or(at + 1);
+            if c == '*' && credential_anchors.contains(&key[at + 1..end]) {
+                return true;
+            }
+            at = end;
+        } else if c.is_ascii() && identifier(c as u8) {
+            let mut end = at + 1;
+            while bytes.get(end).is_some_and(|c| identifier(*c)) {
+                end += 1;
+            }
+            if is_structured_credential_key(&key[at..end]) {
+                return true;
+            }
+            at = end;
+        } else {
+            at += c.len_utf8();
+        }
+    }
+    false
+}
+
+// A YAML node property follows its own value or key through nested children,
+// ending at the next sibling. Keep the scopes separate from plain prose.
+fn yaml_node_scopes(value: &str) -> Option<Vec<Mask>> {
+    let bytes = value.as_bytes();
+    let mut scopes = Vec::new();
+    let mut credential_anchors = std::collections::HashSet::new();
+    let mut closing = Vec::new();
+    let mut at = 0;
+    while let Some(c) = value[at..].chars().next() {
+        let flow = !closing.is_empty();
+        if !flow && value[..at].chars().next_back().is_none_or(|c| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')) {
+            let line = &value[at..];
+            if (line.starts_with("---") || line.starts_with("..."))
+                && line[3..].chars().next().is_none_or(whitespace)
+            {
+                credential_anchors.clear();
+            }
+            if line.starts_with("\u{60}\u{60}\u{60}") || line.starts_with("~~~") {
+                credential_anchors.clear();
+            }
+        }
+        if c == '#' && (at == 0 || value[..at].chars().next_back().is_some_and(whitespace)) {
+            at = line_end(value, at);
+            continue;
+        }
+        if is_quote(bytes.get(at)) && if flow { yaml_node_position(value, at, true).is_some() }
+            else { at == 0 || (!identifier(bytes[at - 1]) && bytes[at - 1] != b'\\') }
+        {
+            let (end, closed) = quoted_end(value, at, true);
+            if closed {
+                at = end;
+                continue;
+            }
+            if flow || (yaml_node_position(value, at, false).is_some() && value[at..line_end(value, at)].contains('\\')) {
+                return None;
+            }
+        }
+        if matches!(c, '&' | '*' | '!' | '?') {
+            if let Some((body, (column, after_colon))) = yaml_property_end(value, at)
+                .zip(yaml_node_position(value, at, flow))
+            {
+                let mut end = if flow { yaml_flow_node_end(value, body)? } else { yaml_inline_node_end(value, body) };
+                let mut next = skip_space(value, end);
+                if !flow {
+                    let rest = value[body..end].trim_start_matches([' ', '\t']);
+                    let marker_only = rest.is_empty() || (rest.starts_with('#') && !has_line_break(rest));
+                    while next < value.len() {
+                        if bytes[next] == b'#' {
+                            next = skip_space(value, line_end(value, next));
+                            continue;
+                        }
+                        let indent = next - line_beginning(value, next);
+                        let sequence = marker_only && after_colon && indent == column && bytes[next] == b'-'
+                            && value[next + 1..].chars().next().is_none_or(whitespace);
+                        if indent <= column && !sequence {
+                            break;
+                        }
+                        end = yaml_inline_node_end(value, next);
+                        next = skip_space(value, end);
+                    }
+                }
+                let name = &value[at + 1..body];
+                if c == '&' {
+                    // A later alias may use this scalar as a mapping key.
+                    if yaml_anchor_may_name_credential(&value[body..end]) {
+                        credential_anchors.insert(name);
+                    } else {
+                        credential_anchors.remove(name);
+                    }
+                } else if c == '*' && !after_colon && credential_anchors.contains(name) {
+                    let delimiter = skip_space(value, body);
+                    if !has_line_break(&value[body..delimiter]) && yaml_value_indicator(value, delimiter, flow) {
+                        return None;
+                    }
+                } else if c == '?' && (flow || yaml_value_indicator(value, next, false))
+                    && yaml_explicit_key_is_sensitive(&value[body..end], &credential_anchors)
+                {
+                    return None;
+                }
+                scopes.push(Mask::new(at, end));
+                // Continue through the node so nested markers stay visible.
+                at = body;
+                continue;
+            }
+        }
+        match c {
+            '{' => closing.push('}'),
+            '[' => closing.push(']'),
+            other if closing.last() == Some(&other) => { closing.pop(); }
+            _ => {}
+        }
+        at += c.len_utf8();
+    }
+    Some(union_masks(scopes))
+}
+
+fn ambiguous_credential_field(value: &str, field: &Assignment<'_>, flow: bool, end: usize) -> bool {
+    if field.delimiter != ":" {
+        return false;
+    }
+    if is_quote(value.as_bytes().get(field.start)) && !quoted_end(value, field.start, true).1 {
+        return true;
+    }
+    if flow {
+        let next = skip_space(value, end);
+        return next < value.len()
+            && !matches!(value.as_bytes().get(next), Some(b',' | b'}' | b']'))
+            && has_line_break(&value[end..next]);
+    }
+    let prefix = &value[line_beginning(value, field.at)..field.at];
+    let leading = prefix.trim_start_matches([' ', '\t']);
+    let indent = if leading.is_empty()
+        || leading.strip_prefix('-').is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|c| matches!(c, b' ' | b'\t'))
+        })
+    {
+        prefix.len()
+    } else {
+        prefix.len() - leading.len()
+    };
+    let mut next = skip_space(value, line_end(value, end));
+    while value[next..].starts_with('#') {
+        next = skip_space(value, line_end(value, next));
+    }
+    next < value.len() && next - line_beginning(value, next) > indent
+}
+
+fn l5_assignment_masks(value: &str, mut escaped_keys: Option<&mut Vec<Mask>>) -> (Vec<Mask>, bool) {
+    let check_boundaries = escaped_keys.is_some();
     let mut masks = Vec::new();
+    let scopes = if check_boundaries {
+        let Some(scopes) = yaml_node_scopes(value) else { return (masks, true); };
+        scopes
+    } else {
+        Vec::new()
+    };
+    let mut yaml_scopes = scopes.iter().peekable();
     let bytes = value.as_bytes();
     let mut closing = Vec::new();
     let mut environment_values = std::collections::HashSet::new();
@@ -862,20 +1349,51 @@ fn l5_assignment_masks(value: &str) -> Vec<Mask> {
                 continue;
             }
             let field = assignment_at(value, i);
-            let secret = field.filter(|field| {
+            let mut masked = None;
+            if let Some(field) = &field {
+                let key = field.key.as_deref();
+                if check_boundaries && key.is_none() {
+                    return (masks, true);
+                }
                 let mut paired_here = environment_values.remove(&i);
                 // Continue inspecting the fields in between; they can be secrets too.
-                if let Some(paired) = environment_value(value, *field, flow) {
-                    if paired.at == i { paired_here = true; } else { environment_values.insert(paired.at); }
+                if let Some((paired_at, omit_reading)) = environment_value(value, field, flow) {
+                    if check_boundaries && omit_reading {
+                        return (masks, true);
+                    }
+                    if paired_at == i { paired_here = true; } else { environment_values.insert(paired_at); }
                 }
-                paired_here || credential_key(field.key)
-            });
-            if let Some((mask, end)) = secret.and_then(|field| assignment_mask(value, field, flow)) {
+                let authorization = key.is_some_and(|key| key.eq_ignore_ascii_case("authorization"));
+                let secret = paired_here || key.is_some_and(credential_key) || (field.escaped && authorization);
+                if secret {
+                    masked = assignment_mask(value, field, flow);
+                }
+                if check_boundaries && (secret || authorization) {
+                    let end = masked.map_or_else(
+                        || value_end(value, field.start, if flow { ValueMode::Flow } else { ValueMode::Line }),
+                        |(_, end)| end,
+                    );
+                    while yaml_scopes.peek().is_some_and(|scope| scope.end <= i) {
+                        yaml_scopes.next();
+                    }
+                    let marked = i >= quoted_through && field.delimiter == ":" && yaml_scopes.peek()
+                        .is_some_and(|scope| scope.start < field.after.max(end));
+                    let uncovered = secret && flow && field.delimiter == ":"
+                        && yaml_flow_node_end(value, field.start).is_none_or(|flow_end| flow_end > end);
+                    if uncovered || marked || ambiguous_credential_field(value, field, flow, end) {
+                        return (masks, true);
+                    }
+                }
+            }
+            if let Some((mask, end)) = masked {
+                if let Some(keys) = escaped_keys.as_deref_mut().filter(|_| field.as_ref().is_some_and(|field| field.escaped)) {
+                    keys.push(mask);
+                }
                 masks.push(mask);
                 i = end;
                 continue;
             }
-            if let Some(field) = field.filter(|field| field.quoted) {
+            if let Some(field) = field.as_ref().filter(|field| field.quoted) {
                 i = field.after;
                 continue;
             }
@@ -909,14 +1427,16 @@ fn l5_assignment_masks(value: &str) -> Vec<Mask> {
                 b'{' => closing.push(b'}'),
                 b'[' => closing.push(b']'),
                 _ if closing.last() == Some(&c) => { closing.pop(); }
-                b'\'' | b'"' if flow => { quoted_through = quoted_end(value, i, true).0; }
+                b'\'' | b'"' if flow && yaml_node_position(value, i, true).is_some() => {
+                    quoted_through = quoted_end(value, i, true).0;
+                }
                 _ => {}
             }
         }
         let c = value[i..].chars().next().unwrap();
         i += c.len_utf8();
     }
-    masks
+    (masks, false)
 }
 
 const V09014_KEYS: &[&str] = &[
@@ -1059,7 +1579,7 @@ fn v09014_masks(value: &str) -> Vec<Mask> {
 
 fn l5_masks(value: &str) -> Vec<Mask> {
     let headers = authorization_masks(value, l5_authorization_value);
-    let assignments = l5_assignment_masks(&render_masks(value, &headers));
+    let (assignments, _) = l5_assignment_masks(&render_masks(value, &headers), None);
     source_masks(headers, assignments)
 }
 
@@ -1076,4 +1596,17 @@ pub(super) fn presend_credential_ranges(value: &str) -> Vec<Mask> {
 
 pub(super) fn scrub(value: &str) -> String {
     render_masks(value, &presend_credential_ranges(value)).into_owned()
+}
+
+/// The reading pipeline can omit input whose credential value cannot be bounded.
+pub(super) fn scrub_for_reading(value: &str) -> Option<String> {
+    let mut escaped_keys = Vec::new();
+    if l5_assignment_masks(value, Some(&mut escaped_keys)).1 {
+        return None;
+    }
+    // Another credential pattern can mask part of a quoted key before the
+    // later assignment scan. The original value ranges are still needed.
+    let mut masks = presend_credential_ranges(value);
+    masks.extend(escaped_keys);
+    Some(render_masks(value, &union_masks(masks)).into_owned())
 }

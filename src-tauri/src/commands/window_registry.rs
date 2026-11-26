@@ -19,7 +19,7 @@ use crate::commands::window::{
 };
 use crate::db::storage::{self, AppSettings};
 use crate::window_registry::{
-    workspace_config_ids, WindowAdoptPayload, WindowFragment,
+    workspace_config_ids, DockComposerSend, WindowAdoptPayload, WindowFragment,
     WINDOW_ADOPT_EVENT, WINDOW_REGISTRY_CHANGED_EVENT,
 };
 use crate::AppState;
@@ -188,14 +188,19 @@ pub async fn publish_window_fragment(
     window: tauri::Window,
     state: State<'_, AppState>,
     fragment: Option<WindowFragment>,
-    require_published: Option<bool>,
     publication_id: Option<String>,
     account_management_ready: Option<bool>,
     account_management_document: Option<u64>,
     account_management_sequence: Option<u64>,
     account_management_subscription_id: Option<String>,
     read_account_management_document: Option<bool>,
+    read_close_intent_document: Option<bool>,
 ) -> Result<Option<u64>, String> {
+    if read_close_intent_document == Some(true) {
+        return state.window_registry.close_intent_document(window.label(), publication_id.as_deref())
+            .map(Some)
+            .ok_or_else(|| "window publisher has been replaced or destroyed".into());
+    }
     if read_account_management_document == Some(true) {
         return state.window_registry.account_management_document(window.label(), publication_id.as_deref())
             .map(Some)
@@ -222,9 +227,7 @@ pub async fn publish_window_fragment(
     if fragment.window_label != window.label() {
         return Err("window fragment does not match its caller".into());
     }
-    if !state.window_registry.publish_live_fragment(fragment, publication_id.as_deref())
-        && require_published == Some(true)
-    {
+    if !state.window_registry.publish_live_fragment(fragment, publication_id.as_deref()) {
         return Err("window is closing or has been replaced before its fragment could be published".into());
     }
     // Deliberately no `window-registry-changed` emit: fragments are republished
@@ -235,21 +238,39 @@ pub async fn publish_window_fragment(
 
 #[tauri::command(async)]
 pub async fn take_pending_adoption(
+    window: tauri::Window,
     state: State<'_, AppState>,
     label: String,
+    publication_id: Option<String>,
+    document: Option<u64>,
+    confirm_dock_adoptions: Option<Vec<String>>,
 ) -> Result<Vec<Value>, String> {
-    Ok(state.window_registry.take_pending_adoption(&label))
+    if label != window.label() { return Err("pending adoption must match its caller".into()); }
+    let registry = &state.window_registry;
+    if let Some(document) = document {
+        registry.read_pending_adoption(&label, publication_id.as_deref(), document, confirm_dock_adoptions)
+            .map_err(String::from)
+    } else if confirm_dock_adoptions.is_none() {
+        Ok(registry.take_pending_adoption(&label))
+    } else {
+        Err("pending adoption document is missing".into())
+    }
 }
 
 /// Hand workspaces from one window to another (merge-back on child close).
 #[tauri::command(async)]
 pub async fn release_workspaces(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, AppState>,
     from_label: String,
     workspace_ids: Vec<String>,
     to_label: String,
+    composer_sends: Option<Vec<DockComposerSend>>,
 ) -> Result<usize, String> {
+    if from_label != window.label() || to_label == from_label {
+        return Err("workspace release must come from its source window".into());
+    }
     if crate::commands::quit::is_quitting(&app) {
         return Err("Receiving window is preparing to quit".into());
     }
@@ -262,7 +283,7 @@ pub async fn release_workspaces(
     }
     let moved = state
         .window_registry
-        .release_to_open_window(&from_label, &workspace_ids, &to_label)?;
+        .release_to_open_window(&from_label, &workspace_ids, &to_label, composer_sends.unwrap_or_default())?;
     if moved.is_empty() {
         return Ok(0);
     }
@@ -384,11 +405,29 @@ pub async fn set_window_close_intent(
     window: tauri::Window,
     state: State<'_, AppState>,
     closing: bool,
+    sequence: u64,
     publication_id: Option<String>,
+    document: u64,
+    destroy: Option<bool>,
 ) -> Result<(), String> {
-    state.window_registry.set_publisher_close_intent(window.label(), publication_id.as_deref(), closing)
-        .then_some(())
-        .ok_or_else(|| "window publisher has been replaced or destroyed".into())
+    if destroy == Some(true) {
+        if !closing { return Err("window destruction requires close intent".into()); }
+        let label = window.label().to_owned();
+        return crate::tearout::on_ui(window.app_handle(), move |app| {
+            let window = app.get_window(&label).ok_or("window has been destroyed")?;
+            let state = app.state::<AppState>();
+            let registry = &state.window_registry;
+            registry.commit_publisher_destroy(&label, publication_id.as_deref(), document, sequence)?;
+            if let Err(error) = window.destroy() {
+                registry.publisher_destroy_failed(&label, publication_id.as_deref(), document, sequence);
+                return Err(error.to_string());
+            }
+            Ok(())
+        }).await;
+    }
+    state.window_registry
+        .set_publisher_close_intent(window.label(), publication_id.as_deref(), document, closing, sequence)
+        .map_err(String::from)
 }
 
 pub fn handle_window_destroyed(app: &AppHandle, label: &str) {

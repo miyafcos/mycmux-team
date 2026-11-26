@@ -591,8 +591,8 @@ mod tests {
     #[test]
     fn default_snapshot_path_preserves_the_windows_layout() {
         assert_eq!(
-            default_snapshot_path_for_home(Path::new(r"C:\Users\miyaz")),
-            PathBuf::from(r"C:\Users\miyaz")
+            default_snapshot_path_for_home(Path::new(r"C:\Users\example")),
+            PathBuf::from(r"C:\Users\example")
                 .join("session-board")
                 .join("data")
                 .join("attention_snapshot.json")

@@ -217,12 +217,12 @@ describe("queued input detection", () => {
   });
 
   it.each([
-    ["PS C:\\Users\\miyaz>", true],
+    ["PS C:\\Users\\example>", true],
     ["C:\\work\\project>", true],
     ["$", true],
     ["#", true],
     ["user@host:~/work$", true],
-    ["PS C:\\Users\\miyaz> Get-ChildItem", false],
+    ["PS C:\\Users\\example> Get-ChildItem", false],
     ["C:\\work> dir", false],
     ["$ npm test", false],
     ["# apt update", false],
@@ -341,7 +341,7 @@ describe("tab sweep UI helpers", () => {
   it("keeps the meaningful last line and the end of a long cwd", () => {
     expect(lastMeaningfulTailLine(["build complete", "❯"])).toBe("build complete");
     expect(lastMeaningfulTailLine(["❯"])).toBe("待機プロンプト");
-    const shortened = shortenCwdFromStart("C:\\Users\\miyaz\\very\\long\\project\\directory", 20);
+    const shortened = shortenCwdFromStart("C:\\Users\\example\\very\\long\\project\\directory", 20);
     expect(shortened.startsWith("…")).toBe(true);
     expect(shortened.endsWith("project\\directory")).toBe(true);
   });

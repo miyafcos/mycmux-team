@@ -1,6 +1,6 @@
 # AILog Ben2 baseline
 
-Measured on 2026-08-17 00:40 JST against `C:\Users\miyaz\.mycmux\ailog.db`.
+Measured on 2026-08-17 00:40 JST against `~\.mycmux\ailog.db`.
 The connection used `SQLITE_OPEN_READ_ONLY`; `PRAGMA query_only` returned `1`.
 No schema initialization, migration, backfill, or database write path was used.
 
@@ -14,4 +14,4 @@ No schema initialization, migration, backfill, or database write path was used.
 | 90d overview + breakdown + sessions | sessions | 942 | 4118 | 0 | raw |
 | 30d efficiency | efficiency | 937 | 251664 | 782 | raw |
 
-The machine-readable record is `C:\Users\miyaz\cmux-for-linux-dev-master\scripts\perf\results\ailog-baseline-ben2.json`.
+The machine-readable record is `~\cmux-for-linux-dev-master\scripts\perf\results\ailog-baseline-ben2.json`.

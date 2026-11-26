@@ -177,12 +177,12 @@ describe("terminal local file path links", () => {
 
   it("matches drive-letter paths with arbitrary extensions", () => {
     const links = findLocalFilePathLinks(
-      String.raw`files: C:\Users\miyaz\AppData\Local\report.pdf C:/Users/miyaz/data.csv C:\tmp\note.txt C:\tmp\image.png`,
+      String.raw`files: C:\Users\example\AppData\Local\report.pdf C:/Users/example/data.csv C:\tmp\note.txt C:\tmp\image.png`,
     );
 
     expect(links.map((link) => link.text)).toEqual([
-      String.raw`C:\Users\miyaz\AppData\Local\report.pdf`,
-      "C:/Users/miyaz/data.csv",
+      String.raw`C:\Users\example\AppData\Local\report.pdf`,
+      "C:/Users/example/data.csv",
       String.raw`C:\tmp\note.txt`,
       String.raw`C:\tmp\image.png`,
     ]);
@@ -190,12 +190,12 @@ describe("terminal local file path links", () => {
 
   it("matches file URI and MSYS drive paths with arbitrary extensions", () => {
     const links = findLocalFilePathLinks(
-      "see file:///C:/Users/miyaz/report.pdf and /c/Users/miyaz/data.csv",
+      "see file:///C:/Users/example/report.pdf and /c/Users/example/data.csv",
     );
 
     expect(links.map((link) => link.text)).toEqual([
-      "file:///C:/Users/miyaz/report.pdf",
-      "/c/Users/miyaz/data.csv",
+      "file:///C:/Users/example/report.pdf",
+      "/c/Users/example/data.csv",
     ]);
   });
 
@@ -224,7 +224,7 @@ describe("terminal local file path links", () => {
 
   it("matches drive-letter directories with Japanese characters, spaces, and trailing backslash", () => {
     const directory =
-      "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版\\数学\\2026年\\11月号\\3_一次原稿\\";
+      "C:\\Users\\example\\サンプル株式会社 Dropbox\\サンプル出版\\数学\\2026年\\11月号\\3_サンプル原稿\\";
     const links = findLocalFilePathLinks(`folder: ${directory}`);
 
     expect(links.map((link) => link.text)).toEqual([directory]);
@@ -232,21 +232,21 @@ describe("terminal local file path links", () => {
 
   it("matches MSYS, file URI, and drive-root directories", () => {
     const links = findLocalFilePathLinks(
-      "dirs: /c/Users/miyaz/work/ file:///C:/Users/miyaz/work/ C:\\",
+      "dirs: /c/Users/example/work/ file:///C:/Users/example/work/ C:\\",
     );
 
     expect(links.map((link) => link.text)).toEqual([
-      "/c/Users/miyaz/work/",
-      "file:///C:/Users/miyaz/work/",
+      "/c/Users/example/work/",
+      "file:///C:/Users/example/work/",
       "C:\\",
     ]);
   });
 
   it("stops directory matches at the trailing separator before prose", () => {
-    const links = findLocalFilePathLinks("納品物: C:\\Users\\x\\3_一次原稿\\ です");
+    const links = findLocalFilePathLinks("納品物: C:\\Users\\x\\3_サンプル原稿\\ です");
 
     expect(links.map((link) => link.text)).toEqual([
-      "C:\\Users\\x\\3_一次原稿\\",
+      "C:\\Users\\x\\3_サンプル原稿\\",
     ]);
   });
 
@@ -276,26 +276,26 @@ describe("terminal local file path links", () => {
     expect(isArtifactPreviewUri(String.raw`C:\tmp\book.xlsx`)).toBe(true);
     expect(isArtifactPreviewUri("file:///C:/tmp/deck.pptx")).toBe(true);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\note.txt`)).toBe(true);
-    expect(isArtifactPreviewUri("/c/Users/miyaz/run.log")).toBe(true);
+    expect(isArtifactPreviewUri("/c/Users/example/run.log")).toBe(true);
   });
 
   it("classifies other detected file extensions as non-preview paths", () => {
     expect(isArtifactPreviewUri(String.raw`C:\tmp\archive.zip`)).toBe(false);
-    expect(isArtifactPreviewUri("/c/Users/miyaz/data.csv")).toBe(false);
+    expect(isArtifactPreviewUri("/c/Users/example/data.csv")).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\image.png`)).toBe(false);
   });
 
   it("classifies directory-like URIs by trailing separator", () => {
-    expect(isDirectoryLikeUri("C:\\Users\\miyaz\\work\\")).toBe(true);
-    expect(isDirectoryLikeUri("/c/Users/miyaz/work/")).toBe(true);
-    expect(isDirectoryLikeUri("file:///C:/Users/miyaz/work/")).toBe(true);
+    expect(isDirectoryLikeUri("C:\\Users\\example\\work\\")).toBe(true);
+    expect(isDirectoryLikeUri("/c/Users/example/work/")).toBe(true);
+    expect(isDirectoryLikeUri("file:///C:/Users/example/work/")).toBe(true);
     expect(isDirectoryLikeUri(" C:\\ ")).toBe(true);
-    expect(isDirectoryLikeUri("C:\\Users\\miyaz\\report.pdf")).toBe(false);
-    expect(isDirectoryLikeUri("file:///C:/Users/miyaz/report.pdf")).toBe(false);
+    expect(isDirectoryLikeUri("C:\\Users\\example\\report.pdf")).toBe(false);
+    expect(isDirectoryLikeUri("file:///C:/Users/example/report.pdf")).toBe(false);
   });
 
   it("resolves Japanese Dropbox paths through the provider cache for dashboard text", async () => {
-    const path = "C:\\Users\\miyaz\\サンプル企画合同会社 Dropbox\\算数\\下書き_260814.md";
+    const path = "C:\\Users\\example\\サンプル企画合同会社 Dropbox\\算数\\下書き_260814.md";
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map((candidate) =>
       candidate === path ? { existingPrefix: path, isDir: false } : null,
     ));
@@ -309,8 +309,8 @@ describe("terminal local file path links", () => {
   });
 
   it("keeps resolved directory and file activation branches distinct", async () => {
-    const directory = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
-    const file = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    const directory = "C:\\Users\\example\\Dropbox\\成果物\\";
+    const file = "C:\\Users\\example\\Dropbox\\成果物\\report.pdf";
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map((candidate) => {
       if (candidate.startsWith(file)) return { existingPrefix: file, isDir: false };
       if (candidate.startsWith(directory)) return { existingPrefix: directory, isDir: true };
@@ -348,12 +348,12 @@ describe("terminal local file path links", () => {
   );
 
   it("extracts bare extension-less candidates with original spans", () => {
-    const text = String.raw`open C:\Users\miyaz\3_一次原稿 を参照`;
+    const text = String.raw`open C:\Users\example\3_サンプル原稿 を参照`;
     const candidates = findBareLocalPathCandidates(text);
 
     expect(candidates).toEqual([
       {
-        text: String.raw`C:\Users\miyaz\3_一次原稿 を参照`,
+        text: String.raw`C:\Users\example\3_サンプル原稿 を参照`,
         index: text.indexOf(String.raw`C:\Users`),
         endIndex: text.length,
       },
@@ -373,25 +373,25 @@ describe("terminal local file path links", () => {
     // "…合同会社 Dropbox\…" — the component after the space looks like a fresh
     // relative candidate, but it belongs to the absolute path that precedes it.
     const folder =
-      "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_接続ドリル";
+      "C:\\Users\\example\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_演習サンプル";
     const candidates = findBareLocalPathCandidates(`  ${folder}`);
 
     expect(candidates.map((candidate) => candidate.text)).toEqual([folder]);
   });
 
   it("stops bare candidates at hard terminal delimiters", () => {
-    const text = String.raw`open "C:\tmp\my folder" and <file:///C:/tmp/3_一次原稿> and /c/tmp/noext+suffix`;
+    const text = String.raw`open "C:\tmp\my folder" and <file:///C:/tmp/3_サンプル原稿> and /c/tmp/noext+suffix`;
     const candidates = findBareLocalPathCandidates(text);
 
     expect(candidates.map((candidate) => candidate.text)).toEqual([
       String.raw`C:\tmp\my folder`,
-      "file:///C:/tmp/3_一次原稿",
+      "file:///C:/tmp/3_サンプル原稿",
       "/c/tmp/noext",
     ]);
   });
 
   it("shrinks a prose-swallowing regex match to the resolver's existing prefix", async () => {
-    const existingPrefix = String.raw`C:\Users\miyaz`;
+    const existingPrefix = String.raw`C:\Users\example`;
     const text = `${existingPrefix} \u306e\u30d5\u30a1\u30a4\u30eb abc.md \u3092\u78ba\u8a8d`;
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
       candidates.map((candidate) =>
@@ -408,7 +408,7 @@ describe("terminal local file path links", () => {
   });
 
   it("emits an overlapping regex and bare candidate exactly once after resolution", () => {
-    const existingPrefix = String.raw`C:\Users\miyaz`;
+    const existingPrefix = String.raw`C:\Users\example`;
     const text = `${existingPrefix} \u306e\u30d5\u30a1\u30a4\u30eb abc.md \u3092\u78ba\u8a8d`;
     const regexMatches = findLocalFilePathLinks(text);
     const bareCandidates = findBareLocalPathCandidates(text, []);
@@ -518,10 +518,10 @@ describe("terminal local file path links", () => {
     // the TUI reserves a right margin, then indents the continuation by two.
     // The old edge-wrap test required the leftover (6) to be narrower than the
     // continuation's leading glyph (2), so this path never linked.
-    const first = String.raw`● FB整理が完了しました。レポート: C:\Users\miyaz\reports\_quick\2026-07\サ`;
+    const first = String.raw`● FB整理が完了しました。レポート: C:\Users\example\reports\_quick\2026-07\サ`;
     const second = "  ンプル接続ドリル_先方FB整理_726_0726-1326.html";
     const existingPrefix =
-      String.raw`C:\Users\miyaz\reports\_quick\2026-07\サンプル接続ドリル_先方FB整理_726_0726-1326.html`;
+      String.raw`C:\Users\example\reports\_quick\2026-07\サンプル接続ドリル_先方FB整理_726_0726-1326.html`;
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
       candidates.map((candidate) => candidate.startsWith(existingPrefix)
         ? { existingPrefix, isDir: false }
@@ -537,8 +537,8 @@ describe("terminal local file path links", () => {
   });
 
   it("preserves a path space at a hard-wrap boundary", async () => {
-    const existingPrefix = String.raw`C:\Users\miyaz\Sample Company Dropbox\reports\wrapped.md`;
-    const first = "\u25CF `C:\\Users\\miyaz\\Sample Company ";
+    const existingPrefix = String.raw`C:\Users\example\Sample Company Dropbox\reports\wrapped.md`;
+    const first = "\u25CF `C:\\Users\\example\\Sample Company ";
     const second = "  \u23BF Dropbox\\reports\\wrapped.md`";
     const columns = Math.max(displayColumns(first), displayColumns(second));
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
@@ -557,7 +557,7 @@ describe("terminal local file path links", () => {
   });
 
   it("recovers a path space omitted by a TUI at a hard-wrap boundary", async () => {
-    const first = "C:\\Users\\miyaz\\\u30b5\u30f3\u30d7\u30eb\u4f01\u753b\u5408\u540c\u4f1a\u793e";
+    const first = "C:\\Users\\example\\\u30b5\u30f3\u30d7\u30eb\u4f01\u753b\u5408\u540c\u4f1a\u793e";
     const second = "Dropbox\\\u30b5\u30f3\u30d7\u30eb\u4f01\u753b\u5c71\u7530\u3000\u592a\u90ce\\\u4e8b\u52d9\u95a2\u4fc2\\\u5317\u6597\u5b66\u9662\\\u3072\u304b\u308a\u30b9\u30bf\\\u6570\u5b66\\19_";
     const third = "\u30b9\u30e9\u30a4\u30c9\u5236\u4f5c\u524d\u6e96\u5099_260804\\13_\u6388\u696dIR\u8ee2\u63db_260804\\06_\u4f8b\u984c\u30d1\u30a4\u30ed\u30c3\u30c8_247";
     const fourth = "-2\\12_\u30ec\u30d3\u30e5\u30fc\u63d0\u793a_247-2_v1.11_260805.html";
@@ -612,7 +612,7 @@ describe("terminal local file path links", () => {
   });
 
   it("keeps a backticked Unicode path clickable from either wrapped row", async () => {
-    const head = "C:\\Users\\miyaz\\reports\\_quick\\2026-08\\mycmux_0.21.6\u21920.21.10_";
+    const head = "C:\\Users\\example\\reports\\_quick\\2026-08\\mycmux_0.21.6\u21920.21.10_";
     const tail = "\u66F4\u65B0\u307E\u3068\u3081_0804-1836.html";
     const existingPrefix = `${head}${tail}`;
     const first = `\u25CF \`${head}`;
@@ -720,7 +720,7 @@ describe("terminal local file path links", () => {
   // TUI wraps it mid-component, and the row it leaves behind ends one cell
   // short because the next glyph is full-width.
   const JAPANESE_PATH =
-    "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_接続ドリル\\11_修正依頼整理_小6_0725\\指示書_20260725.html";
+    "C:\\Users\\example\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_演習サンプル\\11_点検メモ_小6_0101\\指示書_20260725.html";
   const JAPANESE_SPLIT = JAPANESE_PATH.indexOf("務関係");
   const JAPANESE_HEAD = `  ${JAPANESE_PATH.slice(0, JAPANESE_SPLIT)}`;
   const JAPANESE_TAIL = JAPANESE_PATH.slice(JAPANESE_SPLIT);
@@ -979,7 +979,7 @@ describe("terminal local file path links", () => {
   });
 
   it("resolves tilde paths against the user home directory", async () => {
-    mockedHomeDir.mockResolvedValue("C:\\Users\\miyaz");
+    mockedHomeDir.mockResolvedValue("C:\\Users\\example");
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
       candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
     );
@@ -987,10 +987,10 @@ describe("terminal local file path links", () => {
     const harness = createLinkProviderHarness("open ~/notes.md", () => "C:\\repo");
     const links = await harness.provideLinks();
 
-    expect(mockedResolveLocalPathLinks).toHaveBeenCalledWith(["C:\\Users\\miyaz\\notes.md"]);
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledWith(["C:\\Users\\example\\notes.md"]);
     expect(links?.map((link) => link.text)).toEqual(["~/notes.md"]);
     links?.[0].activate({} as MouseEvent, "~/notes.md");
-    expect(harness.onActivate).toHaveBeenCalledWith("C:\\Users\\miyaz\\notes.md", expect.anything());
+    expect(harness.onActivate).toHaveBeenCalledWith("C:\\Users\\example\\notes.md", expect.anything());
   });
 
   it("does not emit unverified relative links", async () => {
@@ -1020,14 +1020,14 @@ describe("terminal local file path links", () => {
     const longer = mergeResolvedPathLinkMatches(
       [
         { text: String.raw`C:\Users suffix`, index: 0, endIndex: 15 },
-        { text: String.raw`C:\Users\miyaz suffix`, index: 0, endIndex: 21 },
+        { text: String.raw`C:\Users\example suffix`, index: 0, endIndex: 21 },
       ],
       [
         { existingPrefix: String.raw`C:\Users`, isDir: true },
-        { existingPrefix: String.raw`C:\Users\miyaz`, isDir: true },
+        { existingPrefix: String.raw`C:\Users\example`, isDir: true },
       ],
     );
-    expect(longer.map((match) => match.text)).toEqual([String.raw`C:\Users\miyaz`]);
+    expect(longer.map((match) => match.text)).toEqual([String.raw`C:\Users\example`]);
 
     const earlier = mergeResolvedPathLinkMatches(
       [

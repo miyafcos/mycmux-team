@@ -8,7 +8,9 @@ $ErrorActionPreference = 'Stop'
 $expectedRuntime = Join-Path $env:USERPROFILE (".mycmux-" + $Name)
 if ($env:MYCMUX_RUNTIME_DIR -ne $expectedRuntime) { throw "Fake agent requires the $Name runtime" }
 if (-not $env:MYCMUX_PANE_SESSION_ID -or $env:MYCMUX_PANE_SESSION_ID -match '[/\\]') { throw 'Missing safe pane session id' }
-$project = Join-Path $env:USERPROFILE '.claude\projects\C--Users-miyaz--work-mycmux-perf3-260924-fixtures'
+$fixtureRoot = Join-Path $env:USERPROFILE '_work\mycmux-perf3-260924-fixtures'
+$projectSlug = $fixtureRoot -replace '[^A-Za-z0-9]', '-'
+$project = Join-Path $env:USERPROFILE ".claude\projects\$projectSlug"
 [IO.Directory]::CreateDirectory($project) | Out-Null
 $transcript = Join-Path $project "$SessionId.jsonl"
 if (Test-Path -LiteralPath $transcript) { throw 'Refusing to append to a pre-existing transcript' }

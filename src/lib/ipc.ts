@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import type { PaneSendDraft } from "../stores/composerStore";
 import { takeTerminalCommandEnv } from "./terminalShellCommand";
 import { beginPtyReadTransition, currentPtyRead, finishPtyReadTransition, ptyReadGeneration, retainPtyReads, validatePtySnapshot } from "./ptyReadGeneration";
 export {
@@ -1279,8 +1280,24 @@ export async function getWindowTabIndex(options?: { includeQuitState: true }): P
   return Array.isArray(index) ? index : index.windows;
 }
 
-export async function setWindowCloseIntent(closing: boolean): Promise<void> {
-  return invoke<void>("set_window_close_intent", { closing, publicationId: layoutPublicationId() });
+let windowCloseIntentSequence = 0;
+let windowCloseIntentDocument: Promise<number> | undefined;
+
+function readWindowCloseIntentDocument(publicationId: string | undefined): Promise<number> {
+  // A document keeps its generation even if an individual request is delayed.
+  return windowCloseIntentDocument ??= invoke<number>("publish_window_fragment", {
+    publicationId, readCloseIntentDocument: true,
+  }).catch(error => {
+    windowCloseIntentDocument = undefined;
+    throw error;
+  });
+}
+
+export async function setWindowCloseIntent(closing: boolean, destroy = false): Promise<void> {
+  const publicationId = layoutPublicationId();
+  const sequence = ++windowCloseIntentSequence;
+  const document = await readWindowCloseIntentDocument(publicationId);
+  return invoke<void>("set_window_close_intent", { closing, sequence, publicationId, document, ...(destroy ? { destroy } : {}) });
 }
 
 export async function quitApp(): Promise<void> {
@@ -1400,9 +1417,9 @@ export function layoutPublicationId(): string | undefined {
   return (globalThis as typeof globalThis & { __MYCMUX_LAYOUT_PUBLICATION_ID__?: string }).__MYCMUX_LAYOUT_PUBLICATION_ID__;
 }
 
-export async function publishWindowFragment(fragment: WindowFragment, requirePublished?: true): Promise<void> {
+export async function publishWindowFragment(fragment: WindowFragment): Promise<void> {
   const publicationId = layoutPublicationId();
-  return invoke<void>("publish_window_fragment", { fragment, requirePublished, publicationId });
+  return invoke<void>("publish_window_fragment", { fragment, publicationId });
 }
 
 export const WINDOW_PUBLISHER_REPLACED_ERROR = "window publisher has been replaced or destroyed";
@@ -1425,9 +1442,22 @@ export function publishWindowAccountManagementReady(
   });
 }
 
-/** Drain (and thereby claim) the workspaces queued for a window. */
-export async function takePendingAdoption(label: string): Promise<WorkspaceConfig[]> {
-  return invoke<WorkspaceConfig[]>("take_pending_adoption", { label });
+export type PendingWorkspaceConfig = WorkspaceConfig & {
+  detached_dock_receipt?: { token: string; sends: PaneSendDraft[] };
+};
+
+/** Read queued workspaces. Legacy dock text remains in native escrow until confirmed. */
+export async function takePendingAdoption(label: string): Promise<PendingWorkspaceConfig[]> {
+  const publicationId = layoutPublicationId();
+  const document = await readWindowCloseIntentDocument(publicationId);
+  if (typeof document !== "number") return invoke<WorkspaceConfig[]>("take_pending_adoption", { label });
+  return invoke<PendingWorkspaceConfig[]>("take_pending_adoption", { label, publicationId, document });
+}
+
+export async function confirmDetachedDockAdoptions(label: string, tokens: string[]): Promise<string[]> {
+  const publicationId = layoutPublicationId();
+  const document = await readWindowCloseIntentDocument(publicationId);
+  return invoke<string[]>("take_pending_adoption", { label, publicationId, document, confirmDockAdoptions: tokens });
 }
 
 /** Hand workspaces to another window; returns how many actually moved. */
@@ -1435,8 +1465,10 @@ export async function releaseWorkspaces(
   fromLabel: string,
   workspaceIds: string[],
   toLabel: string,
+  composerSends?: readonly PaneSendDraft[],
 ): Promise<number> {
-  return invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel });
+  if (!composerSends?.length) return invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel });
+  return invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel, composerSends });
 }
 
 export async function getWindowFragments(): Promise<WindowFragment[]> {
@@ -1446,6 +1478,14 @@ export async function getWindowFragments(): Promise<WindowFragment[]> {
 /** Settings-only hydration for windows that must not load workspaces. */
 export async function getAppSettings(): Promise<AppSettings & { schema_version: number }> {
   return invoke<AppSettings & { schema_version: number }>("get_app_settings");
+}
+
+export async function setAilogMirrorFullTextRoot(root: string | null): Promise<{ root: string | null; revision: number }> {
+  return invoke<{ root: string | null; revision: number }>("set_ailog_mirror_full_text_root", { root });
+}
+
+export function onAilogMirrorFullTextRootChanged(callback: (revision: number) => void): Promise<UnlistenFn> {
+  return listen<number>("ailog-mirror-full-text-root-changed", ({ payload }) => callback(payload));
 }
 
 // ─── Persistence commands ────────────────────────────────────────────────────
@@ -1578,6 +1618,7 @@ export interface AppSettings {
   auto_workspace_naming_enabled?: boolean | null;
   reply_draft_suggestions_enabled?: boolean | null;
   ailog_usd_jpy_rate?: number;
+  ailog_mirror_full_text_root?: string | null;
 }
 
 export interface PersistentData {

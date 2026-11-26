@@ -15,8 +15,8 @@ Set-StrictMode -Version 2.0
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $configPath = Join-Path $repoRoot "src-tauri\tauri.conf.json"
 $packagePath = Join-Path $repoRoot "package.json"
-$keyPath = "C:\Users\miyaz\.tauri\mycmux-updater.key"
-$passwordPath = "C:\Users\miyaz\.tauri\mycmux-updater.pass"
+$keyPath = Join-Path $env:USERPROFILE ".tauri\mycmux-updater.key"
+$passwordPath = Join-Path $env:USERPROFILE ".tauri\mycmux-updater.pass"
 $sourceRepo = "miyafcos/mycmux"
 $targetRepo = "miyafcos/mycmux-team"
 $feedUrl = "https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json"

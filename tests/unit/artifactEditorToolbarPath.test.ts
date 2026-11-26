@@ -17,8 +17,8 @@ describe("displaySourcePath", () => {
   });
 
   it("leaves an ordinary path alone", () => {
-    expect(displaySourcePath("C:\\Users\\miyaz\\report.md")).toBe("C:\\Users\\miyaz\\report.md");
-    expect(displaySourcePath("/Users/miyaz/report.md")).toBe("/Users/miyaz/report.md");
+    expect(displaySourcePath("C:\\Users\\example\\report.md")).toBe("C:\\Users\\example\\report.md");
+    expect(displaySourcePath("/Users/example/report.md")).toBe("/Users/example/report.md");
     expect(displaySourcePath("")).toBe("");
   });
 });

@@ -129,18 +129,18 @@
         let dir = tempfile::tempdir().unwrap();
         write_claude_jsonl(
             &dir.path().join("matching-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &dir.path().join("newer-other-cwd.jsonl"),
-            r"C:\Users\miyaz\other",
+            r"C:\Users\example\other",
         );
 
         assert_eq!(
             detect_claude_session_id_in_dir(
                 dir.path(),
-                r"C:/Users/miyaz/work",
+                r"C:/Users/example/work",
                 None,
                 &HashSet::new(),
             )
@@ -159,7 +159,7 @@
         assert_eq!(
             detect_claude_codex_session_id_in_dir(
                 dir.path(),
-                r"C:\Users\miyaz\work",
+                r"C:\Users\example\work",
                 None,
                 &HashSet::new(),
             )
@@ -173,18 +173,18 @@
         let dir = tempfile::tempdir().unwrap();
         write_claude_jsonl(
             &dir.path().join("first-session.jsonl"),
-            r"C:\Users\miyaz\one",
+            r"C:\Users\example\one",
         );
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &dir.path().join("second-session.jsonl"),
-            r"C:\Users\miyaz\two",
+            r"C:\Users\example\two",
         );
 
         assert_eq!(
             detect_claude_session_id_in_dir(
                 dir.path(),
-                r"C:\Users\miyaz\three",
+                r"C:\Users\example\three",
                 None,
                 &HashSet::new(),
             ),
@@ -197,17 +197,17 @@
         let dir = tempfile::tempdir().unwrap();
         write_claude_jsonl(
             &dir.path().join("older-unclaimed.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &dir.path().join("newer-claimed.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let excluded = HashSet::from(["newer-claimed".to_string()]);
 
         assert_eq!(
-            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None, &excluded,)
+            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\example\work", None, &excluded,)
                 .as_deref(),
             Some("older-unclaimed")
         );
@@ -222,11 +222,11 @@
         std::fs::create_dir_all(&claude_codex_dir).unwrap();
         write_claude_jsonl(
             &claude_dir.join("plain-dir-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         write_claude_jsonl(
             &claude_codex_dir.join("codex-dir-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let mappings = HashMap::from([(
             "pane-a".to_string(),
@@ -259,7 +259,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -284,7 +284,7 @@
         std::fs::create_dir_all(&claude_codex_dir).unwrap();
         write_claude_jsonl(
             &claude_codex_dir.join("codex-dir-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let excluded = HashSet::from(["codex-dir-session".to_string()]);
         let detection_exclusions =
@@ -303,7 +303,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &detection_exclusions,
                 )
@@ -341,7 +341,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -366,12 +366,12 @@
         std::fs::create_dir_all(&claude_codex_dir).unwrap();
         write_claude_jsonl(
             &claude_dir.join("plain-dir-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &claude_codex_dir.join("newer-codex-dir-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let excluded = HashSet::new();
 
@@ -388,7 +388,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -413,7 +413,7 @@
         std::fs::create_dir_all(&claude_codex_dir).unwrap();
         write_claude_jsonl(
             &claude_dir.join("exact-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let mappings = HashMap::from([(
             "pane-a".to_string(),
@@ -448,7 +448,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &detection_exclusions,
                 )
@@ -469,12 +469,12 @@
         let dir = tempfile::tempdir().unwrap();
         write_claude_jsonl(
             &dir.path().join("older-pane-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &dir.path().join("newer-owner-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let mut cache = HashMap::from([(
             "owner-pane".to_string(),
@@ -493,7 +493,7 @@
         );
 
         assert_eq!(
-            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None, &excluded,)
+            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\example\work", None, &excluded,)
                 .as_deref(),
             Some("older-pane-session")
         );
@@ -708,11 +708,11 @@
         // the CLI rolled over to a new id mid-run, and both the mapping file and
         // argv kept pointing at the transcript that stopped being written.
         let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
-        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\miyaz\work");
+        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\example\work");
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &claude_dir.join("successor-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let mappings = HashMap::from([(
             "pane-a".to_string(),
@@ -745,7 +745,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -767,11 +767,11 @@
         // still being written the pane must keep its id and the successor scan
         // must not even run.
         let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
-        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\miyaz\work");
+        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\example\work");
         wait_for_distinct_mtime();
         write_claude_jsonl(
             &claude_dir.join("newer-session.jsonl"),
-            r"C:\Users\miyaz\work",
+            r"C:\Users\example\work",
         );
         let mappings = HashMap::from([(
             "pane-a".to_string(),
@@ -806,7 +806,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -829,9 +829,9 @@
         // newest file in the directory, but B's id is mapped to B, so the
         // successor scan must not hand it to A.
         let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
-        write_claude_jsonl(&claude_dir.join("pane-a-session.jsonl"), r"C:\Users\miyaz\work");
+        write_claude_jsonl(&claude_dir.join("pane-a-session.jsonl"), r"C:\Users\example\work");
         wait_for_distinct_mtime();
-        write_claude_jsonl(&claude_dir.join("pane-b-session.jsonl"), r"C:\Users\miyaz\work");
+        write_claude_jsonl(&claude_dir.join("pane-b-session.jsonl"), r"C:\Users\example\work");
         let mappings = HashMap::from([
             (
                 "pane-a".to_string(),
@@ -882,7 +882,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &detection_exclusions,
                 )
@@ -929,7 +929,7 @@
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
                     &claude_codex_dir,
-                    r"C:\Users\miyaz\work",
+                    r"C:\Users\example\work",
                     None,
                     &excluded,
                 )
@@ -1144,7 +1144,7 @@
     #[test]
     fn the_successor_scan_floor_excludes_older_transcripts_from_the_scan() {
         let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
-        write_claude_jsonl(&claude_dir.join("older-session.jsonl"), r"C:\Users\miyaz\work");
+        write_claude_jsonl(&claude_dir.join("older-session.jsonl"), r"C:\Users\example\work");
         let floor = std::time::SystemTime::now()
             .checked_add(Duration::from_secs(60))
             .unwrap();
@@ -1153,7 +1153,7 @@
             detect_claude_family_session_id_in_dirs(
                 &claude_dir,
                 &claude_codex_dir,
-                r"C:\Users\miyaz\work",
+                r"C:\Users\example\work",
                 Some(floor),
                 &HashSet::new(),
             ),

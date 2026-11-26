@@ -114,7 +114,7 @@ describe("WorkspaceSetup", () => {
   });
 
   it("seeds the folder and names the workspace after it", () => {
-    renderDialog({ defaultCwd: "C:/Users/miyaz/cmux-for-linux-dev-master" });
+    renderDialog({ defaultCwd: "C:/Users/example/cmux-for-linux-dev-master" });
     const folder = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
       (input) => input.value.includes("cmux-for-linux-dev-master"),
     );

@@ -20,7 +20,7 @@ const productionRaceMocks = vi.hoisted(() => ({
   destroy: vi.fn(),
   emitTo: vi.fn(async () => {}),
   killSession: vi.fn(async () => {}),
-  publishWindowFragment: vi.fn<(fragment: WindowFragment, requirePublished?: true) => Promise<void>>(),
+  publishWindowFragment: vi.fn<(fragment: WindowFragment) => Promise<void>>(),
   quitPrepared: vi.fn(async () => {}),
   quitSaved: vi.fn(async () => {}),
   readAgentSessionMappings: vi.fn(),
@@ -59,7 +59,9 @@ vi.mock("../../src/lib/ipc", async (importOriginal) => {
   return {
     ...actual,
     claimLeader: productionRaceMocks.claimLeader,
-    setWindowCloseIntent: vi.fn(async () => {}),
+    setWindowCloseIntent: vi.fn(async (_closing: boolean, destroy = false) => {
+      if (destroy) await productionRaceMocks.destroy();
+    }),
     takePendingAdoption: vi.fn(async () => []),
     killSession: productionRaceMocks.killSession,
     discardSessionScrollback: vi.fn(async () => {}),
@@ -711,6 +713,7 @@ describe("SocketListener production autosave subscriptions", () => {
   it("saves the closed tab's absence when a child starts closing it before another window answers quit", async () => {
     const child = quitWorkspace("child");
     await mountQuitWindow("mycmux-w1", child);
+    productionRaceMocks.publishWindowFragment.mockClear();
     const { finish, close } = await beginSlowTabClose(child);
     await act(async () => { dispatchQuitTestEvent(QUIT_PREPARE_EVENT); });
     const answersBeforeClose = productionRaceMocks.quitPrepared.mock.calls.length;
@@ -721,7 +724,7 @@ describe("SocketListener production autosave subscriptions", () => {
     });
     expect(productionRaceMocks.quitPrepared).toHaveBeenCalledExactlyOnceWith(true);
     const childFragment = productionRaceMocks.publishWindowFragment.mock.calls
-      .findLast(([fragment, required]) => required && fragment.window_label === "mycmux-w1")?.[0];
+      .findLast(([fragment]) => fragment.window_label === "mycmux-w1")?.[0];
     expect(childFragment).toBeDefined();
 
     // A separate webview owns the final save and answers after this child.
@@ -742,6 +745,7 @@ describe("SocketListener production autosave subscriptions", () => {
   it("answers quit without a published fragment when a tab close outlasts the preparation budget", async () => {
     const workspace = quitWorkspace("slow");
     await mountQuitWindow("main", workspace);
+    productionRaceMocks.publishWindowFragment.mockClear();
     vi.useFakeTimers();
     const { finish, close } = await beginSlowTabClose(workspace);
     try {
@@ -753,7 +757,7 @@ describe("SocketListener production autosave subscriptions", () => {
       await act(async () => { dispatchQuitTestEvent(QUIT_SAVE_EVENT); });
       expect(productionRaceMocks.quitSaved).toHaveBeenCalledOnce();
       expect(responses).toEqual([[false]]);
-      expect(productionRaceMocks.publishWindowFragment.mock.calls.some(([, required]) => required)).toBe(false);
+      expect(productionRaceMocks.publishWindowFragment).not.toHaveBeenCalled();
     } finally {
       await act(async () => { finish(); await close; });
       vi.useRealTimers();

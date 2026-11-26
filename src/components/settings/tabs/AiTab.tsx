@@ -1,9 +1,10 @@
 import { recoverNamesFromContent, undoRecoveredNames, type NameRecoveryFeedback } from "../../../lib/nameRecoveryAction";
 import { useAutoNameRuntimeStore } from "../../../stores/autoNameRuntimeStore";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AI_PROVIDERS, aiProviderDef, classifyModelForProvider } from "../../../lib/aiModels";
 import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { getAppSettings, onAilogMirrorFullTextRootChanged, setAilogMirrorFullTextRoot } from "../../../lib/ipc";
 import { useToastStore } from "../../../stores/toastStore";
 import { aiSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, dividerStyle, sectionHeadingStyle } from "../tabStyles";
@@ -73,6 +74,119 @@ function FeatureRow({ label, badge, disclosure, enabled, checked, onChange, unav
       )}
       <div style={hintStyle}>{disclosure}</div>
     </div>
+  );
+}
+
+function AilogFullTextMirrorSettings() {
+  const [root, setRoot] = useState<string | null>();
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [readError, setReadError] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
+  const readRevision = useRef(0);
+  const latestSave = useRef(0);
+  const confirmedSave = useRef(0);
+  const title = "AI ログの全文の控え";
+
+  useEffect(() => {
+    let mounted = true;
+    let loaded = false;
+    let unlisten: (() => void) | undefined;
+    const refresh = (savedRevision?: number) => {
+      if (!mounted || (savedRevision !== undefined && savedRevision <= latestSave.current)) return;
+      if (savedRevision !== undefined) latestSave.current = savedRevision;
+      const observedSave = latestSave.current;
+      const request = ++readRevision.current;
+      const isCurrent = () => mounted && request === readRevision.current && observedSave >= confirmedSave.current;
+      void getAppSettings().then((settings) => {
+        if (!isCurrent()) return;
+        const saved = settings.ailog_mirror_full_text_root?.trim() || null;
+        confirmedSave.current = observedSave;
+        setRoot(saved);
+        setReadError(false);
+        if (!loaded) {
+          loaded = true;
+          setDraft(saved ?? "");
+        }
+      }, () => {
+        // A failed read of our own notice cannot undo a confirmed reply.
+        if (isCurrent() && (observedSave === 0 || observedSave > confirmedSave.current)) {
+          setReadError(true);
+        }
+      });
+    };
+    // Subscribe before loading so a concurrent save cannot go unnoticed.
+    void onAilogMirrorFullTextRootChanged(refresh).then((stop) => {
+      if (!mounted) {
+        stop();
+        return;
+      }
+      unlisten = stop;
+      refresh();
+    }, () => refresh());
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, []);
+
+  async function save(next: string | null) {
+    setSaving(true);
+    setSaveError(undefined);
+    try {
+      const { root: saved, revision } = await setAilogMirrorFullTextRoot(next);
+      if (revision >= latestSave.current) {
+        latestSave.current = revision;
+        if (revision > confirmedSave.current) {
+          confirmedSave.current = revision;
+          setRoot(saved);
+          setReadError(false);
+        }
+        setDraft(saved ?? "");
+      }
+    } catch (cause) {
+      setSaveError(cause === "ailog.mirror.root_not_absolute"
+        ? "保存先には絶対パスを入力してください。"
+        : "保存先の設定を保存できませんでした。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const disabled = root === undefined || saving;
+  const readMessage = readError
+    ? root === undefined ? "保存先を読み込めませんでした。" : "保存先を読み直せませんでした。"
+    : undefined;
+  const status = root === undefined ? (readError ? null : "読み込み中")
+    : readError ? "現在の保存先を確認できません" : root ?? "控えない";
+  return (
+    <section aria-label={title}>
+      <div style={{ ...sectionHeadingStyle, marginTop: 24 }}>{title}</div>
+      <div role="status" style={{ ...hintStyle, overflowWrap: "anywhere" }}>
+        {status}
+      </div>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        if (!disabled && draft.trim()) void save(draft);
+      }} style={{ display: "grid", gap: 8, marginTop: 8 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          保存先の絶対パス
+          <input
+            type="text"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            disabled={disabled}
+            spellCheck={false}
+          />
+        </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="submit" disabled={disabled || !draft.trim()}>保存</button>
+          <button type="button" disabled={disabled || (!readError && root === null)} onClick={() => void save(null)}>控えない</button>
+        </div>
+        {readMessage ? <div role="alert">{readMessage}</div> : null}
+        {saveError ? <div role="alert">{saveError}</div> : null}
+      </form>
+    </section>
   );
 }
 
@@ -229,6 +343,7 @@ export function AiTab() {
         />
       </div>
 
+      <AilogFullTextMirrorSettings />
       <JevSettingsSection aiEnabled={enabled} />
       <div style={dividerStyle} />
       <ClaudeSkillsSection />

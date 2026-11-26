@@ -20,7 +20,7 @@ permission_mode = "always-approve"
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -29,7 +29,7 @@ mycmux_managed = true
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -38,7 +38,7 @@ mycmux_managed = true
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -47,7 +47,7 @@ mycmux_managed = true
 
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -56,7 +56,7 @@ mycmux_managed = true
 
 [[hooks.Notification.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -65,7 +65,7 @@ mycmux_managed = true
 
 [[hooks.Notification.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -74,7 +74,7 @@ mycmux_managed = true
 
 [[hooks.Notification.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -83,7 +83,7 @@ mycmux_managed = true
 
 [[hooks.Notification.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -92,7 +92,7 @@ mycmux_managed = true
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -101,7 +101,7 @@ mycmux_managed = true
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -110,7 +110,7 @@ mycmux_managed = true
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -119,7 +119,7 @@ mycmux_managed = true
 
 [[hooks.Stop.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -128,7 +128,7 @@ mycmux_managed = true
 
 [[hooks.StopFailure.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -137,7 +137,7 @@ mycmux_managed = true
 
 [[hooks.StopFailure.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -146,7 +146,7 @@ mycmux_managed = true
 
 [[hooks.StopFailure.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -155,7 +155,7 @@ mycmux_managed = true
 
 [[hooks.StopFailure.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -164,7 +164,7 @@ mycmux_managed = true
 
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -173,7 +173,7 @@ mycmux_managed = true
 
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -182,7 +182,7 @@ mycmux_managed = true
 
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -191,7 +191,7 @@ mycmux_managed = true
 
 [[hooks.SessionEnd.hooks]]
 type = "command"
-command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
+command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
 timeout = 1
 statusMessage = "mycmux lifecycle observation"
 mycmux_managed = true
@@ -204,7 +204,7 @@ default_reasoning_effort = "high"
 [[hooks.UserPromptSubmit]]
   [[hooks.UserPromptSubmit.hooks]]
   type = "command"
-  command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
+  command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_active'
   timeout = 1
   statusMessage = "mycmux lifecycle observation"
   mycmux_managed = true
@@ -212,7 +212,7 @@ default_reasoning_effort = "high"
 [[hooks.Notification]]
   [[hooks.Notification.hooks]]
   type = "command"
-  command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
+  command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind attention_required'
   timeout = 1
   statusMessage = "mycmux lifecycle observation"
   mycmux_managed = true
@@ -220,7 +220,7 @@ default_reasoning_effort = "high"
 [[hooks.Stop]]
   [[hooks.Stop.hooks]]
   type = "command"
-  command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
+  command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind turn_ended'
   timeout = 1
   statusMessage = "mycmux lifecycle observation"
   mycmux_managed = true
@@ -228,7 +228,7 @@ default_reasoning_effort = "high"
 [[hooks.StopFailure]]
   [[hooks.StopFailure.hooks]]
   type = "command"
-  command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
+  command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind failed'
   timeout = 1
   statusMessage = "mycmux lifecycle observation"
   mycmux_managed = true
@@ -236,7 +236,7 @@ default_reasoning_effort = "high"
 [[hooks.SessionEnd]]
   [[hooks.SessionEnd.hooks]]
   type = "command"
-  command = 'python "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
+  command = 'python "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py" --provider grok --event-kind session_terminated'
   timeout = 1
   statusMessage = "mycmux lifecycle observation"
   mycmux_managed = true

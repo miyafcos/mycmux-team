@@ -63,7 +63,7 @@
         "scripts/tests/fixtures/screens/human_draft.txt": "27504403155913e311b583ffa5e3601043dcbdb9a9a714de65059752b69811ac",
         "scripts/tests/fixtures/screens/login.txt": "f169da33b8443efa69960a81b3d70bdb8f4e4b8d93026d40148d4d463f96e440",
         "scripts/tests/fixtures/screens/malformed_ask.txt": "0f1b4208ed152395260164a5018f90055afbad0fd0870ada8a6688232595b93d",
-        "scripts/tests/fixtures/screens/normal_working.txt": "e2244cc8d66ff1f38158ed0b6a629a54dab09eeb5aa58b29acc3944f49908a5b",
+        "scripts/tests/fixtures/screens/normal_working.txt": "8a090be280bb724157c31501bff3f2729b74eb86239e098bc7bf92d945db9ecc",
         "scripts/tests/fixtures/screens/permission.txt": "1085b4f1713b7da96a44432a7e5453390a17781d997949b5dae3ba04532dffd9",
         "scripts/tests/fixtures/screens/permission_unparsed.txt": "037b07ad84e1705d913e62eb55a076c8e103c93a12b32fdf3ddcca0ffc007427",
         "scripts/tests/fixtures/screens/startup_mcp.txt": "cd2ea2825008c09524a645c038204a83c1ddc81141b1a9c894b25d6b83bf21e9",

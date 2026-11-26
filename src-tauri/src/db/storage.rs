@@ -601,18 +601,11 @@ fn default_ailog_usd_jpy_rate() -> f64 {
     DEFAULT_AILOG_USD_JPY_RATE
 }
 
+const LEGACY_AILOG_MIRROR_FULL_TEXT_ROOT: &str =
+    "G:\\\u{30de}\u{30a4}\u{30c9}\u{30e9}\u{30a4}\u{30d6}\\pc-backup\\mycmux-ailog";
+
 fn default_ailog_mirror_full_text_root() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        Some(
-            "G:\\\u{30de}\u{30a4}\u{30c9}\u{30e9}\u{30a4}\u{30d6}\\pc-backup\\mycmux-ailog"
-                .to_string(),
-        )
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        None
-    }
+    None
 }
 
 /// Invalid stored rates (non-finite or not strictly positive) fall back to
@@ -684,10 +677,11 @@ pub struct AppSettings {
     /// in USD; the renderer multiplies at format time.
     #[serde(default = "default_ailog_usd_jpy_rate")]
     pub ailog_usd_jpy_rate: f64,
-    /// Optional durable full-text transcript mirror. An explicit null disables
-    /// Tier 2 while the metadata-only local mirror continues.
+    /// Opt-in destination for compressed full-text transcript copies.
     #[serde(default = "default_ailog_mirror_full_text_root")]
     pub ailog_mirror_full_text_root: Option<String>,
+    #[serde(default)]
+    pub ailog_mirror_full_text_root_migrated: bool,
     /// Read-only fallback for missing Claude project transcripts. Empty disables it.
     #[serde(default)]
     pub ailog_claude_fallback_root: Option<String>,
@@ -720,8 +714,24 @@ impl Default for AppSettings {
             pet_random_bag: None,
             ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
             ailog_mirror_full_text_root: default_ailog_mirror_full_text_root(),
+            ailog_mirror_full_text_root_migrated: true,
             ailog_claude_fallback_root: None,
         }
+    }
+}
+
+impl AppSettings {
+    /// Returns whether a pending migration cleared the old destination.
+    fn migrate_ailog_mirror_full_text_root(&mut self) -> Option<bool> {
+        if self.ailog_mirror_full_text_root_migrated {
+            return None;
+        }
+        self.ailog_mirror_full_text_root_migrated = true;
+        let cleared = self.ailog_mirror_full_text_root.as_deref() == Some(LEGACY_AILOG_MIRROR_FULL_TEXT_ROOT);
+        if cleared {
+            self.ailog_mirror_full_text_root = None;
+        }
+        Some(cleared)
     }
 }
 
@@ -910,7 +920,7 @@ pub(crate) fn scrollback_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, S
     let path = data_path(app_handle)?;
     let parent = path
         .parent()
-        .ok_or_else(|| format!("data path has no parent: {}", path.display()))?;
+        .ok_or_else(|| "data path has no parent".to_string())?;
     Ok(parent.join("scrollback"))
 }
 
@@ -1024,13 +1034,17 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: &Path, archive_available: 
     }
 }
 
+fn layout_file_name(path: &Path) -> &str {
+    path.file_name().and_then(|name| name.to_str()).unwrap_or("data.json")
+}
+
 fn quarantine_data_file(path: &Path, reason: &str) -> Result<PathBuf, String> {
     let backup_path = backup_path_for(path, reason);
     fs::rename(path, &backup_path).map_err(|error| {
         format!(
             "Failed to quarantine {} to {}: {error}",
-            path.display(),
-            backup_path.display()
+            layout_file_name(path),
+            layout_file_name(&backup_path)
         )
     })?;
     Ok(backup_path)
@@ -1047,20 +1061,20 @@ fn read_data_file(path: &Path) -> std::io::Result<String> {
 
 fn schema_version_from_contents(path: &Path, contents: &str) -> Result<u32, String> {
     let value = serde_json::from_str::<serde_json::Value>(contents)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+        .map_err(|error| format!("Failed to parse {}: {error}", layout_file_name(path)))?;
     let Some(schema_version) = value.get("schema_version") else {
         return Ok(CURRENT_SCHEMA_VERSION);
     };
     let version = schema_version.as_u64().ok_or_else(|| {
         format!(
             "Failed to parse {}: schema_version must be an unsigned integer",
-            path.display()
+            layout_file_name(path)
         )
     })?;
     u32::try_from(version).map_err(|_| {
         format!(
             "Failed to parse {}: schema_version is out of range",
-            path.display()
+            layout_file_name(path)
         )
     })
 }
@@ -1071,7 +1085,7 @@ fn schema_version_from_path(path: &Path) -> Result<Option<u32>, String> {
         return Ok(None);
     }
     let contents = read_data_file(path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        .map_err(|error| format!("Failed to read {}: {error}", layout_file_name(path)))?;
     if contents.trim().is_empty() {
         return Ok(None);
     }
@@ -1114,9 +1128,9 @@ fn copy_layout_file(source: &Path, target: &Path) -> Result<(), String> {
                 return fail_layout_copy_partway(source, file);
             }
             let mut source_file = File::open(source)
-                .map_err(|error| format!("Failed to open {}: {error}", source.display()))?;
+                .map_err(|error| format!("Failed to open {}: {error}", layout_file_name(source)))?;
             std::io::copy(&mut source_file, file)
-                .map_err(|error| format!("Failed to copy {}: {error}", source.display()))?;
+                .map_err(|error| format!("Failed to copy {}: {error}", layout_file_name(source)))?;
             Ok(())
         })
 }
@@ -1479,8 +1493,8 @@ fn replace_data_file(
     fs::rename(tmp_path, path).map_err(|error| {
         format!(
             "Failed to replace {} with {}: {error}",
-            path.display(),
-            tmp_path.display()
+            layout_file_name(path),
+            layout_file_name(tmp_path)
         )
     })?;
 
@@ -1522,42 +1536,41 @@ fn save_preflighted_to_path(
     shrink: Option<(LayoutCounts, LayoutCounts)>,
 ) -> Result<(), PersistentStorageError> {
     ensure_payload_schema_supported(data)?;
+    let json = serde_json::to_string(data).map_err(|error| {
+        PersistentStorageError::storage(format!("Failed to serialize data: {error}"))
+    })?;
+    save_layout_json(path, &json, now, layout_reduced, shrink)
+}
+
+fn save_layout_json(
+    path: &Path,
+    json: &str,
+    now: SystemTime,
+    layout_reduced: bool,
+    shrink: Option<(LayoutCounts, LayoutCounts)>,
+) -> Result<(), PersistentStorageError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
-            PersistentStorageError::storage(format!(
-                "Failed to create {}: {error}",
-                parent.display()
-            ))
+            PersistentStorageError::storage(format!("Failed to create layout directory: {error}"))
         })?;
     }
 
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("data.json");
+    let file_name = layout_file_name(path);
     let timestamp = timestamp_nanos(now);
     let tmp_path = path.with_file_name(format!(
         "{file_name}.tmp-{}-{timestamp}",
         std::process::id()
     ));
-    let json = serde_json::to_string(data).map_err(|error| {
-        PersistentStorageError::storage(format!("Failed to serialize data: {error}"))
-    })?;
-
-    write_json_file(&tmp_path, &json).map_err(PersistentStorageError::from)?;
+    write_json_file(&tmp_path, json).map_err(PersistentStorageError::from)?;
     replace_data_file(path, &tmp_path, now, layout_reduced, shrink)
         .map_err(PersistentStorageError::from)
         .inspect_err(|replace_error| {
-            crate::diag_warn!(
-                "storage",
-                "failed to save {}: {replace_error}",
-                path.display()
-            );
+            crate::diag_warn!("storage", "failed to save {file_name}: {replace_error}");
             if let Err(error) = fs::remove_file(&tmp_path) {
                 crate::diag_warn!(
                     "storage",
-                    "failed to remove temporary data file {}: {error}",
-                    tmp_path.display()
+                    "failed to remove temporary data file {}: {:?}",
+                    layout_file_name(&tmp_path), error.kind()
                 );
             }
         })
@@ -1587,11 +1600,28 @@ fn retain_interrupted_writes(path: &Path) {
                 .is_some_and(|random| random.len() == 6 && random.bytes().all(|byte| byte.is_ascii_alphanumeric()));
             if (main_temp || backup_temp) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                 if let Err(error) = crate::util::atomic_write::preserve_in_old(&entry.path()) {
-                    crate::diag_warn!("storage", "could not preserve interrupted layout file: {error}");
+                    crate::diag_warn!("storage", "could not preserve interrupted layout file: {:?}", error.kind());
                 }
             }
         }
     }
+}
+
+fn persist_ailog_mirror_migration(path: &Path, cleared: bool) -> Result<(), String> {
+    // Keep any keys unknown to this build when the only write is a migration.
+    let contents = fs::read(path)
+        .map_err(|error| format!("Could not re-read data.json for settings migration: {:?}", error.kind()))?;
+    let contents = contents.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&contents);
+    let mut wire: serde_json::Value =
+        serde_json::from_slice(contents).map_err(|error| error.to_string())?;
+    let settings = wire.get_mut("settings").and_then(serde_json::Value::as_object_mut)
+        .ok_or("data.json settings are missing")?;
+    settings.insert("ailog_mirror_full_text_root_migrated".into(), true.into());
+    if cleared {
+        settings.insert("ailog_mirror_full_text_root".into(), serde_json::Value::Null);
+    }
+    let json = serde_json::to_string(&wire).map_err(|error| error.to_string())?;
+    save_layout_json(path, &json, layout_write_time(), false, None).map_err(String::from)
 }
 
 pub(crate) fn load_envelope<T: PersistentDataTarget + ?Sized>(
@@ -1603,11 +1633,18 @@ pub(crate) fn load_envelope<T: PersistentDataTarget + ?Sized>(
     if let Some(schema_version) = quarantined_schema_version() {
         return Ok(PersistentDataEnvelope::unsupported(schema_version));
     }
-    let envelope = load_envelope_from_path(&path)?;
+    let mut envelope = load_envelope_from_path(&path)?;
     if !envelope.supported {
         latch_unsupported_schema(envelope.schema_version);
     } else {
         retain_interrupted_writes(&path);
+        if let Some(cleared) = envelope.data.as_mut().and_then(|data| data.settings.migrate_ailog_mirror_full_text_root()) {
+            // Use the safe in-memory value even if the locked write fails.
+            // A later load retries the migration until the marker is durable.
+            if let Err(error) = persist_ailog_mirror_migration(&path, cleared) {
+                crate::diag_warn!("persist", "could not persist the AI log mirror settings migration: {error}");
+            }
+        }
     }
     Ok(envelope)
 }
@@ -1731,6 +1768,7 @@ where
     let mut data = envelope.data.ok_or_else(|| {
         PersistentStorageError::storage("supported data.json load returned no data")
     })?;
+    let _ = data.settings.migrate_ailog_mirror_full_text_root();
     let before = data.layout_counts();
     if !updater(&mut data) {
         return Ok(before);
@@ -1814,9 +1852,18 @@ mod tests {
 
     #[test]
     fn l3_fix2_23_windows_instance_guard_uses_the_same_profile_scope_as_data_writes() {
-        let lib = include_str!("../lib.rs");
-        let windows = lib.split_once("#[cfg(target_os = \"windows\")]\nmod single_instance {").unwrap().1
+        const WINDOWS_MODULE: &str = "#[cfg(target_os = \"windows\")]\nmod single_instance {";
+        let lib = include_str!("../lib.rs").replace("\r\n", "\n");
+        let windows = lib.split_once(WINDOWS_MODULE).unwrap().1
             .split_once("#[cfg(unix)]").unwrap().0;
+
+        let crlf = lib.replace('\n', "\r\n");
+        assert!(crlf.split_once(WINDOWS_MODULE).is_none());
+        let normalized = crlf.replace("\r\n", "\n");
+        assert_eq!(
+            normalized.split_once(WINDOWS_MODULE).unwrap().1.split_once("#[cfg(unix)]").unwrap().0,
+            windows,
+        );
         assert_eq!(normalize_windows_profile_name("Demo"), normalize_windows_profile_name("demo"));
         assert!(windows.contains("normalize_windows_profile_name(name)"),
             "Demo and demo name the same saved data but take different instance mutexes");
@@ -2619,6 +2666,77 @@ mod tests {
         prune_layout_backups(&path, now + Duration::from_secs(60));
         assert!(future.is_file());
         assert_eq!(layout_backups(&path).len(), 21);
+    }
+
+    #[tokio::test]
+    async fn lane_a_backup_enumeration_save_failure_omits_the_home_path() {
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("fixture-home-name");
+        fs::create_dir(&home).unwrap();
+        let path = home.join("data.json");
+        let data = PersistentData::default();
+        let original = serde_json::to_vec(&data).unwrap();
+        fs::write(&path, &original).unwrap();
+        fs::write(home.join("data-backups"), b"cannot enumerate").unwrap();
+
+        let diagnostics = temp.path().join("diagnostics");
+        let result = crate::diag::with_test_dir(diagnostics.clone(), async {
+            save_to_path(&path, &data)
+        }).await;
+        drop(_serial);
+        assert!(result.unwrap_err().to_string().contains("cannot determine layout backup order"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let saved = fs::read_to_string(diagnostics.join("diag.log")).unwrap();
+        assert!(saved.contains("failed to save data.json: cannot determine layout backup order"));
+        assert!(!saved.contains("fixture-home-name"), "the diagnostic named the fixture home directory");
+    }
+
+    #[test]
+    fn lane_a_mirror_defaults_to_no_root_on_new_and_missing_settings() {
+        assert_eq!(AppSettings::default().ailog_mirror_full_text_root, None);
+        let mut wire = serde_json::to_value(AppSettings::default()).unwrap();
+        wire.as_object_mut().unwrap().remove("ailog_mirror_full_text_root");
+        let settings: AppSettings = serde_json::from_value(wire).unwrap();
+        assert_eq!(settings.ailog_mirror_full_text_root, None);
+    }
+
+    #[test]
+    fn lane_a_mirror_clears_only_the_legacy_default_and_persists_the_migration_once() {
+        const LEGACY: &str = "G:\\\u{30de}\u{30a4}\u{30c9}\u{30e9}\u{30a4}\u{30d6}\\pc-backup\\mycmux-ailog";
+        const MARKER: &str = "ailog_mirror_full_text_root_migrated";
+        let _serial = persistence_test_lock();
+        reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let mut wire = serde_json::to_value(PersistentData::default()).unwrap();
+        wire["settings"].as_object_mut().unwrap().remove(MARKER);
+        wire["settings"]["ailog_mirror_full_text_root"] = serde_json::json!(LEGACY);
+        wire["settings"]["fixture_setting_from_a_different_build"] = serde_json::json!({"value": true});
+        fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
+
+        let migrated = load(path.as_path()).unwrap().settings.ailog_mirror_full_text_root;
+        let persisted: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        update(path.as_path(), |disk| disk.settings.ailog_mirror_full_text_root = Some(LEGACY.into())).unwrap();
+        let restored = load(path.as_path()).unwrap().settings.ailog_mirror_full_text_root;
+
+        let other_path = temp.path().join("other").join("data.json");
+        fs::create_dir(other_path.parent().unwrap()).unwrap();
+        let different = LEGACY.replacen('G', "g", 1);
+        wire["settings"]["ailog_mirror_full_text_root"] = serde_json::json!(&different);
+        fs::write(&other_path, serde_json::to_vec(&wire).unwrap()).unwrap();
+        let preserved = load(other_path.as_path()).unwrap().settings.ailog_mirror_full_text_root;
+        let other_persisted: serde_json::Value = serde_json::from_slice(&fs::read(other_path).unwrap()).unwrap();
+        drop(_serial);
+
+        assert_eq!(migrated, None);
+        assert_eq!(persisted["settings"][MARKER], true);
+        assert!(persisted["settings"]["ailog_mirror_full_text_root"].is_null());
+        assert_eq!(persisted["settings"]["fixture_setting_from_a_different_build"]["value"], true);
+        assert_eq!(restored.as_deref(), Some(LEGACY));
+        assert_eq!(preserved.as_deref(), Some(different.as_str()));
+        assert_eq!(other_persisted["settings"][MARKER], true);
     }
 
     #[test]

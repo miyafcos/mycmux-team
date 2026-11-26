@@ -125,8 +125,9 @@ impl AtomicWrite {
         if let Some(prefix) = &self.temp_prefix {
             builder.prefix(prefix);
         }
+        // tempfile attaches the absolute parent to this error.
         let mut temp = builder.tempfile_in(parent)
-            .map_err(|error| format!("Failed to create {}: {error}", self.temp_label))?;
+            .map_err(|error| format!("Failed to create {}: {:?}", self.temp_label, error.kind()))?;
         fill(temp.as_file_mut())?;
         temp.flush()
             .map_err(|error| format!("Failed to flush {}: {error}", self.temp_label))?;
@@ -178,14 +179,15 @@ pub(crate) fn preserve_in_old(source: &Path) -> std::io::Result<std::path::PathB
 /// the rename themselves because they need extra steps in between (`db::storage`
 /// takes a pre-replace backup of the live file first).
 pub fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("data file");
     let path = filesystem_write_path(path)
         .map_err(|error| format!("Failed to resolve write path: {error}"))?;
     let mut file = File::create(path.as_ref())
-        .map_err(|error| format!("Failed to create {}: {error}", path.display()))?;
+        .map_err(|error| format!("Failed to create {name}: {error}"))?;
     file.write_all(bytes)
-        .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+        .map_err(|error| format!("Failed to write {name}: {error}"))?;
     file.sync_all()
-        .map_err(|error| format!("Failed to flush {}: {error}", path.display()))
+        .map_err(|error| format!("Failed to flush {name}: {error}"))
 }
 
 #[cfg(test)]

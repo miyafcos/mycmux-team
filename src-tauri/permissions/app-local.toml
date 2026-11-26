@@ -228,6 +228,7 @@ permissions = [
     "allow-save-jev-settings",
     "allow-save-persistent-data",
     "allow-send-intervention",
+    "allow-set-ailog-mirror-full-text-root",
     "allow-set-app-frontend-visible",
     "allow-set-cli-launch-token",
     "allow-set-frontend-visible",

@@ -865,6 +865,20 @@ pub async fn ailog_set_usd_jpy_rate(
     }).await
 }
 
+#[tauri::command(async)]
+pub async fn set_ailog_mirror_full_text_root(
+    _trusted: crate::ipc_caller::TrustedAppCaller,
+    app_handle: AppHandle,
+    root: Option<String>,
+) -> Result<crate::ailog::mirror::FullTextRootSave, String> {
+    crate::util::task::run_blocking("set_ailog_mirror_full_text_root", move || {
+        let saved = crate::ailog::mirror::set_full_text_root(&app_handle, root)?;
+        // The notice orders saves without broadcasting the selected path.
+        let _ = app_handle.emit("ailog-mirror-full-text-root-changed", saved.revision);
+        Ok(saved)
+    }).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

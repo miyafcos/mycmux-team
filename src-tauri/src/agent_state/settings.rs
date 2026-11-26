@@ -887,7 +887,7 @@ mod tests {
         // The supplied snapshot is data only; every test redirects its helper into its fixture root.
         include_str!("../../../tests/fixtures/agent-hooks/grok_config_260925.toml")
             .replace(
-                "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py",
+                "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py",
                 &helper.to_string_lossy().replace('\\', "/"),
             )
             .replace("python \"", &format!("{} \"", hook_python_command()))
@@ -926,7 +926,7 @@ mod tests {
         let expected =
             include_str!("../../../tests/fixtures/agent-hooks/grok_config_260925.cleaned.toml")
                 .replace(
-                    "C:/Users/miyaz/.mycmux/hooks/v1/mycmux_hook.py",
+                    "C:/Users/example/.mycmux/hooks/v1/mycmux_hook.py",
                     &paths.helper.to_string_lossy().replace('\\', "/"),
                 )
                 .replace("python \"", &format!("{} \"", hook_python_command()))
@@ -1468,19 +1468,20 @@ mod tests {
     }
 
     #[test]
-    fn codex_hash_matches_observed_local_contract() {
+    fn codex_hash_regression_for_synthetic_hook_path() {
+        // This vector checks the hash calculation for a fictional hook path.
         let session = json!({
             "matcher": "^startup$",
             "hooks": [{
                 "type": "command",
-                "command": "python C:/Users/miyaz/.codex/hooks/scripts/hooks_dispatch.py --event=SessionStart",
+                "command": "python C:/Users/example/.codex/hooks/scripts/hooks_dispatch.py --event=SessionStart",
                 "timeout": 5,
                 "statusMessage": "Codex session starting"
             }]
         });
         assert_eq!(
             codex_trusted_hash("SessionStart", &session, &session["hooks"][0]).unwrap(),
-            "sha256:56e50007a77111b5e461a15043c592e30cad02b53e067f6472a515c778c99f9d"
+            "sha256:c0a504aad9a7351f7d4a2ee386531698fce526502a8b2d6bf49ab702c71cd209"
         );
     }
 

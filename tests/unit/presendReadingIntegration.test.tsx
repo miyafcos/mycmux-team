@@ -568,3 +568,128 @@ it("ignores a stale pre-acknowledgement preference after remount", async () => {
     host.remove();
   }
 });
+
+const laneFStructuredReadingFixtures = [
+  ["escaped name first", '{"name":"SAMPLE\\u005fTOKEN","value":"fixture-label"}'],
+  ["escaped value first", '{"value":"fixture-label","name":"SAMPLE\\u005fTOKEN"}'],
+  ["undecodable name first", '{"name":"SAMPLE\\u00GfTOKEN","value":"fixture-label"}'],
+  ["undecodable value first", '{"value":"fixture-label","name":"SAMPLE\\u00GfTOKEN"}'],
+  ["block scalar alias key", "field-name: &sample-key |-\n  password\n? *sample-key\n: fixture-label"],
+].map(([label, input]) => ({ label, input }));
+
+const laneGEnvironmentReadingFixtures = [
+  { label: "alias", name: "*fixture-name", prefix: "fixture-name: &fixture-name PATH\n", reads: 0 },
+  { label: "tag", name: "!!str PATH", reads: 0 },
+  { label: "anchor", name: "&fixture-name PATH", reads: 0 },
+  { label: "literal block", name: "|-\n      PATH", reads: 0 },
+  { label: "folded block", name: ">-\n      PATH", reads: 0 },
+  { label: "plain name", name: "PATH", reads: 1 },
+  { label: "quoted name", name: '"PATH"', reads: 1 },
+].flatMap(({ label, name, prefix = "", reads }) => {
+  const fields = ["name: " + name, "value: fixture-bin"];
+  return [fields, [...fields].reverse()].map(([first, second], order) => ({
+    label: "G " + label + (order === 0 ? ", name first" : ", value first"),
+    input: prefix + "env:\n  - " + first + "\n    " + second,
+    reads,
+  }));
+});
+
+const laneG2EnvironmentReadingFixtures = [
+  ["G2-001 alias name first", "fixture-name: &fixture-name PATH\nenv: [{ name: *fixture-name # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", 0],
+  ["G2-001 alias value first", "fixture-name: &fixture-name PATH\nenv: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: *fixture-name }]", 0],
+  ["G2-001 tag name first", "env: [{ name: !!str PATH # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", 0],
+  ["G2-001 tag value first", "env: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: !!str PATH }]", 0],
+  ["G2-001 plain PATH name first", "env: [{ name: PATH # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: fixture-label }]", 1],
+  ["G2-001 plain PATH value first", "env: [{ value: fixture-label # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: PATH }]", 1],
+  ["G2-001 quoted delimiters name first", "env: [{ name: \"PATH\" # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: \"fixture # still text, } ]\" }]", 1],
+  ["G2-001 quoted delimiters value first", "env: [{ value: \"fixture # still text, } ]\" # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: \"PATH\" }]", 1],
+  ["G2-001 nested value name first", "fixture-name: &fixture-name PATH\nenv: [{ name: *fixture-name # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    value: [first # brackets and comma, ] }\n    , second] }]", 0],
+  ["G2-001 nested value value first", "fixture-name: &fixture-name PATH\nenv: [{ value: [first # brackets and comma, ] }\n    , second] # note, ] }\n    # another, } ]\n    , # after the separator, ] }\n    name: *fixture-name }]", 0],
+  ["G2-002 empty name first at EOF", "env:\n  - name:\n    value: fixture-label", 0],
+  ["G2-002 empty name first before a sibling key", "env:\n  - name:\n    value: fixture-label\n    note: hint", 0],
+  ["G2-002 empty name first before a shallower key", "env:\n  - name:\n    value: fixture-label\nnote: hint", 0],
+  ["G2-002 indented PATH name first", "env:\n  - name:\n      PATH\n    value: fixture-label", 1],
+  ["G2-002 empty name, value first at EOF", "env:\n  - value: fixture-label\n    name:", 0],
+  ["G2-002 empty name, value first before a sibling key", "env:\n  - value: fixture-label\n    name:\n    note: hint", 0],
+  ["G2-002 empty name, value first before a shallower key", "env:\n  - value: fixture-label\n    name:\nnote: hint", 0],
+  ["G2-002 indented PATH value first", "env:\n  - value: fixture-label\n    name:\n      PATH", 1],
+] as const;
+
+it.each([
+  ...laneG2EnvironmentReadingFixtures.flatMap(([label, input, reads]) => [
+    { label: label + " in the draft", draft: input, reply: "Synthetic reply", reads },
+    { label: label + " in the conversation", draft: "Keep this draft in the composer", reply: input, reads },
+  ]),
+  ...laneGEnvironmentReadingFixtures.flatMap(({ label, input, reads }) => [
+    { label: label + " in the draft", draft: input, reply: "Synthetic reply", reads },
+    { label: label + " in the conversation", draft: "Keep this draft in the composer", reply: input, reads },
+  ]),
+  ...laneFStructuredReadingFixtures.flatMap(({ label, input }) => [
+    { label: label + " in the draft", draft: input, reply: "Synthetic reply", reads: 0 },
+    { label: label + " in the conversation", draft: "Keep this draft in the composer", reply: input, reads: 0 },
+  ]),
+  {
+    label: "an undecodable quoted key in the draft",
+    draft: String.raw`{"pass\u00G0word":"dummy-draft-value"}`,
+    reply: "Synthetic reply",
+    reads: 0,
+  },
+  {
+    label: "an undecodable quoted key in the conversation",
+    draft: "Keep this draft in the composer",
+    reply: String.raw`{"pass\xG7ord":"dummy-reply-value"}`,
+    reads: 0,
+  },
+  {
+    label: "ordinary Markdown about a form label",
+    draft: "**Form labels**\n\nPlease rename the password input field.",
+    reply: "Synthetic reply",
+    reads: 1,
+  },
+])("keeps the editor text when considering $label", async ({ label, draft, reply, reads }) => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  mocks.invoke.mockClear();
+  const id = "lane-d-" + label;
+  const occurredAt = Date.now();
+  const event = { occurredAt, eventId: "toy-reply", sourceRevision: 1,
+    sourceByteStart: 10, sourceByteEnd: 120, kind: { type: "agentMessage", text: reply } };
+  const origin = { ptyGeneration: 7, agentKind: "claude", agentSessionId: "toy-chat", occurredAt,
+    eventId: event.eventId, sourceRevision: 1, sourceByteStart: 10, sourceByteEnd: 120,
+    fileGeneration: 1, contentDigest: "synthetic" };
+  mocks.invoke.mockImplementation(async (name: string, args?: { sessionId?: string }) => {
+    if (name === "configure_presend_reading" && args?.sessionId === id) return true;
+    if (name === "get_codex_restore_epoch") return 7;
+    if (name === "get_live_events") return [
+      { ptySessionId: id, telemetryHealth: "live", events: [event], presendReplySource: origin },
+    ];
+    if (name === "run_presend_reading") return {
+      reading: "sample reading", assumption: "none", missing: "none", provider: "claude", elapsedMs: 1,
+    };
+    return null;
+  });
+  useAiSettingsStore.setState({ aiEnabled: true });
+  useSettingsStore.setState({ presendReadingEnabled: true, presendReadingProvider: "claude", paneComposerEnabled: true });
+  publishCodexRestoreNoticeEpoch(id, 7);
+  usePaneMetadataStore.getState().setLiveAgent(id, "claude", true, { agentSessionId: "toy-chat" });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(<PaneComposer sessionId={id} target={{ command: "claude" }} />));
+    type(host, draft);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(host.querySelector("textarea")?.value).toBe(draft);
+    expect(useComposerStore.getState().draftBySession[id]).toBe(draft);
+    const calls = mocks.invoke.mock.calls.map(([name]) => name);
+    if (reply !== "Synthetic reply") expect(calls.filter(name => name === "get_codex_restore_epoch")).toHaveLength(2);
+    expect(calls.filter(name => name === "run_presend_reading")).toHaveLength(reads);
+    if (reads === 1 && (label.startsWith("G ") || label.startsWith("G2-"))) {
+      const reading = mocks.invoke.mock.calls.find(([name]) => name === "run_presend_reading");
+      expect(reading?.[1]).toMatchObject({ draft, conversationExcerpt: reply });
+    }
+  } finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});

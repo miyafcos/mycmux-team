@@ -16,6 +16,7 @@ import { TearoutRecord } from "./tearout/record";
 import { rejectTearoutStart } from "./tearout/refusal";
 import { recoveryProgress, recoveryFinished, recoveryFailed, recoveryBusy } from "./tearout/recoveryNotice";
 import { useToastStore } from "../stores/toastStore";
+import { useComposerStore } from "../stores/composerStore";
 import { useUiStore } from "../stores/uiStore";
 import { restoreTearoutGroup } from "./tearout/model";
 import { toTransferConfig, buildWindowFragment } from "../components/layout/SocketListener";
@@ -101,6 +102,8 @@ export async function performWorkspaceWindowMove(
   const id = request.operationId;
   const deliveryToken = crypto.randomUUID();
   let label: string | undefined, prepared = false, removed = false, retrying = false, liveSessions: string[] = [];
+  const sendTransfer = options.sendTransfer ?? useComposerStore.getState().startPaneSendTransfer(terminalTransferSessions([config]));
+  let transferCommitted = false;
   const name = workspace.panes.flatMap(pane => pane.tabs).map(tab => tab.label).filter(Boolean).join("\u3001") || workspace.name;
   const location = "\u5143\u306e\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u306e\u8868\u793a\u5834\u6240";
   const confirm = async () => {
@@ -145,12 +148,13 @@ export async function performWorkspaceWindowMove(
     removed = true; flushSync(() => useWorkspaceListStore.getState().removeWorkspace(workspaceId));
     execution.mark("committed", label);
     await publishWindowFragment(buildWindowFragment("transfer"));
-    const token = await sendTearoutWorkspaces(label, [config], liveSessions, selection.session, deliveryToken, id);
+    const token = await sendTearoutWorkspaces(label, [config], liveSessions, selection.session, deliveryToken, id, sendTransfer.drafts());
     await invoke("tearout_phase", { id, phase: "received" });
     execution.mark("received", label);
     await invoke("tearout_phase", { id, phase: "cleaned" });
     execution.mark("cleaned", label);
     await invoke("tearout_finalize", { id, token });
+    transferCommitted = true;
     for (const sessionId of sessionIdsInWorkspace(workspace)) usePaneMetadataStore.getState().removeMetadata(sessionId, "moved");
     recordPerf("detach.source.removed", workspaceId);
     return execution.result("moved");
@@ -186,6 +190,7 @@ export async function performWorkspaceWindowMove(
     finally { useToastStore.getState().dismissToast(progress); }
     throw Object.assign(error instanceof Error ? error : new Error(reason), { notified: true });
   } finally {
+    sendTransfer.finish(transferCommitted);
     opening.dispose();
     endTearoutOperation();
     if (prepared) await invoke("tearout_forget", { id }).catch(() => {});

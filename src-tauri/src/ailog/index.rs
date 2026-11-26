@@ -30,7 +30,7 @@ use parse_codex::SessionBehavior;
 
 /// Minimum gap between progress events, per spec §5.
 pub const PROGRESS_THROTTLE_MS: u128 = 250;
-const DERIVATION_VERSION: &str = "project-work-v2";
+const DERIVATION_VERSION: &str = "project-work-v3";
 const CODEX_PARSE_STATE_PREFIX: &str = "codex_ps:";
 const PREFIX_FINGERPRINT_LEN: usize = 4096;
 const FINGERPRINT_READ_CHUNK: usize = 64 * 1024;

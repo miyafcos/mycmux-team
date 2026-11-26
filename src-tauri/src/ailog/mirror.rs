@@ -6,7 +6,7 @@
 //! this scheduler existed the only trigger was opening the AI log panel.
 //!
 //! The **full-text mirror** then copies whole sources off this machine, to a
-//! configured directory (Google Drive by default), gzipped and replaced
+//! directory selected by the user, gzipped and replaced
 //! atomically whenever a source grows. The local metadata tier is disabled --
 //! see `tier1_applies` for the collision that makes it harmful.
 
@@ -49,9 +49,7 @@ pub(crate) struct MirrorConfig {
 }
 
 impl MirrorConfig {
-    fn configured(app_handle: &AppHandle) -> Result<Self, String> {
-        let tier1_root = crate::ailog::archive_root()
-            .ok_or_else(|| "ailog mirror home directory is unavailable".to_string())?;
+    fn configured(app_handle: &AppHandle) -> Result<Option<Self>, String> {
         let tier2_root = crate::db::storage::load(app_handle)
             .ok()
             .and_then(|data| data.settings.ailog_mirror_full_text_root)
@@ -59,12 +57,17 @@ impl MirrorConfig {
                 let trimmed = value.trim();
                 (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
             });
-        Ok(Self {
+        let Some(tier2_root) = tier2_root else {
+            return Ok(None);
+        };
+        let tier1_root = crate::ailog::archive_root()
+            .ok_or_else(|| "ailog mirror home directory is unavailable".to_string())?;
+        Ok(Some(Self {
             sources: default_sources(),
             state_path: tier1_root.join(STATE_FILE_NAME),
             tier1_root,
-            tier2_root,
-        })
+            tier2_root: Some(tier2_root),
+        }))
     }
 }
 
@@ -92,17 +95,26 @@ struct SourceStamp {
 struct SourceMirrorState {
     tier1: Option<SourceStamp>,
     tier2: Option<SourceStamp>,
+    // Legacy state cannot prove that the file at this mount point is our copy.
+    #[serde(default)]
+    tier2_destination: Option<SourceStamp>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct MirrorState {
     #[serde(default)]
     sources: HashMap<String, SourceMirrorState>,
+    // Older state has no destination identity, so its full-text stamps
+    // cannot establish that the selected destination is current.
+    #[serde(default)]
+    tier2_root: Option<PathBuf>,
 }
 
-fn run_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+fn run_lock() -> &'static Mutex<u64> {
+    // The same lock that excludes mirror runs orders successful settings
+    // writes. The revision only needs to be shared by windows of this process.
+    static LOCK: OnceLock<Mutex<u64>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(0))
 }
 
 fn warning_state() -> &'static Mutex<Option<String>> {
@@ -173,19 +185,6 @@ async fn run_index_pass(app_handle: &AppHandle) {
     }
 }
 
-fn run_configured(app_handle: &AppHandle) -> MirrorReport {
-    let config = match MirrorConfig::configured(app_handle) {
-        Ok(config) => config,
-        Err(error) => {
-            return MirrorReport {
-                errors: vec![error],
-                ..Default::default()
-            };
-        }
-    };
-    run_guarded_with(&config, &SystemFreeSpace)
-}
-
 pub(crate) trait FreeSpace {
     fn available_bytes(&self, destination: &Path) -> Option<u64>;
 }
@@ -194,31 +193,52 @@ struct SystemFreeSpace;
 
 impl FreeSpace for SystemFreeSpace {
     fn available_bytes(&self, destination: &Path) -> Option<u64> {
-        let target = path_comparison_key(destination);
-        Disks::new_with_refreshed_list()
-            .list()
-            .iter()
-            .filter_map(|disk| {
-                let mount = path_comparison_key(disk.mount_point());
-                target
-                    .starts_with(&mount)
-                    .then_some((mount.len(), disk.available_space()))
-            })
-            .max_by_key(|(length, _)| *length)
-            .map(|(_, available)| available)
+        let disks = Disks::new_with_refreshed_list();
+        available_on_mount(
+            destination,
+            disks.list().iter().map(|disk| (disk.mount_point(), disk.available_space())),
+        )
     }
 }
 
-fn path_comparison_key(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
-    if cfg!(target_os = "windows") {
-        value.to_lowercase()
-    } else {
-        value
+fn canonical_destination_ancestor(destination: &Path) -> Option<PathBuf> {
+    for path in destination.ancestors() {
+        match path.canonicalize() {
+            Ok(path) => return Some(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
     }
+    None
 }
 
-fn run_guarded_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -> MirrorReport {
+pub(crate) fn available_on_mount<'a>(
+    destination: &Path,
+    mounts: impl IntoIterator<Item = (&'a Path, u64)>,
+) -> Option<u64> {
+    let target = path_comparison_key(destination);
+    mounts
+        .into_iter()
+        .filter_map(|(path, available)| {
+            let mount = path_comparison_key(path);
+            target.starts_with(mount.as_ref()).then_some((mount.components().count(), available))
+        })
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, available)| available)
+}
+
+#[cfg(windows)]
+fn path_comparison_key(path: &Path) -> std::borrow::Cow<'_, Path> {
+    let path = crate::pty::path_norm::strip_extended_length_prefix(&path.to_string_lossy());
+    std::borrow::Cow::Owned(PathBuf::from(path.to_lowercase()))
+}
+
+#[cfg(not(windows))]
+fn path_comparison_key(path: &Path) -> std::borrow::Cow<'_, Path> {
+    std::borrow::Cow::Borrowed(path)
+}
+
+fn run_configured(app_handle: &AppHandle) -> MirrorReport {
     let _guard = match run_lock().try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::WouldBlock) => {
@@ -229,12 +249,44 @@ fn run_guarded_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -> Mirror
         }
         Err(TryLockError::Poisoned(error)) => error.into_inner(),
     };
-    let report = run_once_with(config, free_space);
+    let report = match MirrorConfig::configured(app_handle) {
+        Ok(Some(config)) => run_once_with(&config, &SystemFreeSpace),
+        Ok(None) => MirrorReport::default(),
+        Err(error) => MirrorReport { errors: vec![error], ..Default::default() },
+    };
     set_warning(report.warning_code.clone());
     report
 }
 
+#[derive(Debug, Serialize)]
+pub struct FullTextRootSave {
+    pub root: Option<String>,
+    pub revision: u64,
+}
+
+pub(crate) fn set_full_text_root<T: crate::db::storage::PersistentDataTarget + ?Sized>(
+    target: &T,
+    root: Option<String>,
+) -> Result<FullTextRootSave, String> {
+    let root = root.map(|value| value.trim().to_owned());
+    if root.as_deref().is_some_and(|value| !Path::new(value).is_absolute() || value.contains('\0')) {
+        return Err("ailog.mirror.root_not_absolute".into());
+    }
+    // An OFF result means that a run using the previous root has already
+    // finished. A later run reads the new setting while holding this lock.
+    let mut revision = run_lock().lock().unwrap_or_else(|error| error.into_inner());
+    crate::db::storage::update(target, |data| {
+        data.settings.ailog_mirror_full_text_root = root.clone();
+    }).map_err(String::from)?;
+    *revision += 1;
+    set_warning(None);
+    Ok(FullTextRootSave { root, revision: *revision })
+}
+
 pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -> MirrorReport {
+    let Some(tier2_root) = config.tier2_root.as_deref() else {
+        return MirrorReport::default();
+    };
     let mut report = MirrorReport::default();
     let mut state = match load_state(&config.state_path) {
         Ok(state) => state,
@@ -243,20 +295,32 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
             MirrorState::default()
         }
     };
-    let tier2_enabled = match config.tier2_root.as_deref() {
-        None => false,
-        Some(root) => match free_space.available_bytes(root) {
-            Some(bytes) if bytes >= TIER2_FREE_SPACE_FLOOR => true,
-            Some(_) => {
-                report.warning_code = Some(WARNING_TIER2_LOW_SPACE.to_string());
-                false
-            }
-            None => {
-                report.warning_code = Some(WARNING_TIER2_SPACE_UNKNOWN.to_string());
-                false
-            }
-        },
+    let available_bytes = canonical_destination_ancestor(tier2_root)
+        .and_then(|path| free_space.available_bytes(&path));
+    let tier2_enabled = match available_bytes {
+        Some(bytes) if bytes >= TIER2_FREE_SPACE_FLOOR => true,
+        Some(_) => {
+            report.warning_code = Some(WARNING_TIER2_LOW_SPACE.to_string());
+            false
+        }
+        None => {
+            report.warning_code = Some(WARNING_TIER2_SPACE_UNKNOWN.to_string());
+            false
+        }
     };
+    let tier2_root_before = if tier2_enabled {
+        tier2_root.canonicalize().ok()
+    } else {
+        None
+    };
+    if tier2_enabled && (tier2_root_before.is_none() || state.tier2_root != tier2_root_before) {
+        // Stamps from the other root must stay invalid even if only some
+        // of the sources can be copied on this pass.
+        for source in state.sources.values_mut() {
+            source.tier2 = None;
+            source.tier2_destination = None;
+        }
+    }
     let mut state_changed = false;
 
     let mut seen_sources = std::collections::HashSet::new();
@@ -305,9 +369,6 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
             }
             }
 
-            let Some(tier2_root) = config.tier2_root.as_deref() else {
-                continue;
-            };
             if !tier2_enabled {
                 report.tier2_skipped_space += 1;
                 continue;
@@ -324,16 +385,23 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
                     continue;
                 }
             };
-            if source_state.tier2.as_ref() == Some(&before) && tier2_destination.is_file() {
+            if source_state.tier2.as_ref() == Some(&before)
+                && source_state.tier2_destination.as_ref().is_some_and(|stamp| {
+                    destination_stamp(&tier2_destination).as_ref() == Some(stamp)
+                })
+            {
                 report.tier2_skipped_unchanged += 1;
             } else {
                 match write_full_gzip(&source, &tier2_destination) {
                     Ok(()) => {
                         report.tier2_written += 1;
-                        if source_stamp(&source).ok().as_ref() == Some(&before) {
-                            source_state.tier2 = Some(before);
-                            state_changed = true;
-                        }
+                        // A completed copy can be reused only while both ends
+                        // still match. Do not retain any older proof.
+                        let stable_source = source_stamp(&source).ok().as_ref() == Some(&before);
+                        let copied = stable_source.then(|| destination_stamp(&tier2_destination)).flatten();
+                        source_state.tier2 = copied.as_ref().map(|_| before);
+                        source_state.tier2_destination = copied;
+                        state_changed = true;
                     }
                     Err(error) => report.errors.push(error),
                 }
@@ -342,6 +410,13 @@ pub(crate) fn run_once_with(config: &MirrorConfig, free_space: &dyn FreeSpace) -
     }
 
     if state_changed {
+        if tier2_enabled {
+            // A new root can first appear when its first file is written.
+            // If an existing root moved during the pass, retry next time.
+            state.tier2_root = tier2_root.canonicalize().ok().filter(|after| {
+                tier2_root_before.as_ref().is_none_or(|before| before == after)
+            });
+        }
         if let Err(error) = save_state(&config.state_path, &state) {
             report.errors.push(error);
         }
@@ -489,6 +564,16 @@ fn source_stamp(path: &Path) -> Result<SourceStamp, String> {
         size: metadata.len(),
         mtime_ns,
     })
+}
+
+fn destination_stamp(path: &Path) -> Option<SourceStamp> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    // An unavailable timestamp is not evidence of a matching destination.
+    let mtime_ns = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos().try_into().ok()?;
+    Some(SourceStamp { size: metadata.len(), mtime_ns })
 }
 
 fn load_state(path: &Path) -> Result<MirrorState, String> {

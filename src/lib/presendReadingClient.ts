@@ -4,7 +4,7 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { MAX_SEND_CHARS } from "./composerSend";
-import { scrubPresendCredentials } from "./scrubCredentials";
+import { scrubPresendCredentials, scrubPresendReadingInput } from "./scrubCredentials";
 import { getLiveEvents, LIVE_EVENT_DETAIL_LIMIT } from "./livebrief";
 import { PRESEND_CONTEXT_CHARS, presendWorkdirName, unicodeTail, type PresendResult, type PresendReadingProvider, type PresendConversation } from "./presendReading";
 import { withTerminalDeadline } from "./terminalDeadline";
@@ -103,6 +103,8 @@ export async function requestPresendReading(
   },
 ): Promise<PresendResult | null> {
   if (draft.length > MAX_SEND_CHARS) return null;
+  const safeDraft = scrubPresendReadingInput(draft);
+  if (safeDraft === null) return null;
   let active = true;
   const current = () => active && isCurrent() && canRead();
   try {
@@ -114,6 +116,8 @@ export async function requestPresendReading(
     const { ptyGeneration, reply } = await context;
     if (!current() || (isCurrent.generationAtEdit !== undefined
       && (isCurrent.generationAtEdit === null || isCurrent.generationAtEdit !== ptyGeneration))) return null;
+    const safeExcerpt = scrubPresendReadingInput(reply?.text ?? "");
+    if (safeExcerpt === null) return null;
     let cwd = usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? "";
     if (!cwd) {
       const pane = useWorkspaceListStore.getState().workspaces.flatMap(workspace => workspace.panes)
@@ -125,8 +129,8 @@ export async function requestPresendReading(
       ...(isCurrent.requireForegroundAgent ? { requireForegroundAgent: true } : {}),
       ...(isCurrent.editedAtMs === undefined ? {} : { editedAtMs: isCurrent.editedAtMs }),
       ...(isCurrent.conversationAtEdit ? { conversationAtEdit: isCurrent.conversationAtEdit } : {}),
-      draft: scrubPresendCredentials(draft),
-      conversationExcerpt: unicodeTail(scrubPresendCredentials(reply?.text ?? ""), PRESEND_CONTEXT_CHARS),
+      draft: safeDraft,
+      conversationExcerpt: unicodeTail(safeExcerpt, PRESEND_CONTEXT_CHARS),
       replySource: reply?.source,
       workdirName: scrubPresendCredentials(presendWorkdirName(cwd)),
       workdirIsBasename: true,

@@ -1975,7 +1975,7 @@ pub(super) fn xlsx_sheet_xml_to_html(xml: &str, shared_strings: &[String]) -> St
 // (`<a:blip r:embed="rId1">` → `xl/drawings/_rels/drawingN.xml.rels` →
 // `xl/media/imageN.png`). Word and PowerPoint name theirs in one step, which is
 // why this is the only preview that walks two `.rels` files. Verified against
-// real workbooks in `C:/Users/miyaz/Downloads` on 2026-09-19: a sheet with no
+// real workbooks in `C:/Users/example/Downloads` on 2026-09-19: a sheet with no
 // picture still names `printerSettings` in the same `.rels`, an anchor's
 // `<xdr:pic>` can sit beside or inside an `<xdr:grpSp>`, and `<xdr:cNvPr>`
 // carries an `<a:extLst><a:ext uri=...>` of its own.

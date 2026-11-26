@@ -440,6 +440,7 @@ fn r2_full_fingerprint_parts(c: &Connection) -> (String,Vec<Value>) {
 #[ignore = "explicit R2 offline DB-copy acceptance; never opens stage-1 DB or a live profile"]
 fn stage1_r2_realdata_repair() {
     assert_eq!(std::env::var("AILOG_R2_REALDATA").as_deref(),Ok("1"));
+    let options = realdata_repair_options("AILOG_R2_REALDATA", |name| std::env::var_os(name)).unwrap();
     let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let scratch=root.join(".mycmux/ailog-r1"); let path=scratch.join("db/ailog_r2.db");
     assert!(path.is_file(),"prepare a fresh independent R2 DB copy first");
@@ -455,7 +456,11 @@ fn stage1_r2_realdata_repair() {
     let actual_fresh_sha=r2_file_sha(&path);
     assert_eq!(actual_fresh_sha,baseline["source_db_sha256"].as_str().unwrap());
     eprintln!("R2 genuine fresh copy verified: {actual_fresh_sha}; source {source_commit}");
-    let restore:Value=serde_json::from_slice(&std::fs::read("D:/ailog-rawlog-restore/RESTORE_DONE.json").unwrap()).unwrap();
+    let restore_root = options.fallback_root.as_deref().and_then(std::path::Path::parent)
+        .expect("the fallback input must be below the directory containing RESTORE_DONE.json");
+    let restore: Value = serde_json::from_slice(
+        &std::fs::read(restore_root.join("RESTORE_DONE.json")).unwrap(),
+    ).unwrap();
     assert_eq!(restore["complete"],true); assert_eq!(restore["planned"],4050);
     let mut conn=crate::ailog::open_db(&path).unwrap();
     let backups=std::fs::read_dir(path.parent().unwrap()).unwrap().filter_map(Result::ok).map(|e|e.path())
@@ -466,12 +471,6 @@ fn stage1_r2_realdata_repair() {
     assert_eq!(std::fs::metadata(&backups[0]).unwrap().len(),baseline["source_db_size_bytes"].as_u64().unwrap());
     let backup_sha=r2_file_sha(&backups[0]);
     assert_eq!(backup_sha,baseline["source_db_sha256"].as_str().unwrap());
-    let options=repair::RepairOptions {
-        claude_root:Some("C:/Users/miyaz/.claude/projects".into()),codex_root:Some("C:/Users/miyaz/.codex/sessions".into()),
-        claude_codex_root:Some("C:/Users/miyaz/.claude-codex/config/projects".into()),
-        fallback_root:Some("D:/ailog-rawlog-restore/claude-projects".into()),
-        archive_root:Some("C:/Users/miyaz/.mycmux/ailog-archive".into()),
-    };
     let progress_path=scratch.join("r2/realdata_progress.json");
     let progress:indexer::ProgressSink=Arc::new(move |p| {
         let bytes=serde_json::to_vec(&json!({"phase":p.phase,"files_done":p.files_done,"files_total":p.files_total,

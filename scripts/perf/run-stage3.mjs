@@ -37,6 +37,8 @@ const resultPath = join(out, 'stage3.json');
 const q = JSON.stringify;
 const dataPath = join(process.env.APPDATA, `com.miyazaki.mycmux/profiles/${profile}/data.json`);
 const runtime = join(process.env.USERPROFILE, `.mycmux-${profile}`);
+const fixtureProject = join(process.env.USERPROFILE, '_work', 'mycmux-perf3-260924-fixtures').replace(/[^A-Za-z0-9]/g, '-');
+const fixtureTranscripts = join(process.env.USERPROFILE, '.claude', 'projects', fixtureProject);
 if(out.toLowerCase().startsWith(repo.toLowerCase()+'\\'))throw new Error('Results must remain outside the repository');
 mkdirSync(out, { recursive:true });
 const seedArgument=arg('--layout-seed',null);
@@ -421,7 +423,7 @@ async function fakeLoad(test,{linked=false}={}) {
   }
   writeFileSync(join(out,`fake-${test.pid}.json`),q(test.fake));
   for(const fake of test.fake){
-    const path=join(process.env.USERPROFILE,'.claude/projects/C--Users-miyaz--work-mycmux-perf3-260924-fixtures',fake.transcriptId+'.jsonl');
+    const path=join(fixtureTranscripts, fake.transcriptId+'.jsonl');
     try{await waitUntil(()=>existsSync(path)&&readFileSync(path,'utf8').trim().split('\n').length>=3,20000,'three synthetic transcript lines');}
     catch(e){writeFileSync(join(out,`fake-failure-${test.pid}-${fake.id}.json`),q(await scrollback(test,fake.sessionId)));throw e;}
     await waitUntil(async()=>(await scrollback(test,fake.sessionId)).text.includes('Synthetic perf3 line 2'),10000,'synthetic PTY output');
@@ -568,7 +570,7 @@ async function livebriefProbe() {
     },45000,'six live synthetic transcript bindings');
     writeFileSync(join(out,'Ha-initial-briefs.json'),q({initial,matched,fake:test.fake}));
     const target=test.fake[0];
-    const path=join(process.env.USERPROFILE,'.claude/projects/C--Users-miyaz--work-mycmux-perf3-260924-fixtures',target.transcriptId+'.jsonl');
+    const path=join(fixtureTranscripts, target.transcriptId+'.jsonl');
     const example=JSON.parse(readFileSync(path,'utf8').trim().split('\n').at(-1));
     const rows=[];
     for(let i=0;i<1280;i++){const row=structuredClone(example);row.uuid=randomUUID();row.message.content=[{type:'text',text:'Synthetic bulk '+'.'.repeat(8192)}];rows.push(q(row));}

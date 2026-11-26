@@ -5,6 +5,7 @@ import type { Rect } from "./tearout/model";
 import type { TearoutRecord } from "./tearout/record";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
+import { useComposerStore, type PaneSendTransfer } from "../stores/composerStore";
 import { useSessionAttentionStore } from "../stores/sessionAttentionStore";
 import { windowLabel } from "./windowContext";
 import { canTransferTab } from "./paneKindCapabilities";
@@ -54,7 +55,7 @@ export interface PaneMoveResult {
   /** Recognized ordinary-window rejection before transferring any ownership. */
   refusal?: LocalTearoutRefusal;
 }
-export interface PaneMoveOptions { record?: TearoutRecord; restoreSource?: () => void }
+export interface PaneMoveOptions { record?: TearoutRecord; restoreSource?: () => void; sendTransfer?: PaneSendTransfer }
 export interface PaneMoveExecution {
   assertSource: () => void;
   mark: (phase: PaneMovePhase, destinationWindow?: string) => void;
@@ -176,6 +177,10 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
   }
   if (request.destination.kind === "split") return executeSplitMove(request as PaneMoveRequest<SplitMoveDestination>, execution);
   const finish = beginLayoutOperation()!;
+  // Claim before imports and reservation checks can yield to an in-flight send.
+  const sendTransfer = useComposerStore.getState().startPaneSendTransfer(request.expected.owners
+    .filter(owner => (owner.type == null || owner.type === "terminal") && owner.sessionId.startsWith("pty-"))
+    .map(owner => owner.sessionId));
   return (async () => {
     let restoreStagedSource: (() => void) | undefined;
     let restored = false;
@@ -183,7 +188,7 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
       if (request.destination.kind === "native-window") {
         const { performNativePaneMove } = await import("./tearout/runtime");
         execution.assertSource();
-        return await performNativePaneMove(request as PaneMoveRequest<NativeMoveDestination>, execution, options);
+        return await performNativePaneMove(request as PaneMoveRequest<NativeMoveDestination>, execution, { ...options, sendTransfer });
       }
       const { performWorkspaceWindowMove } = await import("./workspaceTearOut");
       execution.assertSource();
@@ -223,7 +228,7 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
       }
       execution.assertSource();
       const result = await performWorkspaceWindowMove(guardRequest as PaneMoveRequest<WindowMoveDestination>, execution,
-        { ...options, restoreSource: restoreStagedSource ?? options.restoreSource });
+        { ...options, restoreSource: restoreStagedSource ?? options.restoreSource, sendTransfer });
       if (result.status === "refused") restoreStagedSource?.();
       return result;
     } catch (error) {
@@ -233,6 +238,7 @@ export function executePaneMove(request: PaneMoveRequest, options: PaneMoveOptio
       }
       return { ...execution.result("failed", error instanceof Error ? error.message : String(error)), error };
     } finally {
+      sendTransfer.finish(false);
       finish();
     }
   })();

@@ -73,7 +73,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("opens a resolved directory in Explorer", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
+    const path = "C:\\Users\\example\\Dropbox\\成果物\\";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
 
     await renderText(path);
@@ -83,7 +83,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("does not activate a path after text is drag-selected", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
+    const path = "C:\\Users\\example\\Dropbox\\成果物\\";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
 
     await renderText(path);
@@ -99,7 +99,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("offers the terminal-equivalent default-app and Explorer choices for a resolved file", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    const path = "C:\\Users\\example\\Dropbox\\成果物\\report.pdf";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
 
     await renderText(path);
@@ -115,7 +115,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("opens an artifact preview in the dashboard column when the context asks for it", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.html";
+    const path = "C:\\Users\\example\\Dropbox\\成果物\\report.html";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
     mocks.preview.mockResolvedValue({
       previewPath: path,
@@ -149,7 +149,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("does not open a dashboard preview column for a URI that is not an artifact preview", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    const path = "C:\\Users\\example\\Dropbox\\成果物\\report.pdf";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
 
     await act(async () => {
@@ -177,7 +177,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("opens a resolved file with the default app through IPC, not plugin-shell", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\report.pdf";
+    const path = "C:\\Users\\example\\Dropbox\\report.pdf";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
     mocks.openPath.mockResolvedValue(undefined);
 
@@ -194,7 +194,7 @@ describe("DashboardLinkedText", () => {
   });
 
   it("shows a failure label when opening with the default app rejects", async () => {
-    const path = "C:\\Users\\miyaz\\Dropbox\\report.pdf";
+    const path = "C:\\Users\\example\\Dropbox\\report.pdf";
     mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
     mocks.openPath.mockRejectedValue("access denied");
 

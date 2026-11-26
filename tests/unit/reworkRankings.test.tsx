@@ -68,7 +68,7 @@ const rankings: ReworkRankingsReport = {
     { name: "Bash", target: "npm", executions: 4, failures: 2, failureRate: 0.5 },
   ],
   rewrittenFiles: [
-    { path: "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\src\\stores\\ailogStore.ts", editCount: 18, sessionCount: 4 },
+    { path: "C:\\Users\\example\\cmux-for-linux-dev-master\\src\\stores\\ailogStore.ts", editCount: 18, sessionCount: 4 },
   ],
 };
 
@@ -194,14 +194,14 @@ describe("rework ranking presentation", () => {
   });
 
   it("shortens a long path in the cell and keeps the full path on title", () => {
-    const path = "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\src\\stores\\ailogStore.ts";
+    const path = "C:\\Users\\example\\cmux-for-linux-dev-master\\src\\stores\\ailogStore.ts";
     const host = document.createElement("div");
     host.innerHTML = markupOfRankings();
     const cell = host.querySelector('[data-testid="rework-file-path"]') as HTMLElement | null;
     expect(cell).not.toBeNull();
     expect(cell!.getAttribute("title")).toBe(path);
     expect(cell!.textContent).toBe(truncateTailPath(path));
-    expect(cell!.textContent).not.toContain("Users\\miyaz");
+    expect(cell!.textContent).not.toContain("Users\\example");
     expect(truncateTailPath("short.ts")).toBe("short.ts");
   });
 

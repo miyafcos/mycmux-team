@@ -248,10 +248,10 @@
     #[test]
     fn tokenize_is_case_insensitive_and_marks_outside_paths() {
         let mapper = PathMapper {
-            dropbox_root: Some("C:\\Users\\Miyaz\\Dropbox".to_string()),
+            dropbox_root: Some("C:\\Users\\example\\Dropbox".to_string()),
         };
         assert_eq!(
-            mapper.tokenize("c:/users/miyaz/dropbox/案件/a.md"),
+            mapper.tokenize("c:/users/example/dropbox/案件/a.md"),
             ("{DROPBOX}/案件/a.md".to_string(), true)
         );
         assert_eq!(

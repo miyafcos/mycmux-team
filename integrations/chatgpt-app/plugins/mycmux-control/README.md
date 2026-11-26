@@ -77,7 +77,7 @@ runtime key を作り、本人だけが読める権限で上記の key ファイ
 
 ```powershell
 $ControlScripts = (Resolve-Path -LiteralPath ".\scripts").Path
-$env:MYCMUX_AGENT_CLI = "C:\Users\miyaz\.mycmux\bin\mycmux_agent_cli.py"
+$env:MYCMUX_AGENT_CLI = Join-Path $env:USERPROFILE '.mycmux\bin\mycmux_agent_cli.py'
 $env:PYTHONDONTWRITEBYTECODE = "1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$ControlScripts\secure_mcp_tunnel.ps1" -Mode Validate
 powershell -NoProfile -ExecutionPolicy Bypass -File "$ControlScripts\secure_mcp_tunnel.ps1" -Mode Plan -TunnelId "tunnel_REPLACE_WITH_ID"
@@ -115,7 +115,7 @@ stack は常に file 参照を使います。
 
 ## Bridge state
 
-既定では `C:\Users\miyaz\.mycmux\chatgpt-bridge\state.json` 相当へ保存します。
+既定では `~\.mycmux\chatgpt-bridge\state.json` 相当へ保存します。
 テストや分離実行では `MYCMUX_CHATGPT_STATE_DIR` で変更できます。
 
 ## Pairing and handoff
@@ -126,12 +126,12 @@ stack は常に file 参照を使います。
 4. 受信側で内容を確認した後に `--binding-id` と `--message-id` を指定して acknowledge します。handoff は PTY command として自動実行されません。
 
 ```powershell
-python "C:\Users\miyaz\cmux-for-linux-dev-master\integrations\chatgpt-app\plugins\mycmux-control\scripts\mycmux_chat_bridge.py" bindings
-python "C:\Users\miyaz\cmux-for-linux-dev-master\integrations\chatgpt-app\plugins\mycmux-control\scripts\mycmux_chat_bridge.py" inbox --direction chatgpt_to_mycmux --status queued
+python "$env:USERPROFILE\cmux-for-linux-dev-master\integrations\chatgpt-app\plugins\mycmux-control\scripts\mycmux_chat_bridge.py" bindings
+python "$env:USERPROFILE\cmux-for-linux-dev-master\integrations\chatgpt-app\plugins\mycmux-control\scripts\mycmux_chat_bridge.py" inbox --direction chatgpt_to_mycmux --status queued
 ```
 
 Codex の plugin cache からは `MYCMUX_AGENT_CLI`、`MYCMUX_REPO_ROOT`、既定の
-`C:\Users\miyaz\cmux-for-linux-dev-master` の順で mycmux bridge を解決します。
+`~\cmux-for-linux-dev-master` の順で mycmux bridge を解決します。
 checkout を移動した場合は、どちらかの環境変数を明示してください。
 
 ## Next protocol step

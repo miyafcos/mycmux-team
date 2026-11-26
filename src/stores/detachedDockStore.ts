@@ -8,6 +8,45 @@ import { WINDOW_REGISTRY_CHANGED_EVENT } from "../lib/ipc";
 import { isPreparingLayoutQuit } from "../lib/layoutQuit";
 
 export const DETACHED_DOCK_REQUEST_EVENT = "mycmux://detached-dock-request";
+const DRAFT_OFFER = "mycmux://detached-dock-drafts";
+const DRAFT_RECEIPT = "mycmux://detached-dock-drafts-receipt";
+
+interface DetachedDraftOffer {
+  token: string;
+  source: string;
+}
+
+interface DetachedDraftReceipt {
+  token: string;
+  receiver: string;
+  accepted: boolean;
+}
+
+/** Check receiver readiness first; the source keeps the text until native release. */
+export async function awaitDetachedDockDraftReceiver(receiver: string, source: string): Promise<void> {
+  const offer: DetachedDraftOffer = { token: crypto.randomUUID(), source };
+  let acknowledge!: (accepted: boolean) => void;
+  const receipt = new Promise<boolean>(resolve => { acknowledge = resolve; });
+  const listener = listen<DetachedDraftReceipt>(DRAFT_RECEIPT, ({ payload }) => {
+    if (payload.token === offer.token && payload.receiver === receiver) acknowledge(payload.accepted);
+  }, { target: { kind: "Window", label: source } });
+  let expired = false;
+  const sent = listener.then(() => {
+    if (!expired) return emitTo(receiver, DRAFT_OFFER, offer);
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("detached_dock_draft_receipt_timeout")), 4_000);
+  });
+  try {
+    const [, accepted] = await Promise.race([Promise.all([sent, receipt]), deadline]);
+    if (!accepted) throw new Error("detached_dock_draft_receipt_refused");
+  } finally {
+    expired = true;
+    clearTimeout(timer);
+    void listener.then(stop => stop()).catch(() => {});
+  }
+}
 
 export const DETACHED_DRAG_EVENT = "mycmux://detached-drag";
 export interface DetachedDragPayload {
@@ -177,6 +216,13 @@ export function listenForDetachedDock(): () => void {
     }
   };
   const dragListener = listen<DetachedDragPayload>(DETACHED_DRAG_EVENT, (event) => { void handle(event.payload); });
+  const draftListener = listen<DetachedDraftOffer>(DRAFT_OFFER, ({ payload }) => {
+    if (disposed || payload.source === receiver.label) return;
+    const accepted = !isPreparingLayoutQuit();
+    void emitTo(payload.source, DRAFT_RECEIPT, {
+      token: payload.token, receiver: receiver.label, accepted,
+    } satisfies DetachedDraftReceipt).catch(() => {});
+  }, { target: { kind: "Window", label: receiver.label } });
   const registryListener = listen(WINDOW_REGISTRY_CHANGED_EVENT, () => {
     const current = generation;
     const active = useDetachedDockStore.getState().active;
@@ -189,6 +235,7 @@ export function listenForDetachedDock(): () => void {
     disposed = true;
     clear();
     void dragListener.then((unlisten) => unlisten()).catch(() => {});
+    void draftListener.then((unlisten) => unlisten()).catch(() => {});
     void registryListener.then((unlisten) => unlisten()).catch(() => {});
   };
 }

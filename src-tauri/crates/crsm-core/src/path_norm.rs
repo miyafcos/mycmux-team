@@ -55,8 +55,8 @@ mod tests {
     #[test]
     fn normalizes_git_bash_drive_paths() {
         assert_eq!(
-            normalize_agent_cwd("/c/Users/miyaz/repo"),
-            "C:\\Users\\miyaz\\repo"
+            normalize_agent_cwd("/c/Users/example/repo"),
+            "C:\\Users\\example\\repo"
         );
     }
 }

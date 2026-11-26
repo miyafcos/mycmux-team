@@ -1,7 +1,7 @@
 ﻿{
     "schema_version":  1,
     "generated_at":  "2026-05-02T20:54:15.4511900+09:00",
-    "repo_root":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master",
+    "repo_root":  "C:\\Users\\example\\cmux-for-linux-dev-master",
     "repo_git":  {
                      "branch":  "master",
                      "commit":  "1c1f97bae3c79f3b147e24d0a31f9484f0eb764b",
@@ -41,15 +41,15 @@
     "app":  {
                 "product_name":  "mycmux",
                 "identifier":  "com.miyazaki.mycmux",
-                "config_path":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\src-tauri\\tauri.conf.json"
+                "config_path":  "C:\\Users\\example\\cmux-for-linux-dev-master\\src-tauri\\tauri.conf.json"
             },
     "data_json_candidates":  [
                                  {
-                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\com.miyazaki.mycmux\\data.json",
+                                     "path":  "C:\\Users\\example\\AppData\\Roaming\\com.miyazaki.mycmux\\data.json",
                                      "exists":  true
                                  },
                                  {
-                                     "path":  "C:\\Users\\miyaz\\AppData\\Roaming\\mycmux\\data.json",
+                                     "path":  "C:\\Users\\example\\AppData\\Roaming\\mycmux\\data.json",
                                      "exists":  false
                                  }
                              ],
@@ -57,7 +57,7 @@
                            "timestamp":  "2026-05-02T20:54:15.5430184+09:00",
                            "pid":  48352,
                            "process_name":  "mycmux",
-                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                           "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                            "total_processor_seconds":  78.40625,
                            "working_set_bytes":  57737216,
@@ -83,7 +83,7 @@
                                             "timestamp":  "2026-05-02T20:53:50.8803510+09:00",
                                             "pid":  48352,
                                             "process_name":  "mycmux",
-                                            "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                            "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                             "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                             "total_processor_seconds":  76.75,
                                             "working_set_bytes":  57737216,
@@ -96,7 +96,7 @@
                                            "timestamp":  "2026-05-02T20:54:01.0985422+09:00",
                                            "pid":  48352,
                                            "process_name":  "mycmux",
-                                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                           "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                            "total_processor_seconds":  77.265625,
                                            "working_set_bytes":  57733120,
@@ -119,7 +119,7 @@
                                             "timestamp":  "2026-05-02T20:54:01.1742490+09:00",
                                             "pid":  48352,
                                             "process_name":  "mycmux",
-                                            "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                            "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                             "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                             "total_processor_seconds":  77.265625,
                                             "working_set_bytes":  57733120,
@@ -132,7 +132,7 @@
                                            "timestamp":  "2026-05-02T20:54:02.3704778+09:00",
                                            "pid":  48352,
                                            "process_name":  "mycmux",
-                                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                           "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                            "total_processor_seconds":  77.328125,
                                            "working_set_bytes":  57733120,
@@ -155,7 +155,7 @@
                                             "timestamp":  "2026-05-02T20:54:03.3803139+09:00",
                                             "pid":  48352,
                                             "process_name":  "mycmux",
-                                            "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                            "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                             "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                             "total_processor_seconds":  77.34375,
                                             "working_set_bytes":  57733120,
@@ -168,7 +168,7 @@
                                            "timestamp":  "2026-05-02T20:54:04.5548425+09:00",
                                            "pid":  48352,
                                            "process_name":  "mycmux",
-                                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                           "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                            "total_processor_seconds":  77.5,
                                            "working_set_bytes":  57733120,
@@ -194,7 +194,7 @@
                                             "timestamp":  "2026-05-02T20:54:05.0823700+09:00",
                                             "pid":  48352,
                                             "process_name":  "mycmux",
-                                            "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                            "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                             "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                             "total_processor_seconds":  77.5,
                                             "working_set_bytes":  57733120,
@@ -207,7 +207,7 @@
                                            "timestamp":  "2026-05-02T20:54:15.4138236+09:00",
                                            "pid":  48352,
                                            "process_name":  "mycmux",
-                                           "path":  "C:\\Users\\miyaz\\mycmux-app\\mycmux.exe",
+                                           "path":  "C:\\Users\\example\\mycmux-app\\mycmux.exe",
                                            "sha256":  "CA0D8C060B35FE89E97ECACAE4F230CC5FD559932588917B35D8F17ED1461019",
                                            "total_processor_seconds":  78.390625,
                                            "working_set_bytes":  57737216,

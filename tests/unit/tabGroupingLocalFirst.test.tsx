@@ -69,8 +69,8 @@ function localWorkspaces(): Workspace[] {
     status: "running",
     createdAt: NOW,
     panes: [
-      pane("pane-1", [tab("t1", "C:/Users/miyaz/anken/hikarista/math"), tab("t2", "C:/Users/miyaz/anken/hikarista/science")]),
-      pane("pane-2", [tab("t3", "C:/Users/miyaz/repo/mycmux"), tab("t4", "C:/Users/miyaz/repo/mycmux/src")]),
+      pane("pane-1", [tab("t1", "C:/Users/example/anken/hikarista/math"), tab("t2", "C:/Users/example/anken/hikarista/science")]),
+      pane("pane-2", [tab("t3", "C:/Users/example/repo/mycmux"), tab("t4", "C:/Users/example/repo/mycmux/src")]),
     ],
     splitColumns: [["pane-1", "pane-2"]],
   }] as Workspace[];
@@ -323,7 +323,7 @@ describe("local plan on a cold open", () => {
       gridTemplateId: "1x1",
       status: "running",
       createdAt: NOW,
-      panes: [pane("pane-1", [tab("only", "C:/Users/miyaz")])],
+      panes: [pane("pane-1", [tab("only", "C:/Users/example")])],
       splitColumns: [["pane-1"]],
     }] as Workspace[]);
 

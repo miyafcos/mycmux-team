@@ -209,10 +209,10 @@ describe("launcher search", () => {
   });
 
   const dirs = dirSections(view([
-    entry("master", "dev", "mycmux (master)", "C:/Users/miyaz/cmux-for-linux-dev-master"),
-    entry("ime", "dev", "ime-dev (\u81ea\u4f5cIME)", "C:/Users/miyaz/ime-dev"),
-    entry("math", "anken", "\u5317\u6597\u5b66\u9662/\u3072\u304b\u308a\u30b9\u30bf/\u6570\u5b66", "C:/Users/miyaz/anken/math", { source: "auto", signal: "mention", seen_at: "2026-09-03" }),
-    entry("kaku", "anken", "\u67b6\u7a7a\u98df\u54c1\u5de5\u696d\u77ed\u671f\u5927\u5b66/2027\u5e74\u5ea6\u5165\u8a66", "C:/Users/miyaz/anken/kaku"),
+    entry("master", "dev", "mycmux (master)", "C:/Users/example/cmux-for-linux-dev-master"),
+    entry("ime", "dev", "ime-dev (\u81ea\u4f5cIME)", "C:/Users/example/ime-dev"),
+    entry("math", "anken", "\u5317\u6597\u5b66\u9662/\u3072\u304b\u308a\u30b9\u30bf/\u6570\u5b66", "C:/Users/example/anken/math", { source: "auto", signal: "mention", seen_at: "2026-09-03" }),
+    entry("kaku", "anken", "\u67b6\u7a7a\u98df\u54c1\u5de5\u696d\u77ed\u671f\u5927\u5b66/2027\u5e74\u5ea6\u5165\u8a66", "C:/Users/example/anken/kaku"),
   ])).flatMap((section) => section.items);
 
   it("finds a japanese label by a japanese substring", () => {
@@ -222,7 +222,7 @@ describe("launcher search", () => {
 
   it("finds a directory by its label and by its path", () => {
     expect(searchItems(dirs, "mycmux").map((i) => i.label)).toContain("mycmux (master)");
-    expect(searchItems(dirs, "ime-dev").map((i) => i.path)).toContain("C:/Users/miyaz/ime-dev");
+    expect(searchItems(dirs, "ime-dev").map((i) => i.path)).toContain("C:/Users/example/ime-dev");
   });
 
   // Fuse matches fuzzily, not phonetically. Recorded so the limit is a decision
@@ -328,13 +328,13 @@ describe("relativeWhen", () => {
 
 describe("tailPath", () => {
   it("names a session by the folder, not the whole Dropbox path", () => {
-    expect(tailPath("C:/Users/miyaz/サンプル企画合同会社 Dropbox/事務関係/北斗学院/ひかりスタ/数学"))
+    expect(tailPath("C:/Users/example/サンプル企画合同会社 Dropbox/事務関係/北斗学院/ひかりスタ/数学"))
       .toBe("ひかりスタ/数学");
   });
 
   it("handles windows separators and a trailing slash", () => {
-    expect(tailPath(String.raw`C:\Users\miyaz\cmux-for-linux-dev-master` + "\\"))
-      .toBe("miyaz/cmux-for-linux-dev-master");
+    expect(tailPath(String.raw`C:\Users\example\cmux-for-linux-dev-master` + "\\"))
+      .toBe("example/cmux-for-linux-dev-master");
   });
 
   it("returns what it has when the path is shorter than asked for", () => {

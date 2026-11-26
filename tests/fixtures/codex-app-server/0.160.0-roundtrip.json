@@ -503,14 +503,14 @@
   "threadId": "01a0ff80-995a-7ff3-b3ff-52b08fba6e9f",
   "configuration": {
     "requested": {
-      "cwd": "C:\\Users\\miyaz\\mycmux-wt-next-s5-261003",
+      "cwd": "C:\\Users\\example\\mycmux-wt-next-s5-261003",
       "ephemeral": true
     },
     "effective": {
       "model": "gpt-6.1-sol",
       "effort": "max",
       "serviceTier": null,
-      "cwd": "C:\\Users\\miyaz\\mycmux-wt-next-s5-261003"
+      "cwd": "C:\\Users\\example\\mycmux-wt-next-s5-261003"
     }
   },
   "requestId": "send:d05fabd1-aabc-44fb-9714-8e4a1db8d17a",

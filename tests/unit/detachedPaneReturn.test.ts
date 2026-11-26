@@ -15,7 +15,7 @@ import type { DetachedWorkspace } from "../../src/lib/detachedPane";
 
 beforeEach(() => {
   __resetWindowCloseStateForTests();
-  vi.spyOn(ipc, "setWindowCloseIntent").mockResolvedValue();
+  vi.spyOn(ipc, "setWindowCloseIntent").mockImplementation(async (_closing, destroy) => { if (destroy) await mocks.destroy(); });
   mocks.isMain.mockReturnValue(false);
   const tab = { id: "tab", sessionId: "pty-original", agentId: "shell", type: "terminal" as const };
   const workspace: DetachedWorkspace = { id: "transfer", name: "Transfer", gridTemplateId: "1x1", status: "running", createdAt: 1,

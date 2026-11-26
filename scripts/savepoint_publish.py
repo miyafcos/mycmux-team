@@ -87,7 +87,7 @@ def now_jst() -> datetime:
 def sanitize_project_dir(cwd: str) -> str:
     """Claude Code の project ディレクトリ名変換 (非英数字 -> '-')。
 
-    例: C:\\Users\\miyaz\\tmp_x -> C--Users-miyaz-tmp-x (Phase 0 実測で確認済み)
+    例: C:\\Users\\example\\tmp_x -> C--Users-example-tmp-x (Phase 0 実測で確認済み)
     """
     return re.sub(r"[^A-Za-z0-9]", "-", cwd.rstrip("/\\"))
 

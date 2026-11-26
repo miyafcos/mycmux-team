@@ -379,7 +379,7 @@ const EDGE_CASES: ReadonlyArray<{ label: string } & Omit<ThemeVarsCase, "theme">
     background: {
       ...WALLPAPER_ON,
       mode: "image",
-      imagePath: "C:/Users/miyaz/Pictures/wall.png",
+      imagePath: "C:/Users/example/Pictures/wall.png",
       panelOpacity: 1,
       terminalOpacity: 1,
     },

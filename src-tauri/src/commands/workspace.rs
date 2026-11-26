@@ -242,13 +242,15 @@ fn merge_persistent_data(
     // Frontend settings payload has no store for this; dedicated ailog
     // get/set commands own it. Preserve across workspace saves.
     let ailog_usd_jpy_rate = disk.settings.ailog_usd_jpy_rate;
-    let ailog_mirror_full_text_root = disk.settings.ailog_mirror_full_text_root.clone();
+    let ailog_mirror_full_text_root = disk.settings.ailog_mirror_full_text_root.take();
+    let ailog_mirror_full_text_root_migrated = disk.settings.ailog_mirror_full_text_root_migrated;
     let ailog_claude_fallback_root = disk.settings.ailog_claude_fallback_root.clone();
     disk.settings = data.settings;
     disk.settings.dirty_save_mode = dirty_save_mode;
     disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
     disk.settings.ailog_usd_jpy_rate = ailog_usd_jpy_rate;
     disk.settings.ailog_mirror_full_text_root = ailog_mirror_full_text_root;
+    disk.settings.ailog_mirror_full_text_root_migrated = ailog_mirror_full_text_root_migrated;
     disk.settings.ailog_claude_fallback_root = ailog_claude_fallback_root;
     if !keep_selection {
         disk.active_workspace_id = data.active_workspace_id;
@@ -947,6 +949,7 @@ mod tests {
         incoming.settings.osc7_tracking_enabled = true;
         incoming.settings.ailog_usd_jpy_rate = 150.0;
         incoming.settings.ailog_mirror_full_text_root = None;
+        incoming.settings.ailog_mirror_full_text_root_migrated = false;
         incoming.settings.font_size = 19;
 
         merge_persistent_data(&mut disk, incoming, &HashSet::new(), false);
@@ -958,6 +961,7 @@ mod tests {
             disk.settings.ailog_mirror_full_text_root.as_deref(),
             Some("X:\\archive")
         );
+        assert!(disk.settings.ailog_mirror_full_text_root_migrated);
         assert_eq!(disk.settings.font_size, 19);
         assert_eq!(disk.settings.ailog_claude_fallback_root.as_deref(),Some("X:\\restored-projects"));
     }

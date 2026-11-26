@@ -697,12 +697,12 @@ mod tests {
 
     #[test]
     fn office_preview_html_escapes_path_and_labels_kind() {
-        let path = Path::new(r"C:\Users\miyaz\budget & plan.xlsx");
+        let path = Path::new(r"C:\Users\example\budget & plan.xlsx");
         let html = office_to_static_html(path);
 
         assert!(html.contains(">Excel<"));
         assert!(html.contains("budget &amp; plan.xlsx"));
-        assert!(html.contains("C:\\Users\\miyaz\\budget &amp; plan.xlsx"));
+        assert!(html.contains("C:\\Users\\example\\budget &amp; plan.xlsx"));
         assert!(!html.contains("<script"));
     }
 
@@ -792,7 +792,7 @@ mod tests {
         // The preview renders raw HTML now instead of showing it as text, so
         // the contract moved: nothing dangerous may reach the webview.
         let html = markdown_to_static_html(
-            "# レポート\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n- [safe](https://example.com)\n- [js](javascript:alert(1))\n- [bad](file:///C:/Users/miyaz/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
+            "# レポート\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n- [safe](https://example.com)\n- [js](javascript:alert(1))\n- [bad](file:///C:/Users/example/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
             None,
         );
         assert!(html.contains(">レポート</h1>"));
@@ -1138,12 +1138,12 @@ mod tests {
     #[test]
     fn file_uri_decode_preserves_utf8_names() {
         assert_eq!(
-            decode_file_uri("C:/Users/miyaz/%E3%83%AC%E3%83%9D%E3%83%BC%E3%83%88.md"),
-            "C:/Users/miyaz/レポート.md"
+            decode_file_uri("C:/Users/example/%E3%83%AC%E3%83%9D%E3%83%BC%E3%83%88.md"),
+            "C:/Users/example/レポート.md"
         );
         assert_eq!(
-            decode_file_uri("C:/Users/miyaz/レポート.md"),
-            "C:/Users/miyaz/レポート.md"
+            decode_file_uri("C:/Users/example/レポート.md"),
+            "C:/Users/example/レポート.md"
         );
     }
 
@@ -1167,7 +1167,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn artifact_path_from_raw_windows_path_trims_cli_decoration() {
-        let path = artifact_path_from_uri(r"C:\Users\miyaz\report.html＋＋＋").unwrap();
+        let path = artifact_path_from_uri(r"C:\Users\example\report.html＋＋＋").unwrap();
         assert_eq!(
             path.file_name().and_then(|file_name| file_name.to_str()),
             Some("report.html")

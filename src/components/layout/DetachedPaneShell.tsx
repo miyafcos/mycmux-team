@@ -25,6 +25,9 @@ import { buildThemeVars } from "./themeVars";
 import { closeWindowWorkspacesAndDestroy } from "./SocketListener";
 import { useThemeStore } from "../../stores/themeStore";
 import { useUiStore } from "../../stores/uiStore";
+import { isRecoverablePaneSend, useComposerStore } from "../../stores/composerStore";
+import { useToastStore } from "../../stores/toastStore";
+import "../composer/composer.css";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import type { SaveEditableArtifactResult } from "../../lib/ipc";
 import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
@@ -51,6 +54,16 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
   const [closing, setClosing] = useState(false);
   const pane = workspace.panes[0];
   const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId) ?? pane.tabs[0];
+  const sends = useComposerStore(state => state.paneSendsBySession[tab.sessionId]);
+  const recoverableSends = sends?.filter(isRecoverablePaneSend) ?? [];
+  async function copyRecoveryText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      useToastStore.getState().pushToast("本文をコピーしました。", "info");
+    } catch {
+      useToastStore.getState().pushToast("コピーできませんでした。本文を選択してコピーしてください。", "warning");
+    }
+  }
   const registerFocusOwner = useCallback((root: HTMLDivElement | null) => {
     if (!root) return;
     return registerFocusReturnOwner(root, {
@@ -361,6 +374,15 @@ export default function DetachedPaneShell({ workspace }: { workspace: DetachedWo
         </button>
       </div>
       {error && <div role="alert" style={{ padding: "4px 10px", fontSize: 12, color: "var(--cmux-red)" }}>{error}</div>}
+      {recoverableSends.length > 0 && <details style={{ padding: "4px 10px", fontSize: "var(--cmux-font-size-sm)" }}>
+        <summary>タブ移動時に送信結果を確認できなかった本文</summary>
+        <span>タブの入力行を確認してから本文を使ってください。</span>
+        {recoverableSends.map(({ id, text }, index) => <div key={id} className="cmux-composer-recovery">
+          <textarea aria-label={`送信結果が未確認の本文 ${index + 1}`} readOnly value={text} rows={2}
+            style={{ flex: "1 0 100%", resize: "vertical", color: "var(--cmux-text)", background: "var(--cmux-surface)" }} />
+          <button type="button" aria-label={`本文 ${index + 1} をコピー`} onClick={() => { void copyRecoveryText(text); }}>コピー</button>
+        </div>)}
+      </details>}
       <DetachedDashboardSurface>
       <div role="group" aria-label={`${title} の端末`} tabIndex={0} onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); focusController.request("pointer", { sessionId: tab.sessionId, focus: true }); } }} data-session-id={tab.sessionId} style={{ flex: 1, minHeight: 0, position: "relative" }}
         onPointerDown={() => focusController.request("pointer", { sessionId: tab.sessionId, focus: true })}>

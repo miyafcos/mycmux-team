@@ -8,13 +8,13 @@ window.
 Build:
 
 ```powershell
-cargo build --manifest-path "C:\Users\miyaz\cmux-for-linux-dev-master\src-tauri\Cargo.toml" --example webpane_auth_spike
+cargo build --manifest-path "src-tauri/Cargo.toml" --example webpane_auth_spike
 ```
 
 Run after the browser process that seeded the profile has fully exited:
 
 ```powershell
-cargo run --manifest-path "C:\Users\miyaz\cmux-for-linux-dev-master\src-tauri\Cargo.toml" --example webpane_auth_spike -- --data-directory "C:\Users\miyaz\AppData\Local\mycmux-webpane-spike\a1-edge-seeded"
+cargo run --manifest-path "src-tauri/Cargo.toml" --example webpane_auth_spike -- --data-directory "$env:LOCALAPPDATA\mycmux-webpane-spike\a1-edge-seeded"
 ```
 
 Do not point this example at the production mycmux WebView2 directory or a

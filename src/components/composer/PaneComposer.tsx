@@ -14,7 +14,7 @@ import {
 import { eraseSequenceFor, resetSessionDraft, restorableText, sessionDraft } from "../../lib/inputLineDraft";
 import { focusController } from "../../lib/focusController";
 import { handleSocketCommand } from "../layout/socketCommands";
-import { useComposerStore } from "../../stores/composerStore";
+import { isRecoverablePaneSend, useComposerStore, type PaneSendResult } from "../../stores/composerStore";
 import { useToastStore } from "../../stores/toastStore";
 import { COMPOSER_LINE_HEIGHT, COMPOSER_MAX_ROWS, COMPOSER_PLACEHOLDER, TARGET_LABEL } from "./composerLook";
 import "./composer.css";
@@ -49,6 +49,7 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
   const draft = useComposerStore((state) => state.draftBySession[sessionId] ?? "");
   const setDraft = useComposerStore((state) => state.setDraft);
   const clearDraft = useComposerStore((state) => state.clearDraft);
+  const canRecover = useComposerStore((state) => state.paneSendsBySession[sessionId]?.some(isRecoverablePaneSend) ?? false);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const appendedCaret = useRef<number | null>(null);
@@ -153,16 +154,6 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
     });
   };
 
-  /**
-   * Put the text back when the send never reached the pane. Prepended rather
-   * than assigned: the editor is cleared optimistically, so by the time a
-   * failure comes back the operator may already be typing the next message.
-   */
-  const restoreFailedDraft = (text: string): void => {
-    const current = useComposerStore.getState().draftBySession[sessionId] ?? "";
-    setDraft(sessionId, current ? `${text}\n${current}` : text);
-  };
-
   const send = (): void => {
     if (!canSend) return;
     if (payload.body.length > MAX_SEND_CHARS) {
@@ -181,6 +172,8 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
     // against an input line that had not caught up yet, and the message was
     // gone (2026-09-02). The dashboard reply box has always used this route.
     // recentInput / turn markers are recorded by the handler, not here.
+    const recovery = useComposerStore.getState().beginPaneSend(sessionId, sent);
+    let result: PaneSendResult = "unconfirmed";
     resetSessionDraft(sessionId);
     clearDraft(sessionId);
     // Focus goes back only once the message is committed. Handing it to the
@@ -189,7 +182,7 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
     // submit key lands inside the line about to be submitted.
     void writeToPane(payload.body, true).then((outcome) => {
       if (outcome?.sent === false) {
-        if (!outcome.textWritten && !outcome.writeMayHaveOccurred) restoreFailedDraft(sent);
+        if (!outcome.textWritten && !outcome.writeMayHaveOccurred) result = "restore";
         useToastStore.getState().pushToast(outcome.message ?? "送信を止めました。対象の質問・承認を確認してください。", "warning");
         return;
       }
@@ -201,7 +194,9 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
       // Resolving is not the same as landing: an unmounted or unreadable pane
       // comes back ok:false, and staying quiet there is the silence this whole
       // change exists to remove.
-      if (outcome?.confirmed !== true) {
+      if (outcome?.confirmed === true) {
+        result = "sent";
+      } else {
         useToastStore.getState().pushToast(
           outcome?.message ?? `送信を確認できませんでした${outcome?.reason ? ` (${outcome.reason})` : ""}。再送せず、タブの入力行を確認してください`,
           "warning",
@@ -215,8 +210,10 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
       // a congested write forever and said nothing; this one gives up and hands
       // the text back. Add a bounded retry on PTY_INPUT_BACKPRESSURE if pastes
       // near MAX_SEND_CHARS start bouncing in practice.
-      restoreFailedDraft(sent);
+      result = "restore";
       useToastStore.getState().pushToast(`送信できませんでした: ${errorText(error)}`, "error");
+    }).finally(() => {
+      useComposerStore.getState().finishPaneSend(recovery, result);
     });
   };
 
@@ -230,6 +227,14 @@ export function PaneComposer({ sessionId, target, presendVisible = true }: PaneC
         <PresendReadingPanel reading={presend.reading} pending={presend.pending}
           waitingForAgent={presend.waitingForAgent} tabEnabled={presend.tabEnabled} pause={presend.pause}
           onToggle={presend.toggle} onAppend={appendReading} />
+      ) : null}
+      {canRecover ? (
+        <div className="cmux-composer-recovery">
+          <span>タブ移動時に送信結果が確認できなかった本文があります。タブの入力行を確認してください。</span>
+          <button type="button" onClick={() => useComposerStore.getState().restoreMovedPaneSends(sessionId)}>
+            下書きに戻す
+          </button>
+        </div>
       ) : null}
       <div className={`cmux-composer-shell${focused ? " is-focused" : ""}`}>
         <span className="cmux-composer-badge">{label}</span>
